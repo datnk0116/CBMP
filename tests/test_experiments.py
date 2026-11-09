@@ -251,3 +251,18 @@ def test_canonical_key_consistency():
     }
     key_cplex = get_canonical_key(rec_cplex)
     assert key_cplex == ("bus14", "cplex", "cplex", ())
+
+def test_main_optimal_exit(tmp_path):
+    from main import main
+    out_file = tmp_path / "main_run.json"
+    stats = main(
+        dataset="30_bus",
+        sb_rotation=True,
+        sb_reflection=True,
+        use_heuristic_initial_ub=True,
+        timeout=10.0,
+        json_out=str(out_file),
+    )
+    assert stats["status"] == "OPTIMAL"
+    assert stats["best_ub"] == 4
+    assert out_file.exists()

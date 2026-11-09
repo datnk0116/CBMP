@@ -32,29 +32,36 @@ def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout,
         else:
             print("timeout, lowest bandwidth found:", best_ub.value)
     
-    elif p.exitcode == 0: # child exited properly, loop ended on UNSAT
-        shared_stats['status'] = 'OPTIMAL'
-        shared_stats['best_ub'] = best_ub.value
-        print("minimum bandwidth:", best_ub.value)
+    elif p.exitcode == 0: # child exited normally (either optimal assignment found or empty graph)
+        child_status = shared_stats.get('status')
+        if child_status == 'OPTIMAL':
+            shared_stats['status'] = 'OPTIMAL'
+            shared_stats['best_ub'] = best_ub.value
+            print("minimum bandwidth:", best_ub.value)
+        else:
+            shared_stats['status'] = 'ERROR'
+            shared_stats['best_ub'] = best_ub.value
+            print(f"child process finished with non-optimal status: {child_status} - lowest bandwidth found: {best_ub.value}")
     
     else:                 # child crashed
         shared_stats['status'] = 'ERROR'
         shared_stats['best_ub'] = best_ub.value
         print("child process crashed with exit code:", p.exitcode, "- lowest bandwidth found:", best_ub.value)
 
-    if json_out:
-        final_stats = dict(shared_stats)
-        if "config" in final_stats and hasattr(final_stats["config"], "items"):
-            final_stats["config"] = dict(final_stats["config"])
-        if "per_iter_times" in final_stats:
-            final_stats["per_iter_times"] = list(final_stats["per_iter_times"])
+    final_stats = dict(shared_stats)
+    if "config" in final_stats and hasattr(final_stats["config"], "items"):
+        final_stats["config"] = dict(final_stats["config"])
+    if "per_iter_times" in final_stats:
+        final_stats["per_iter_times"] = list(final_stats["per_iter_times"])
 
+    if json_out:
         out_path = os.path.abspath(json_out)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(final_stats) + "\n")
 
     manager.shutdown()
+    return final_stats
 
 
 if __name__ == "__main__":
