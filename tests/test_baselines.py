@@ -31,6 +31,20 @@ def test_cplex_matches_bruteforce(name, N, edges):
     assert stats["status"] == "OPTIMAL"
     assert stats["solver"] == "cplex"
 
+def test_cplex_timeout_with_incumbent():
+    import random
+    random.seed(42)
+    N = 12
+    edges = []
+    for u in range(N):
+        for v in range(u + 1, N):
+            if random.random() < 0.4:
+                edges.append((u, v))
+    res, stats = solve_cplex(N=N, edges=edges, timeout=0.05, verbose=False)
+    assert stats["status"] == "TIMEOUT"
+    assert stats["best_ub"] >= 4
+    assert res == stats["best_ub"]
+
 def test_cplex_size_limit_handling():
     # 30_bus has 1018 variables, exceeding the 1000 limit of Community Edition
     res, stats = solve_cplex(dataset="30_bus", timeout=5.0, verbose=False)

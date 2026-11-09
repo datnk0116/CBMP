@@ -133,16 +133,40 @@ def solve_cplex(
     stats["per_iter_times"] = [solve_time]
     stats["num_iterations"] = 1
 
-    if sol is not None:
-        best_ub = int(round(sol.get_value(k)))
+    details = getattr(mdl, "solve_details", None)
+    cpx_status_str = (getattr(details, "status", None) or "").lower() if details else ""
+    cpx_status_code = getattr(details, "status_code", -1) if details else -1
+    has_hit_limit = details.has_hit_limit() if details and hasattr(details, "has_hit_limit") else False
+
+    # Check if CPLEX reported optimal
+    # docplex status strings: "integer optimal solution", "optimal", "integer optimal, tolerance"
+    # CPLEX status codes: 1 (optimal), 101 (integer optimal), 102 (integer optimal with tolerance)
+    is_optimal = cpx_status_code in (1, 101, 102) or (
+        ("integer optimal" in cpx_status_str or cpx_status_str == "optimal")
+        and "infeasible" not in cpx_status_str
+    )
+
+    if is_optimal:
+        best_ub = int(round(sol.get_value(k))) if sol is not None else -1
         status = "OPTIMAL"
         if verbose:
             print("minimum bandwidth:", best_ub)
-    else:
+    elif sol is not None:
+        # Incumbent exists but optimality was not proven within limit -> TIMEOUT
+        best_ub = int(round(sol.get_value(k)))
+        status = "TIMEOUT"
+        if verbose:
+            print("timeout, lowest bandwidth found:", best_ub)
+    elif has_hit_limit or "time limit" in cpx_status_str:
         best_ub = -1
         status = "TIMEOUT"
         if verbose:
             print("timeout, no valid assignment was found")
+    else:
+        best_ub = -1
+        status = "ERROR"
+        if verbose:
+            print(f"CPLEX finished with status: {cpx_status_str or cpx_status_code}")
 
     stats["best_ub"] = best_ub
     stats["status"] = status
