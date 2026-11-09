@@ -130,3 +130,56 @@ def test_solve_returns_stats_dict():
 def test_invalid_solver_raises_error():
     with pytest.raises(ValueError, match="Unknown or unavailable solver"):
         solve(N=4, edges=[(0, 1)], solver="non_existent_solver", verbose=False)
+
+def test_best_ub_not_recorded_without_assignment(monkeypatch):
+    import multiprocessing as mp
+    from pysat.solvers import Cadical195
+
+    # Simulate timeout/failure before any SAT iteration finishes
+    def fake_solve(self):
+        raise TimeoutError("Simulated timeout before SAT solution")
+
+    monkeypatch.setattr(Cadical195, "solve", fake_solve)
+
+    best_ub = mp.Value("i", -1)
+    shared_stats = mp.Manager().dict()
+
+    with pytest.raises(TimeoutError):
+        solve(
+            dataset="30_bus",
+            use_heuristic_initial_ub=False,
+            best_ub=best_ub,
+            shared_stats=shared_stats,
+            verbose=False,
+        )
+
+    # best_ub should NOT be recorded as N//2 + 1; it must remain -1
+    assert best_ub.value == -1
+    assert shared_stats.get("best_ub") == -1
+    assert shared_stats.get("initial_ub") == 30 // 2 + 1
+
+def test_heuristic_ub_recorded_only_when_verified(monkeypatch):
+    import multiprocessing as mp
+    from pysat.solvers import Cadical195
+
+    def fake_solve(self):
+        raise TimeoutError("Simulated timeout before SAT solution")
+
+    monkeypatch.setattr(Cadical195, "solve", fake_solve)
+
+    best_ub = mp.Value("i", -1)
+    shared_stats = mp.Manager().dict()
+
+    with pytest.raises(TimeoutError):
+        solve(
+            dataset="30_bus",
+            use_heuristic_initial_ub=True,
+            best_ub=best_ub,
+            shared_stats=shared_stats,
+            verbose=False,
+        )
+
+    # Heuristic assignment was verified, so best_ub and initial_ub match the heuristic bandwidth
+    assert best_ub.value > 0
+    assert shared_stats.get("best_ub") == best_ub.value
+    assert shared_stats.get("initial_ub") == best_ub.value

@@ -192,14 +192,6 @@ def solve(
         if sb_reflection:
             clauses.extend(break_reflection_symmetry(N, X, G))
 
-    # ============ ITERATIVE SAT
-    # === INIT
-    if use_heuristic_initial_ub:
-        HEURISTIC_ASSIGNMENT = cuthill_mckee_layout(GRAPH, N)
-        UB = int(compute_cyclic_bandwidth(N, edges, HEURISTIC_ASSIGNMENT))
-    else:
-        UB = N // 2 + 1 # trivial bound, with cyclic values, dist cant exceed N//2
-
     t_enc_end = time.perf_counter()
     encode_time = t_enc_end - t_enc_start
 
@@ -209,19 +201,53 @@ def solve(
     stats["encode_time"] = encode_time
     stats["num_vars"] = num_vars
     stats["num_clauses"] = total_clauses
-    stats["best_ub"] = UB
-
-    if best_ub is not None:
-        best_ub.value = UB
     if shared_stats is not None:
-        shared_stats.update(stats)
+        shared_stats["encode_time"] = encode_time
+        shared_stats["num_vars"] = num_vars
+        shared_stats["num_clauses"] = total_clauses
+
+    # ============ 2. HEURISTIC INITIAL UB & VARIABLE SEPARATION
+    # UB: bound used for SAT clauses encoding
+    # verified_best_ub: bandwidth of an actual verified assignment (starts at -1)
+    t_heur_start = time.perf_counter()
+    verified_best_ub = -1
+    if use_heuristic_initial_ub:
+        HEURISTIC_ASSIGNMENT = cuthill_mckee_layout(GRAPH, N)
+        # Verify assignment is a valid permutation of 0..N-1
+        try:
+            is_valid = len(HEURISTIC_ASSIGNMENT) == N and sorted(HEURISTIC_ASSIGNMENT) == list(range(N))
+        except Exception:
+            is_valid = False
+
+        if is_valid:
+            bandwidth = int(compute_cyclic_bandwidth(N, edges, HEURISTIC_ASSIGNMENT))
+            UB = bandwidth
+            verified_best_ub = bandwidth
+        else:
+            UB = N // 2 + 1
+    else:
+        UB = N // 2 + 1  # trivial bound, with cyclic values, dist cant exceed N//2
+    t_heur_end = time.perf_counter()
+    heuristic_time = t_heur_end - t_heur_start
+
+    stats["heuristic_time"] = heuristic_time
+    stats["initial_ub"] = UB
+    stats["best_ub"] = verified_best_ub
+
+    # Only write to best_ub.value when an actual verified assignment exists
+    if best_ub is not None and verified_best_ub != -1:
+        best_ub.value = verified_best_ub
+    if shared_stats is not None:
+        shared_stats["heuristic_time"] = heuristic_time
+        shared_stats["initial_ub"] = UB
+        shared_stats["best_ub"] = verified_best_ub
 
     sat_solver = solver_cls()
     sat_solver.append_formula(clauses)
 
     per_iter_times = []
 
-    # === ITERATE
+    # ============ 3. ITERATIVE SAT
     try:
         while True:
             # === UPPER BOUND MINIMIZATION CLAUSES
@@ -231,50 +257,67 @@ def solve(
                 sat_solver.append_formula(edge_clauses)
                 total_clauses += len(edge_clauses)
 
+            stats["num_clauses"] = total_clauses
+            if shared_stats is not None:
+                shared_stats["num_clauses"] = total_clauses
+
             t_it_start = time.perf_counter()
             result = sat_solver.solve()
             t_it_end = time.perf_counter()
-            per_iter_times.append(t_it_end - t_it_start)
+            iter_duration = t_it_end - t_it_start
+            per_iter_times.append(iter_duration)
+            accumulated_solve_time = sum(per_iter_times)
 
-            stats["num_clauses"] = total_clauses
+            if result:
+                model = sat_solver.get_model()
+
+                # === EXTRACT BANDWIDTH RESULT
+                assignment = [0 for _ in range(N)]
+
+                for lit in model[:N * N]:           # only check label variables (X_u)
+                    if lit > 0:
+                        u_, i_ = divmod(lit - 1, N) # divmod(lit - 1, N) returns ((lit - 1) // N, (lit - 1) % N) 
+                        assignment[u_] = i_
+
+                # Verify assignment is a valid permutation of 0..N-1
+                if (
+                    isinstance(assignment, (list, tuple))
+                    and len(assignment) == N
+                    and sorted(assignment) == list(range(N))
+                ):
+                    bandwidth = compute_cyclic_bandwidth(N, edges, assignment)
+                    assert bandwidth < UB  # catch bugs
+
+                    UB = bandwidth
+                    verified_best_ub = bandwidth
+                    if verbose:
+                        print(UB)
+
+            # Update stats after each iteration
             stats["per_iter_times"] = list(per_iter_times)
-            stats["solve_time"] = sum(per_iter_times)
             stats["num_iterations"] = len(per_iter_times)
+            stats["best_ub"] = verified_best_ub
+            stats["solve_time"] = accumulated_solve_time
+            if best_ub is not None and verified_best_ub != -1:
+                best_ub.value = verified_best_ub
 
             if shared_stats is not None:
-                shared_stats["num_clauses"] = total_clauses
                 shared_stats["per_iter_times"] = list(per_iter_times)
-                shared_stats["solve_time"] = sum(per_iter_times)
                 shared_stats["num_iterations"] = len(per_iter_times)
+                shared_stats["best_ub"] = verified_best_ub
+                shared_stats["solve_time"] = accumulated_solve_time
 
             if not result:
                 break
-            
-            model = sat_solver.get_model()
 
-            # === EXTRACT BANDWIDTH RESULT
-            assignment = [0 for _ in range(N)]
-
-            for lit in model[:N * N]:           # only check label variables (X_u)
-                if lit > 0:
-                    u_, i_ = divmod(lit - 1, N) # divmod(lit - 1, N) returns ((lit - 1) // N, (lit - 1) % N) 
-                    assignment[u_] = i_
-
-            bandwidth = compute_cyclic_bandwidth(N, edges, assignment)
-            assert bandwidth < UB # catch bugs
-
-            UB = bandwidth
-            stats["best_ub"] = UB
-            if best_ub is not None:
-                best_ub.value = UB
+        if verified_best_ub != -1:
+            stats["status"] = "OPTIMAL"
             if shared_stats is not None:
-                shared_stats["best_ub"] = UB
-            if verbose:
-                print(UB)
-
-        stats["status"] = "OPTIMAL"
-        if shared_stats is not None:
-            shared_stats["status"] = "OPTIMAL"
+                shared_stats["status"] = "OPTIMAL"
+        else:
+            stats["status"] = "UNSAT"
+            if shared_stats is not None:
+                shared_stats["status"] = "UNSAT"
     except Exception as e:
         stats["status"] = "ERROR"
         if shared_stats is not None:
@@ -283,4 +326,4 @@ def solve(
     finally:
         sat_solver.delete()
 
-    return SolveResult(UB, stats)
+    return SolveResult(verified_best_ub, stats)
