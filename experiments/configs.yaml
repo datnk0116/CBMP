@@ -1,0 +1,82 @@
+defaults:
+  timeout: 600
+  repetitions: 1
+  dataset_dir: "datasets"
+  filters:
+    min_N: 1
+    max_N: null
+
+groups:
+  per_dataset:
+    description: "Best SAT configuration (cadical195, rotation+reflection, heuristic-ub) on all datasets"
+    datasets: "all"
+    solver: "cadical195"
+    sb_rotation: true
+    sb_reflection: true
+    heuristic_ub: true
+    timeout: 600
+
+  solvers:
+    description: "Fixed best symmetry & heuristic configuration, varying SAT solvers"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+    max_n: 200
+    sb_rotation: true
+    sb_reflection: true
+    heuristic_ub: true
+    timeout: 600
+    solvers:
+      - "cadical195"
+      - "glucose4"
+      - "maplechrono"
+      - "minisat22"
+      - "lingeling"
+
+  methods:
+    description: "Comparison of methods: Best SAT vs OR-Tools CP-SAT vs CPLEX MIP"
+    datasets: "all"
+    timeout: 600
+    methods:
+      - name: "sat_best"
+        type: "sat"
+        solver: "cadical195"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+      - name: "cpsat"
+        type: "cpsat"
+        num_workers: 1
+      - name: "cplex"
+        type: "cplex"
+
+  ablation:
+    description: "Ablation study on symmetry breaking and heuristic initial upper bound"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+    max_n: 200
+    repetitions: 3
+    solver: "cadical195"
+    timeout: 600
+    variants:
+      - name: "none"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation"
+        sb_rotation: true
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation_reflection"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: false
+      - name: "heuristic_ub"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: true
+      - name: "all"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true

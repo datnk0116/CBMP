@@ -10,3 +10,20 @@ ref/*
 *.fdb_latexmk
 *.synctex.gz
 *.pdf
+
+# python / macOS
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# environments
+CBMP/
+.venv/
+
+# experiment outputs (commit bảng/hình cuối cùng sau)
+results/*.jsonl
+results/final/
+results/smoke/
+analysis/tables/
+analysis/figures/

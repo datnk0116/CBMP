@@ -1,3 +1,10 @@
 python-sat
 scipy
 numpy
+pytest
+ortools
+docplex
+cplex
+pyyaml
+pandas
+matplotlib

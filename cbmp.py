@@ -1,10 +1,56 @@
 from scipy.io import mmread
+from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 from sat_encodings import *
-from pysat.solvers import Cadical195
+import pysat.solvers
 import numpy as np
+import time
+
+SOLVER_MAP = {
+    "cadical195": getattr(pysat.solvers, "Cadical195", None),
+    "glucose4": getattr(pysat.solvers, "Glucose4", None),
+    "maplechrono": getattr(pysat.solvers, "MapleChrono", None),
+    "minisat22": getattr(pysat.solvers, "Minisat22", None),
+    "lingeling": getattr(pysat.solvers, "Lingeling", None),
+}
+
+AVAILABLE_SOLVERS = {}
+for name, cls in SOLVER_MAP.items():
+    if cls is not None:
+        try:
+            inst = cls()
+            inst.delete()
+            AVAILABLE_SOLVERS[name] = cls
+        except Exception:
+            pass
+
+def get_solver_class(solver_name):
+    if not isinstance(solver_name, str):
+        if callable(solver_name):
+            return solver_name
+        raise ValueError(f"Invalid solver: {solver_name}")
+    key = solver_name.lower().strip()
+    if key not in AVAILABLE_SOLVERS:
+        avail_str = ", ".join(sorted(AVAILABLE_SOLVERS.keys()))
+        raise ValueError(f"Unknown or unavailable solver '{solver_name}'. Available solvers: {avail_str}")
+    return AVAILABLE_SOLVERS[key]
+
+class SolveResult(int):
+    def __new__(cls, ub, stats):
+        obj = super().__new__(cls, ub)
+        obj.stats = stats
+        obj.ub = ub
+        return obj
+
+    def __iter__(self):
+        return iter((self.ub, self.stats))
+
+    def __repr__(self):
+        return str(self.ub)
 
 def compute_cyclic_bandwidth(N, edges, assignment):
+    if not edges:
+        return 0
     return max(
         min(
             abs(assignment[u] - assignment[v]), 
@@ -18,24 +64,121 @@ def cuthill_mckee_layout(GRAPH, N):
     assignment[perm] = np.arange(N)                                        # assignment[u] = position of vertex u
     return assignment
 
-def solve(dataset, use_symmetry_break, use_heuristic_initial_ub, best_ub):
-    # ============ READ INPUT
-    GRAPH = mmread(f"datasets/{dataset}.mtx") 
-    N = GRAPH.shape[0]  # num vertices
+def solve(
+    dataset=None,
+    sb_rotation=False,
+    sb_reflection=False,
+    use_heuristic_initial_ub=False,
+    best_ub=None,
+    N=None,
+    edges=None,
+    verbose=True,
+    use_symmetry_break=None,
+    solver="cadical195",
+    shared_stats=None,
+):
+    # ============ RESOLVE BACKWARD COMPATIBILITY & ARGUMENTS
+    if use_symmetry_break is not None:
+        sb_rotation = bool(use_symmetry_break)
+        sb_reflection = bool(use_symmetry_break)
 
-    rows, cols = GRAPH.nonzero()  # edge if: matrix cell has nonzero val
-    edges = [(u, v) for u, v in zip(rows, cols) if u < v] # ignoring duplicate pairs, and diagonal
+    if isinstance(dataset, int):
+        # Direct positional call: solve(N, edges, ...)
+        N = dataset
+        edges = sb_rotation
+        if isinstance(sb_reflection, bool) and isinstance(use_heuristic_initial_ub, bool) and isinstance(best_ub, bool):
+            # solve(N, edges, sb_rotation, sb_reflection, use_heuristic_initial_ub)
+            sb_rotation = sb_reflection
+            sb_reflection = use_heuristic_initial_ub
+            use_heuristic_initial_ub = best_ub
+            best_ub = None
+        elif isinstance(sb_reflection, bool) and isinstance(use_heuristic_initial_ub, bool):
+            # solve(N, edges, use_symmetry_break, use_heuristic_initial_ub)
+            sym = sb_reflection
+            sb_rotation = sym
+            sb_reflection = sym
+            best_ub = None
+        else:
+            sb_rotation = False
+            sb_reflection = False
+        verbose = False
+    elif best_ub is None and hasattr(use_heuristic_initial_ub, 'value'):
+        # Legacy positional call: solve(dataset, use_symmetry_break, use_heuristic_initial_ub, best_ub)
+        best_ub = use_heuristic_initial_ub
+        use_heuristic_initial_ub = sb_reflection
+        sym = sb_rotation
+        sb_rotation = sym
+        sb_reflection = sym
 
-    # ============ BUILD VARIABLES
+    if sb_reflection and not sb_rotation:
+        raise ValueError("--sb-reflection requires --sb-rotation (reflection symmetry breaking assumes rotation symmetry breaking is active)")
+
+    solver_cls = get_solver_class(solver)
+    solver_name = solver if isinstance(solver, str) else getattr(solver_cls, "__name__", "custom")
+
+    dataset_name = dataset if isinstance(dataset, str) else "custom"
+
+    if N is not None and edges is not None:
+        # Direct (N, edges) input
+        if edges:
+            rows = [u for u, v in edges] + [v for u, v in edges]
+            cols = [v for u, v in edges] + [u for u, v in edges]
+            data = [1] * len(rows)
+            GRAPH = csr_matrix((data, (rows, cols)), shape=(N, N))
+        else:
+            GRAPH = csr_matrix((N, N), dtype=int)
+    else:
+        # Read from file
+        GRAPH = mmread(f"datasets/{dataset}.mtx") 
+        N = GRAPH.shape[0]  # num vertices
+
+        rows, cols = GRAPH.nonzero()  # edge if: matrix cell has nonzero val
+        edges = [(u, v) for u, v in zip(rows, cols) if u < v] # ignoring duplicate pairs, and diagonal
+
+    stats = {
+        "dataset": dataset_name,
+        "N": N,
+        "num_edges": len(edges),
+        "config": {
+            "sb_rotation": sb_rotation,
+            "sb_reflection": sb_reflection,
+            "heuristic_ub": use_heuristic_initial_ub,
+        },
+        "solver": solver_name,
+        "status": "RUNNING",
+        "best_ub": -1,
+        "encode_time": 0.0,
+        "solve_time": 0.0,
+        "per_iter_times": [],
+        "num_iterations": 0,
+        "num_vars": 0,
+        "num_clauses": 0,
+    }
+    if shared_stats is not None:
+        shared_stats.update(stats)
+
+    if not edges:
+        if best_ub is not None:
+            best_ub.value = 0
+        if verbose:
+            print(0)
+        stats["best_ub"] = 0
+        stats["status"] = "OPTIMAL"
+        if shared_stats is not None:
+            shared_stats.update(stats)
+        return SolveResult(0, stats)
+
+    # ============ BUILD VARIABLES & BASE CLAUSES
+    t_enc_start = time.perf_counter()
+
     x_start = 1
     g_start = x_start + N * N
     a_start = g_start + (N + 1) * N
     X = [[(x_start + u * N + i) for i in range(N)] for u in range(N)]
     G = [[(g_start + u * (N + 1) + i) for i in range(N + 1)] for u in range(N)]
 
-    # ============ BUILD BASE CLAUSES
     clauses = []
-    injectivity_surjectivity_clauses, _ = injectivity_surjectivity_X(N, X, a_start)
+    injectivity_surjectivity_clauses, final_a = injectivity_surjectivity_X(N, X, a_start)
 
     clauses.extend(injectivity_surjectivity_clauses)
     clauses.extend(monotonic_G(N, G))
@@ -43,50 +186,101 @@ def solve(dataset, use_symmetry_break, use_heuristic_initial_ub, best_ub):
     clauses.extend(biconditional_X_and_G(N, X, G))
     
     # === CBMP symmetry breaking
-    if use_symmetry_break:
+    if sb_rotation:
         ANCHOR_VERTEX = 0
         clauses.extend(break_rotation_symmetry(X, ANCHOR_VERTEX))
-        clauses.extend(break_reflection_symmetry(N, X, G))
+        if sb_reflection:
+            clauses.extend(break_reflection_symmetry(N, X, G))
 
     # ============ ITERATIVE SAT
     # === INIT
     if use_heuristic_initial_ub:
         HEURISTIC_ASSIGNMENT = cuthill_mckee_layout(GRAPH, N)
         UB = int(compute_cyclic_bandwidth(N, edges, HEURISTIC_ASSIGNMENT))
-        best_ub.value = UB
     else:
         UB = N // 2 + 1 # trivial bound, with cyclic values, dist cant exceed N//2
 
-    solver = Cadical195()
-    solver.append_formula(clauses)
+    t_enc_end = time.perf_counter()
+    encode_time = t_enc_end - t_enc_start
+
+    num_vars = final_a - 1
+    total_clauses = len(clauses)
+
+    stats["encode_time"] = encode_time
+    stats["num_vars"] = num_vars
+    stats["num_clauses"] = total_clauses
+    stats["best_ub"] = UB
+
+    if best_ub is not None:
+        best_ub.value = UB
+    if shared_stats is not None:
+        shared_stats.update(stats)
+
+    sat_solver = solver_cls()
+    sat_solver.append_formula(clauses)
+
+    per_iter_times = []
 
     # === ITERATE
-    while True:
-        # === UPPER BOUND MINIMIZATION CLAUSES
-        for edge in edges:
-            u, v = edge
+    try:
+        while True:
+            # === UPPER BOUND MINIMIZATION CLAUSES
+            for edge in edges:
+                u, v = edge
+                edge_clauses = cyclic_edge(N, X, G, u, v, UB)
+                sat_solver.append_formula(edge_clauses)
+                total_clauses += len(edge_clauses)
 
-            # === |f(u) - f(v)| < UB   OR   N - |f(u) - f(v)| < UB
-            solver.append_formula(cyclic_edge(N, X, G, u, v, UB))
+            t_it_start = time.perf_counter()
+            result = sat_solver.solve()
+            t_it_end = time.perf_counter()
+            per_iter_times.append(t_it_end - t_it_start)
 
-        result = solver.solve()
-        if not result: break
-        
-        model = solver.get_model()
+            stats["num_clauses"] = total_clauses
+            stats["per_iter_times"] = list(per_iter_times)
+            stats["solve_time"] = sum(per_iter_times)
+            stats["num_iterations"] = len(per_iter_times)
 
-        # === EXTRACT BANDWIDTH RESULT
-        assignment = [0 for i in range(N)]
+            if shared_stats is not None:
+                shared_stats["num_clauses"] = total_clauses
+                shared_stats["per_iter_times"] = list(per_iter_times)
+                shared_stats["solve_time"] = sum(per_iter_times)
+                shared_stats["num_iterations"] = len(per_iter_times)
 
-        for lit in model[:N * N]:           # only check label variables (X_u)
-            if lit > 0:
-                u_, i_ = divmod(lit - 1, N) # divmod(lit - 1, N) returns ((lit - 1) // N, (lit - 1) % N) 
-                assignment[u_] = i_
+            if not result:
+                break
+            
+            model = sat_solver.get_model()
 
-        bandwidth = compute_cyclic_bandwidth(N, edges, assignment)
-        assert bandwidth < UB # catch bugs
+            # === EXTRACT BANDWIDTH RESULT
+            assignment = [0 for _ in range(N)]
 
-        UB = bandwidth
-        best_ub.value = UB
-        print(UB)
+            for lit in model[:N * N]:           # only check label variables (X_u)
+                if lit > 0:
+                    u_, i_ = divmod(lit - 1, N) # divmod(lit - 1, N) returns ((lit - 1) // N, (lit - 1) % N) 
+                    assignment[u_] = i_
 
-    solver.delete()
+            bandwidth = compute_cyclic_bandwidth(N, edges, assignment)
+            assert bandwidth < UB # catch bugs
+
+            UB = bandwidth
+            stats["best_ub"] = UB
+            if best_ub is not None:
+                best_ub.value = UB
+            if shared_stats is not None:
+                shared_stats["best_ub"] = UB
+            if verbose:
+                print(UB)
+
+        stats["status"] = "OPTIMAL"
+        if shared_stats is not None:
+            shared_stats["status"] = "OPTIMAL"
+    except Exception as e:
+        stats["status"] = "ERROR"
+        if shared_stats is not None:
+            shared_stats["status"] = "ERROR"
+        raise e
+    finally:
+        sat_solver.delete()
+
+    return SolveResult(UB, stats)
