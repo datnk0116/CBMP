@@ -183,3 +183,22 @@ def test_heuristic_ub_recorded_only_when_verified(monkeypatch):
     assert best_ub.value > 0
     assert shared_stats.get("best_ub") == best_ub.value
     assert shared_stats.get("initial_ub") == best_ub.value
+
+def test_reflection_symmetry_n2_regression():
+    """
+    Regression test for N=2 reflection symmetry breaking:
+    For N=2, vertex 1 and vertex N-1 are the same vertex.
+    Enforcing f(1) < f(N-1) produces f(1) < f(1) which falsely causes UNSAT.
+    Expected cyclic bandwidth for K2 is 1.
+    """
+    res = solve(
+        N=2,
+        edges=[(0, 1)],
+        sb_rotation=True,
+        sb_reflection=True,
+        use_heuristic_initial_ub=False,
+        verbose=False,
+    )
+    assert res == 1
+    assert res.stats["status"] == "OPTIMAL"
+    assert res.stats["best_ub"] == 1

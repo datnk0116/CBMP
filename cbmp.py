@@ -189,7 +189,7 @@ def solve(
     if sb_rotation:
         ANCHOR_VERTEX = 0
         clauses.extend(break_rotation_symmetry(X, ANCHOR_VERTEX))
-        if sb_reflection:
+        if sb_reflection and N >= 3:
             clauses.extend(break_reflection_symmetry(N, X, G))
 
     t_enc_end = time.perf_counter()

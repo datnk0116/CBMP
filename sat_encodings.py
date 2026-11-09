@@ -105,7 +105,10 @@ def break_rotation_symmetry(X, anchor_vertex):
 def break_reflection_symmetry(N, X, G):
     """
     assume x_1 is fixed at label 0, enforce f(x_2) < f(x_N).
+    Only valid for N >= 3 where vertex 1 and vertex N-1 are distinct.
     """
+    if N < 3:
+        return []
     clauses = []
     for i in range(N):
         clauses.append([-X[N-1][i], -G[1][i]])
