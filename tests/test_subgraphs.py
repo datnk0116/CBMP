@@ -43,3 +43,4 @@ def test_subgraph_loader_connected_and_dimensions(name):
     assert G.number_of_nodes() == expected_n
     assert len(edges) == G.number_of_edges()
     assert nx.is_connected(G), f"Subgraph {name} must be connected"
+

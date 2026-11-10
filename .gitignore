@@ -25,5 +25,7 @@ CBMP/
 results/*.jsonl
 results/final/
 results/smoke/
+results_v2/
+calibration/
 analysis/tables/
 analysis/figures/
