@@ -29,33 +29,37 @@ def aggregate_repetitions(records):
 
     aggregated = []
     for key, reps in groups.items():
-        if len(reps) == 1:
-            aggregated.append(reps[0])
+        n_total = len(reps)
+        optimal_reps = [r for r in reps if r.get("status") == "OPTIMAL"]
+        n_optimal = len(optimal_reps)
+
+        # Compute per-rep PAR2 values before aggregating:
+        # Each OPTIMAL rep contributes solve_time; each non-optimal rep contributes 2T; SIZE_LIMIT is excluded.
+        rep_par2_vals = []
+        for r in reps:
+            st = r.get("status")
+            if st == "OPTIMAL":
+                t = r.get("solve_time")
+                if t is not None:
+                    rep_par2_vals.append(float(t))
+            elif st == "SIZE_LIMIT":
+                pass
+            else:
+                r_timeout = r.get("config", {}).get("time_limit") or r.get("time_limit") or 600.0
+                rep_par2_vals.append(2.0 * float(r_timeout))
+
+        if n_total == 1:
+            agg = dict(reps[0])
+            st = agg.get("status")
+            agg["n_optimal"] = 1 if st == "OPTIMAL" else 0
+            agg["n_total"] = 1
+            if rep_par2_vals:
+                agg["par2"] = float(np.mean(rep_par2_vals))
+            aggregated.append(agg)
             continue
 
-        optimal_reps = [r for r in reps if r.get("status") == "OPTIMAL"]
-        statuses = set(r.get("status") for r in reps)
-        is_mixed = len(statuses) > 1
-
-        if optimal_reps:
-            # If >= 1 rep is OPTIMAL, status is OPTIMAL; median is computed ONLY over OPTIMAL reps
-            reps_sorted = sorted(
-                optimal_reps,
-                key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
-            )
-            median_idx = len(reps_sorted) // 2
-            rep_chosen = reps_sorted[median_idx]
-            agg = dict(rep_chosen)
-            agg["status"] = "OPTIMAL"
-            if is_mixed:
-                agg["mixed"] = True
-                agg["is_mixed"] = True
-
-            solve_times = [r["solve_time"] for r in optimal_reps if r.get("solve_time") is not None]
-            wall_times = [r["wall_time"] for r in optimal_reps if r.get("wall_time") is not None]
-            encode_times = [r["encode_time"] for r in optimal_reps if r.get("encode_time") is not None]
-        else:
-            # No optimal rep: preserve non-optimal status
+        if n_optimal == n_total:
+            # All reps optimal -> OPTIMAL
             reps_sorted = sorted(
                 reps,
                 key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
@@ -63,9 +67,42 @@ def aggregate_repetitions(records):
             median_idx = len(reps_sorted) // 2
             rep_chosen = reps_sorted[median_idx]
             agg = dict(rep_chosen)
-            if is_mixed:
-                agg["mixed"] = True
-                agg["is_mixed"] = True
+            agg["status"] = "OPTIMAL"
+            agg["n_optimal"] = n_optimal
+            agg["n_total"] = n_total
+
+            solve_times = [r["solve_time"] for r in reps if r.get("solve_time") is not None]
+            wall_times = [r["wall_time"] for r in reps if r.get("wall_time") is not None]
+            encode_times = [r["encode_time"] for r in reps if r.get("encode_time") is not None]
+        elif n_optimal > 0:
+            # Mixed: some OPTIMAL, some not -> PARTIAL
+            reps_sorted = sorted(
+                optimal_reps,
+                key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
+            )
+            median_idx = len(reps_sorted) // 2
+            rep_chosen = reps_sorted[median_idx]
+            agg = dict(rep_chosen)
+            agg["status"] = "PARTIAL"
+            agg["n_optimal"] = n_optimal
+            agg["n_total"] = n_total
+            agg["mixed"] = True
+            agg["is_mixed"] = True
+
+            solve_times = [r["solve_time"] for r in optimal_reps if r.get("solve_time") is not None]
+            wall_times = [r["wall_time"] for r in optimal_reps if r.get("wall_time") is not None]
+            encode_times = [r["encode_time"] for r in optimal_reps if r.get("encode_time") is not None]
+        else:
+            # 0 optimal reps: preserve non-optimal status
+            reps_sorted = sorted(
+                reps,
+                key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
+            )
+            median_idx = len(reps_sorted) // 2
+            rep_chosen = reps_sorted[median_idx]
+            agg = dict(rep_chosen)
+            agg["n_optimal"] = 0
+            agg["n_total"] = n_total
 
             solve_times = [r["solve_time"] for r in reps if r.get("solve_time") is not None]
             wall_times = [r["wall_time"] for r in reps if r.get("wall_time") is not None]
@@ -77,6 +114,8 @@ def aggregate_repetitions(records):
             agg["wall_time"] = float(np.median(wall_times))
         if encode_times:
             agg["encode_time"] = float(np.median(encode_times))
+        if rep_par2_vals:
+            agg["par2"] = float(np.mean(rep_par2_vals))
 
         # Union of groups across reps
         all_groups = set()
@@ -162,10 +201,24 @@ def cross_validate_optima(records):
         total_checked = sum(len(v) for v in by_dataset.values())
         print(f"[CROSS-VALIDATION PASSED] Verified {total_checked} optimal runs across {len(by_dataset)} dataset(s). All optima match identically.")
 
-def format_cell_value(status, solve_time, best_ub):
+def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_total=None):
     """Format single cell according to required status representations."""
+    if isinstance(status, dict):
+        rec = status
+        status = rec.get("status")
+        solve_time = rec.get("solve_time", 0.0)
+        best_ub = rec.get("best_ub")
+        n_optimal = rec.get("n_optimal")
+        n_total = rec.get("n_total")
+
+    if solve_time is None:
+        solve_time = 0.0
+
     if status == "OPTIMAL":
         return f"{solve_time:.4f}"
+    elif status == "PARTIAL":
+        k_n = f"{n_optimal}/{n_total}" if (n_optimal is not None and n_total is not None) else "PARTIAL"
+        return f"{k_n} {solve_time:.4f}*"
     elif status == "TIMEOUT":
         return f"TO({best_ub})" if best_ub is not None and best_ub >= 0 else "TO"
     elif status == "SIZE_LIMIT":
@@ -206,19 +259,28 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             if not rec:
                 continue
             st = rec.get("status")
-            t = rec.get("solve_time", 0.0)
+            t = rec.get("solve_time", 0.0) or 0.0
             rec_timeout = rec.get("config", {}).get("time_limit", timeout) or timeout
 
             if st == "OPTIMAL":
                 solved += 1
-                par2_vals.append(t)
+                par2_val = rec.get("par2") if rec.get("par2") is not None else t
+                par2_vals.append(par2_val)
                 if ds in baseline_times and t > 0:
                     ratios.append(baseline_times[ds] / t)
+            elif st == "PARTIAL":
+                if rec.get("par2") is not None:
+                    par2_vals.append(rec["par2"])
+                else:
+                    n_opt = rec.get("n_optimal", 0)
+                    n_tot = rec.get("n_total", 1)
+                    par2_vals.append((n_opt * t + (n_tot - n_opt) * 2.0 * float(rec_timeout)) / n_tot)
             elif st == "SIZE_LIMIT":
                 sl_count += 1
                 # SIZE_LIMIT is reported separately in SL and not penalized in PAR2 as timeout
             else:
-                par2_vals.append(2.0 * float(rec_timeout))
+                par2_val = rec.get("par2") if rec.get("par2") is not None else (2.0 * float(rec_timeout))
+                par2_vals.append(par2_val)
 
         solved_counts[col] = solved
         sl_counts[col] = sl_count
@@ -326,7 +388,7 @@ def make_table_ablation(records):
         for ds in ds_sorted:
             rec = data_by_ds[ds].get(col)
             if rec:
-                col_vals.append(format_cell_value(rec["status"], rec.get("solve_time", 0.0), rec.get("best_ub")))
+                col_vals.append(format_cell_value(rec))
             else:
                 col_vals.append("-")
         df_display[col] = col_vals
@@ -383,7 +445,7 @@ def make_table_solvers(records):
         for ds in ds_sorted:
             rec = data_by_ds[ds].get(sol)
             if rec:
-                col_vals.append(format_cell_value(rec["status"], rec.get("solve_time", 0.0), rec.get("best_ub")))
+                col_vals.append(format_cell_value(rec))
             else:
                 col_vals.append("-")
         df_display[sol] = col_vals
@@ -446,7 +508,7 @@ def make_table_methods(records):
         for ds in ds_sorted:
             rec = data_by_ds[ds].get(m)
             if rec:
-                col_vals.append(format_cell_value(rec["status"], rec.get("solve_time", 0.0), rec.get("best_ub")))
+                col_vals.append(format_cell_value(rec))
             else:
                 col_vals.append("-")
         df_display[m] = col_vals

@@ -14,6 +14,7 @@ from experiments.run_experiments import (
 from analysis.make_tables import (
     aggregate_repetitions,
     cross_validate_optima,
+    format_cell_value,
 )
 
 def test_filter_datasets_max_n():
@@ -270,14 +271,16 @@ def test_main_optimal_exit(tmp_path):
 def test_aggregate_repetitions_mixed_optimal_timeout():
     """
     Test 4 repetitions: OPTIMAL 10s, OPTIMAL 20s, TIMEOUT 30s, TIMEOUT 600s.
-    Status must be OPTIMAL (mixed flag set).
+    Status must be PARTIAL (n_optimal=2, n_total=4).
     Median time must be computed only over OPTIMAL reps: median(10s, 20s) = 15s.
+    PAR2: each non-optimal rep gets 2T. (10 + 20 + 2*600 + 2*600) / 4 = 607.5s.
+    Table display must be 'k/n' and median time of optimal reps with '*': '2/4 15.0000*'.
     """
     records = [
         {
             "dataset": "g1",
             "solver": "cadical195",
-            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True, "time_limit": 600.0},
             "status": "OPTIMAL",
             "best_ub": 3,
             "solve_time": 10.0,
@@ -286,7 +289,7 @@ def test_aggregate_repetitions_mixed_optimal_timeout():
         {
             "dataset": "g1",
             "solver": "cadical195",
-            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True, "time_limit": 600.0},
             "status": "OPTIMAL",
             "best_ub": 3,
             "solve_time": 20.0,
@@ -295,7 +298,7 @@ def test_aggregate_repetitions_mixed_optimal_timeout():
         {
             "dataset": "g1",
             "solver": "cadical195",
-            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True, "time_limit": 600.0},
             "status": "TIMEOUT",
             "best_ub": 4,
             "solve_time": 30.0,
@@ -304,7 +307,7 @@ def test_aggregate_repetitions_mixed_optimal_timeout():
         {
             "dataset": "g1",
             "solver": "cadical195",
-            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True, "time_limit": 600.0},
             "status": "TIMEOUT",
             "best_ub": 4,
             "solve_time": 600.0,
@@ -315,11 +318,19 @@ def test_aggregate_repetitions_mixed_optimal_timeout():
     agg = aggregate_repetitions(records)
     assert len(agg) == 1
     r = agg[0]
-    assert r["status"] == "OPTIMAL"
+    assert r["status"] == "PARTIAL"
+    assert r["n_optimal"] == 2
+    assert r["n_total"] == 4
     assert r.get("mixed") is True or r.get("is_mixed") is True
     # Median of OPTIMAL reps only: (10.0 + 20.0) / 2 = 15.0
     assert r["solve_time"] == pytest.approx(15.0)
     assert r["best_ub"] == 3
+    # PAR2: (10 + 20 + 1200 + 1200) / 4 = 607.5
+    assert r["par2"] == pytest.approx(607.5)
+
+    # Format cell value check
+    assert format_cell_value(r) == "2/4 15.0000*"
+    assert format_cell_value("PARTIAL", 15.0, 3, n_optimal=2, n_total=4) == "2/4 15.0000*"
 
 def test_compute_summary_stats_size_limit_excluded_from_par2():
     """
