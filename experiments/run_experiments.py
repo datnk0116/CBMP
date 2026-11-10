@@ -95,7 +95,10 @@ def collect_environment_info(output_path="results/env.json", timeout=None, confi
         if timeout is not None:
             info["timeout"] = timeout
         if config_path is not None:
-            info["config_path"] = os.path.abspath(config_path)
+            try:
+                info["config_path"] = os.path.relpath(config_path, start=str(REPO_ROOT))
+            except Exception:
+                info["config_path"] = str(config_path)
 
     # CPU model
     try:
@@ -546,6 +549,7 @@ def run_experiments(
     resume=False,
     force_resume=False,
     retry_failed=False,
+    allow_dirty=False,
     dry_run=False,
     output_dir="results",
     record_metadata=False,
@@ -554,6 +558,12 @@ def run_experiments(
 
     if retry_failed:
         resume = True
+
+    commit_hash, is_dirty = get_git_commit_info()
+    if is_dirty and not allow_dirty and not dry_run:
+        msg = "Working directory has uncommitted changes (git_dirty=True). Commit all changes or pass --allow-dirty to proceed."
+        print(f"[ERROR] {msg}", file=sys.stderr)
+        raise ValueError(msg)
 
     # 1. Load config
     with open(config_path, "r", encoding="utf-8") as f:
@@ -668,12 +678,16 @@ def run_experiments(
                 print(f"[WARNING] {msg}")
 
     if record_metadata and not os.path.exists(runs_file):
+        try:
+            rel_config_path = os.path.relpath(config_path, start=str(REPO_ROOT))
+        except Exception:
+            rel_config_path = str(config_path)
         meta_header = {
             "_type": "metadata",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "git_commit": commit_hash,
             "git_dirty": is_dirty,
-            "config_path": os.path.abspath(config_path),
+            "config_path": rel_config_path,
             "timeout": effective_timeout,
         }
         with open(runs_file, "a", encoding="utf-8") as f:
@@ -820,6 +834,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume", action="store_true", help="skip combinations already recorded in runs.jsonl")
     parser.add_argument("--force-resume", action="store_true", help="force resume even if git commit hash differs from recorded runs")
     parser.add_argument("--retry-failed", action="store_true", help="re-run tasks that previously resulted in TIMEOUT or ERROR")
+    parser.add_argument("--allow-dirty", action="store_true", help="allow running experiments even if working directory has uncommitted changes")
     parser.add_argument("--dry-run", action="store_true", help="list planned runs without executing")
     parser.add_argument("--output-dir", type=str, default="results", help="directory to store results")
     parser.add_argument("--record-metadata", action="store_true", default=False, help="record timeout, git commit hash, and config path into results/env.json and runs.jsonl header")
@@ -836,6 +851,7 @@ if __name__ == "__main__":
         resume=args.resume,
         force_resume=args.force_resume,
         retry_failed=args.retry_failed,
+        allow_dirty=args.allow_dirty,
         dry_run=args.dry_run,
         output_dir=args.output_dir,
         record_metadata=args.record_metadata,

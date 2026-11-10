@@ -383,6 +383,7 @@ def test_resume_rejects_git_commit_mismatch(tmp_path):
             dataset_filter="14_bus",
             resume=True,
             force_resume=False,
+            allow_dirty=True,
             timeout=5.0,
         )
 
@@ -393,6 +394,7 @@ def test_resume_rejects_git_commit_mismatch(tmp_path):
         dataset_filter="14_bus",
         resume=True,
         force_resume=True,
+        allow_dirty=True,
         timeout=5.0,
     )
 
@@ -454,3 +456,55 @@ def test_resume_and_retry_failed_behavior(tmp_path):
     assert (get_canonical_key(opt_rec), 1) in loaded_retry
     assert (get_canonical_key(sl_rec), 1) in loaded_retry
     assert (get_canonical_key(timeout_rec), 1) not in loaded_retry
+
+def test_runner_rejects_dirty_without_allow_dirty(monkeypatch, tmp_path):
+    from experiments import run_experiments as runner
+
+    # Mock dirty repository status
+    monkeypatch.setattr(runner, "get_git_commit_info", lambda: ("testcommit123", True))
+
+    with pytest.raises(ValueError, match="Working directory has uncommitted changes"):
+        runner.run_experiments(
+            output_dir=str(tmp_path),
+            group="ablation",
+            dataset_filter="14_bus",
+            allow_dirty=False,
+            timeout=5.0,
+        )
+
+    # When allow_dirty=True, it should proceed
+    runner.run_experiments(
+        output_dir=str(tmp_path),
+        group="ablation",
+        dataset_filter="14_bus",
+        allow_dirty=True,
+        timeout=5.0,
+    )
+
+def test_metadata_records_relative_config_path(tmp_path):
+    from experiments import run_experiments as runner
+
+    runner.run_experiments(
+        output_dir=str(tmp_path),
+        group="ablation",
+        dataset_filter="14_bus",
+        allow_dirty=True,
+        record_metadata=True,
+        timeout=5.0,
+    )
+
+    env_path = tmp_path / "env.json"
+    assert env_path.exists()
+    env_data = json.loads(env_path.read_text())
+    assert "config_path" in env_data
+    # Must be relative (not absolute starting with / or C:\)
+    assert not os.path.isabs(env_data["config_path"])
+    assert env_data["config_path"] == "experiments/configs.yaml"
+
+    runs_file = tmp_path / "runs.jsonl"
+    assert runs_file.exists()
+    first_line = json.loads(runs_file.read_text().splitlines()[0])
+    assert first_line.get("_type") == "metadata"
+    assert "config_path" in first_line
+    assert not os.path.isabs(first_line["config_path"])
+    assert first_line["config_path"] == "experiments/configs.yaml"
