@@ -140,12 +140,25 @@ python experiments/run_experiments.py --group methods --timeout 600
 # 4. Nhóm ablation (Đánh giá đóng góp của từng thành phần: quay, phản xạ, heuristic)
 python experiments/run_experiments.py --group ablation --timeout 600
 
-# Chạy tất cả các nhóm kèm cờ resume (bỏ qua những lần chạy đã hoàn thành)
+# Chạy kèm cờ resume (mặc định chỉ bỏ qua các record đã chạy trong runs.jsonl)
 python experiments/run_experiments.py --group all --resume
+
+# Chạy lại các bài toán bị thất bại (TIMEOUT hoặc ERROR) từ runs.jsonl
+python experiments/run_experiments.py --group all --resume --retry-failed
+
+# Ép buộc resume khi git commit hash hiện tại khác với commit trong runs.jsonl
+python experiments/run_experiments.py --group all --resume --force-resume
 
 # Ghi thông tin commit, timeout, và config vào metadata
 python experiments/run_experiments.py --group all --record-metadata
 ```
+
+> [!TIP]
+> **Cơ chế `--resume`, `--force-resume`, và `--retry-failed`:**
+> - Mỗi bản ghi trong `runs.jsonl` được tự động gắn git commit hash và cờ repo dirty (`git_commit`, `git_dirty`).
+> - `--resume`: Kiểm tra commit hash của các kết quả cũ. Nếu commit hash khác với commit hiện tại của repo, runner sẽ từ chối chạy để tránh trộn lẫn kết quả của các phiên bản mã nguồn khác nhau.
+> - `--force-resume`: Cho phép bỏ qua kiểm tra commit hash và tiếp tục chạy resume.
+> - `--retry-failed`: Mặc định `--resume` bỏ qua tất cả kết quả đã ghi. Khi thêm `--retry-failed`, runner sẽ chỉ bỏ qua các record `OPTIMAL` (hoặc `SIZE_LIMIT`), và tự động chạy lại các cấu hình trước đó bị `TIMEOUT` hoặc `ERROR`.
 
 > [!NOTE]
 > **Ghi chú về kết quả bảng biểu hiện tại (`results/tables/`)**:

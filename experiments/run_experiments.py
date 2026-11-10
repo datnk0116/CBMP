@@ -54,12 +54,29 @@ def discover_datasets(dataset_dir="datasets", min_n=1, max_n=None, allowed_names
     discovered.sort(key=lambda d: (d["N"], d["name"]))
     return discovered
 
-def get_git_commit_hash():
-    """Retrieve current git commit hash."""
+def get_git_commit_info():
+    """Retrieve current git commit hash and dirty status."""
     try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
     except Exception:
-        return "unknown"
+        commit = "unknown"
+    try:
+        status_out = subprocess.check_output(
+            ["git", "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        is_dirty = bool(status_out)
+    except Exception:
+        is_dirty = False
+    return commit, is_dirty
+
+def get_git_commit_hash():
+    """Retrieve current git commit hash (with -dirty suffix if repo is dirty)."""
+    commit, is_dirty = get_git_commit_info()
+    if is_dirty and commit != "unknown":
+        return f"{commit}-dirty"
+    return commit
 
 def collect_environment_info(output_path="results/env.json", timeout=None, config_path=None, record_metadata=False):
     """Collect hardware and software environment details."""
@@ -148,9 +165,10 @@ def get_canonical_key(record):
         flags = (rot, ref, heur)
     return (dataset, method, solver, flags)
 
-def load_existing_runs(runs_jsonl_path):
+def load_existing_runs(runs_jsonl_path, retry_failed=False):
     """
     Load runs already recorded in runs.jsonl mapping (canonical_key, rep) -> record.
+    If retry_failed is True, only OPTIMAL and SIZE_LIMIT runs are retained in completed (so TIMEOUT/ERROR are retried).
     """
     if not os.path.exists(runs_jsonl_path):
         return {}
@@ -167,7 +185,12 @@ def load_existing_runs(runs_jsonl_path):
                         continue
                     key = get_canonical_key(data)
                     rep = int(data.get("rep", 1))
-                    completed[(key, rep)] = data
+                    status = data.get("status")
+                    if retry_failed:
+                        if status in ("OPTIMAL", "SIZE_LIMIT"):
+                            completed[(key, rep)] = data
+                    else:
+                        completed[(key, rep)] = data
                 except Exception:
                     pass
     except Exception:
@@ -521,11 +544,16 @@ def run_experiments(
     max_n=None,
     dataset_filter=None,
     resume=False,
+    force_resume=False,
+    retry_failed=False,
     dry_run=False,
     output_dir="results",
     record_metadata=False,
 ):
     from scripts.check_datasets import validate_datasets
+
+    if retry_failed:
+        resume = True
 
     # 1. Load config
     with open(config_path, "r", encoding="utf-8") as f:
@@ -604,18 +632,54 @@ def run_experiments(
 
     # 6. Sequential execution
     runs_file = os.path.join(output_dir, "runs.jsonl")
+    commit_hash, is_dirty = get_git_commit_info()
+
+    # If resume, validate git commit hash matches
+    if resume and os.path.exists(runs_file):
+        existing_commits = set()
+        try:
+            with open(runs_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                        c = d.get("git_commit")
+                        if c and c != "unknown":
+                            clean_c = c.replace("-dirty", "")
+                            existing_commits.add(clean_c)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        clean_current = commit_hash.replace("-dirty", "")
+        if existing_commits and clean_current != "unknown" and clean_current not in existing_commits:
+            msg = (
+                f"Git commit mismatch in runs file '{runs_file}': "
+                f"existing runs from commit(s) {sorted(list(existing_commits))}, "
+                f"current HEAD is '{clean_current}'. Use --force-resume to proceed."
+            )
+            if not force_resume:
+                print(f"[ERROR] {msg}", file=sys.stderr)
+                raise ValueError(msg)
+            else:
+                print(f"[WARNING] {msg}")
+
     if record_metadata and not os.path.exists(runs_file):
         meta_header = {
             "_type": "metadata",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "git_commit": get_git_commit_hash(),
+            "git_commit": commit_hash,
+            "git_dirty": is_dirty,
             "config_path": os.path.abspath(config_path),
             "timeout": effective_timeout,
         }
         with open(runs_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(meta_header) + "\n")
 
-    existing_runs = load_existing_runs(runs_file) if resume else {}
+    existing_runs = load_existing_runs(runs_file, retry_failed=retry_failed) if resume else {}
 
     # Build execution queue: (task, rep, rep_groups)
     execution_queue = []
@@ -724,10 +788,12 @@ def run_experiments(
                 "num_clauses": 0,
             }
 
-        # Attach parent-measured wall_time, rep, and groups
+        # Attach parent-measured wall_time, rep, groups, git_commit, git_dirty
         record["groups"] = rep_groups
         record["rep"] = rep
         record["wall_time"] = wall_time
+        record["git_commit"] = commit_hash
+        record["git_dirty"] = is_dirty
 
         # Append record
         with open(runs_file, "a", encoding="utf-8") as f:
@@ -752,6 +818,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-n", type=int, default=None, help="override maximum N vertices filter")
     parser.add_argument("--datasets", type=str, default=None, help="comma-separated dataset names to filter")
     parser.add_argument("--resume", action="store_true", help="skip combinations already recorded in runs.jsonl")
+    parser.add_argument("--force-resume", action="store_true", help="force resume even if git commit hash differs from recorded runs")
+    parser.add_argument("--retry-failed", action="store_true", help="re-run tasks that previously resulted in TIMEOUT or ERROR")
     parser.add_argument("--dry-run", action="store_true", help="list planned runs without executing")
     parser.add_argument("--output-dir", type=str, default="results", help="directory to store results")
     parser.add_argument("--record-metadata", action="store_true", default=False, help="record timeout, git commit hash, and config path into results/env.json and runs.jsonl header")
@@ -766,6 +834,8 @@ if __name__ == "__main__":
         max_n=args.max_n,
         dataset_filter=args.datasets,
         resume=args.resume,
+        force_resume=args.force_resume,
+        retry_failed=args.retry_failed,
         dry_run=args.dry_run,
         output_dir=args.output_dir,
         record_metadata=args.record_metadata,

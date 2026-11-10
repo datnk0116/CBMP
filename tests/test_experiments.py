@@ -354,3 +354,103 @@ def test_compute_summary_stats_size_limit_excluded_from_par2():
     # PAR2 has d1 (2.0s) and d3 (2*10.0 = 20.0s), d2 (SIZE_LIMIT) is excluded
     # Mean of [2.0, 20.0] = 11.0s (not including 2*10 for d2 which would make it 14.0s)
     assert par2["cplex"] == pytest.approx(11.0)
+
+def test_resume_rejects_git_commit_mismatch(tmp_path):
+    from experiments.run_experiments import run_experiments
+
+    runs_file = tmp_path / "runs.jsonl"
+    fake_record = {
+        "dataset": "14_bus",
+        "N": 14,
+        "num_edges": 20,
+        "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        "solver": "cadical195",
+        "status": "OPTIMAL",
+        "best_ub": 3,
+        "solve_time": 0.01,
+        "git_commit": "0000000000000000000000000000000000000000",
+        "git_dirty": False,
+        "groups": ["ablation"],
+        "rep": 1,
+    }
+    runs_file.write_text(json.dumps(fake_record) + "\n")
+
+    # Resume without force_resume must raise ValueError due to commit mismatch
+    with pytest.raises(ValueError, match="Git commit mismatch"):
+        run_experiments(
+            output_dir=str(tmp_path),
+            group="ablation",
+            dataset_filter="14_bus",
+            resume=True,
+            force_resume=False,
+            timeout=5.0,
+        )
+
+    # With force_resume=True, it should proceed (and skip the existing optimal task)
+    run_experiments(
+        output_dir=str(tmp_path),
+        group="ablation",
+        dataset_filter="14_bus",
+        resume=True,
+        force_resume=True,
+        timeout=5.0,
+    )
+
+def test_resume_and_retry_failed_behavior(tmp_path):
+    from experiments.run_experiments import load_existing_runs, get_canonical_key
+
+    runs_file = tmp_path / "runs.jsonl"
+    opt_rec = {
+        "dataset": "14_bus",
+        "N": 14,
+        "num_edges": 20,
+        "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        "solver": "cadical195",
+        "status": "OPTIMAL",
+        "best_ub": 3,
+        "solve_time": 0.01,
+        "groups": ["ablation"],
+        "rep": 1,
+    }
+    timeout_rec = {
+        "dataset": "14_bus",
+        "N": 14,
+        "num_edges": 20,
+        "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+        "solver": "cadical195",
+        "status": "TIMEOUT",
+        "best_ub": -1,
+        "solve_time": 600.0,
+        "groups": ["ablation"],
+        "rep": 1,
+    }
+    sl_rec = {
+        "dataset": "494_bus",
+        "N": 494,
+        "num_edges": 580,
+        "config": {},
+        "solver": "cplex",
+        "status": "SIZE_LIMIT",
+        "best_ub": -1,
+        "solve_time": 0.1,
+        "groups": ["methods"],
+        "rep": 1,
+    }
+    with open(runs_file, "w") as f:
+        f.write(json.dumps(opt_rec) + "\n")
+        f.write(json.dumps(timeout_rec) + "\n")
+        f.write(json.dumps(sl_rec) + "\n")
+
+    # Behavior 1: Default resume (retry_failed=False) retains all records (all skipped)
+    loaded_default = load_existing_runs(str(runs_file), retry_failed=False)
+    assert len(loaded_default) == 3
+    assert (get_canonical_key(opt_rec), 1) in loaded_default
+    assert (get_canonical_key(timeout_rec), 1) in loaded_default
+    assert (get_canonical_key(sl_rec), 1) in loaded_default
+
+    # Behavior 2: With retry_failed=True, TIMEOUT is omitted so it will be retried
+    loaded_retry = load_existing_runs(str(runs_file), retry_failed=True)
+    assert len(loaded_retry) == 2
+    assert (get_canonical_key(opt_rec), 1) in loaded_retry
+    assert (get_canonical_key(sl_rec), 1) in loaded_retry
+    assert (get_canonical_key(timeout_rec), 1) not in loaded_retry
