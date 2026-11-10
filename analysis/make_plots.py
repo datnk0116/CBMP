@@ -248,7 +248,11 @@ def main():
         return
 
     # Cross-validation
-    cross_validate_optima(records)
+    try:
+        cross_validate_optima(records)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # 1. Cactus plots for groups
     plot_cactus(

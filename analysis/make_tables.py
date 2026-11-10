@@ -168,38 +168,62 @@ def load_records(jsonl_source=None):
 
     return aggregate_repetitions(raw_records)
 
-def cross_validate_optima(records):
+def cross_validate_optima(records, output_dirs=("analysis/tables", "results/tables")):
     """
     Cross-validation check:
     For every instance where >= 2 methods/solvers solved to OPTIMAL,
     assert that their best_ub are strictly identical.
+    Exports cross_validation.csv to output_dirs.
+    Raises ValueError if conflicting optima are detected.
     """
     by_dataset = {}
     for r in records:
         if r.get("status") == "OPTIMAL":
             ds = r.get("dataset")
             ub = r.get("best_ub")
-            solver_or_method = r.get("solver")
-            by_dataset.setdefault(ds, []).append((solver_or_method, ub, r.get("groups", [])))
+            sol = r.get("solver") or r.get("method") or "unknown"
+            grps = ",".join(r.get("groups", [])) if isinstance(r.get("groups"), list) else str(r.get("groups", ""))
+            by_dataset.setdefault(ds, []).append({
+                "dataset": ds,
+                "solver_or_method": sol,
+                "groups": grps,
+                "best_ub": ub,
+            })
 
+    compared_rows = []
     mismatches = []
-    for ds, results in by_dataset.items():
-        unique_ubs = set(ub for _, ub, _ in results)
-        if len(unique_ubs) > 1:
-            mismatches.append((ds, results))
+    for ds, items in by_dataset.items():
+        if len(items) >= 2:
+            unique_ubs = set(item["best_ub"] for item in items if item["best_ub"] is not None)
+            is_agreed = (len(unique_ubs) == 1)
+            for item in items:
+                row = dict(item)
+                row["agreed"] = is_agreed
+                compared_rows.append(row)
+            if not is_agreed:
+                mismatches.append((ds, items))
+
+    df_cv = pd.DataFrame(compared_rows, columns=["dataset", "solver_or_method", "groups", "best_ub", "agreed"])
+    if output_dirs:
+        for out_dir in output_dirs:
+            os.makedirs(out_dir, exist_ok=True)
+            csv_path = os.path.join(out_dir, "cross_validation.csv")
+            df_cv.to_csv(csv_path, index=False)
+            print(f"Cross-validation table saved: {csv_path}")
 
     if mismatches:
         print("\n" + "!" * 80)
         print("[CROSS-VALIDATION FAILED] Conflicting optimal solutions detected:")
         for ds, results in mismatches:
             print(f"  Dataset '{ds}':")
-            for sol, ub, grps in results:
-                print(f"    - {sol} ({grps}): best_ub = {ub}")
+            for item in results:
+                print(f"    - {item['solver_or_method']} ({item['groups']}): best_ub = {item['best_ub']}")
         print("!" * 80 + "\n")
         raise ValueError(f"Cross-validation failed: conflicting optima on {len(mismatches)} dataset(s).")
     else:
-        total_checked = sum(len(v) for v in by_dataset.values())
-        print(f"[CROSS-VALIDATION PASSED] Verified {total_checked} optimal runs across {len(by_dataset)} dataset(s). All optima match identically.")
+        num_compared_datasets = sum(1 for ds, items in by_dataset.items() if len(items) >= 2)
+        total_checked = len(compared_rows)
+        print(f"[CROSS-VALIDATION PASSED] Verified {total_checked} optimal runs across {num_compared_datasets} dataset(s) with >= 2 optimal solutions. All optima match identically.")
 
 def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_total=None):
     """Format single cell according to required status representations."""
@@ -341,7 +365,7 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("a
     print(f"Table saved: {base_filename}.csv and {base_filename}.tex in {output_dirs[0]}/")
     return full_df
 
-def make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs"):
+def make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs", output_dirs=("analysis/tables", "results/tables")):
     """Generate Ablation study table for a specific ablation group."""
     ablation_recs = [
         r for r in records
@@ -372,7 +396,7 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
     meta = {}
     for r in ablation_recs:
         ds = r["dataset"]
-        meta[ds] = (r["N"], r["num_edges"])
+        meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
         var = get_var_name(r.get("config", {}))
         data_by_ds.setdefault(ds, {})[var] = r
 
@@ -415,9 +439,9 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         ("Speedup (geom)", sum_spdup),
     ])
 
-    export_table(df_display, summary, title, base_filename)
+    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs)
 
-def make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)"):
+def make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=("analysis/tables", "results/tables")):
     """Generate Solvers comparison table for a specific solvers group."""
     solver_recs = [
         r for r in records
@@ -432,7 +456,7 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
     meta = {}
     for r in solver_recs:
         ds = r["dataset"]
-        meta[ds] = (r["N"], r["num_edges"])
+        meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
         sol = r["solver"].lower()
         data_by_ds.setdefault(ds, {})[sol] = r
 
@@ -475,9 +499,9 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
         ("Speedup (geom)", sum_spdup),
     ])
 
-    export_table(df_display, summary, title, base_filename)
+    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs)
 
-def make_table_methods(records):
+def make_table_methods(records, output_dirs=("analysis/tables", "results/tables")):
     """Generate Methods comparison table (SAT vs CP-SAT vs CPLEX)."""
     method_recs = [r for r in records if "methods" in r.get("groups", [])]
     if not method_recs:
@@ -489,7 +513,7 @@ def make_table_methods(records):
     meta = {}
     for r in method_recs:
         ds = r["dataset"]
-        meta[ds] = (r["N"], r["num_edges"])
+        meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
         sol = r["solver"].lower()
         if sol in ("cp_sat", "cpsat"):
             m = "cpsat"
@@ -536,7 +560,7 @@ def make_table_methods(records):
     ]
 
     note = "Note: SL = Size Limit (exceeded CPLEX Community Edition limits, excluded from PAR2)."
-    export_table(df_display, summary, "Comparison of Methods: SAT vs CP-SAT vs CPLEX", "table_methods", note=note)
+    export_table(df_display, summary, "Comparison of Methods: SAT vs CP-SAT vs CPLEX", "table_methods", output_dirs=output_dirs, note=note)
 
 def main():
     print("=" * 70)
@@ -544,20 +568,26 @@ def main():
     print("=" * 70)
 
     input_file = sys.argv[1] if len(sys.argv) > 1 else None
+    output_dir = sys.argv[2] if len(sys.argv) > 2 else None
+    output_dirs = (output_dir,) if output_dir else ("analysis/tables", "results/tables")
     records = load_records(input_file)
     if not records:
         print("No records found to analyze. Please run experiments first.")
         return
 
     # Step 1: Cross-validation check
-    cross_validate_optima(records)
+    try:
+        cross_validate_optima(records, output_dirs=output_dirs)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Step 2: Make tables
-    make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs")
-    make_table_ablation(records, group_name="ablation_medium", base_filename="table_ablation_medium", title="Ablation Study: Medium Graph (662_bus_n60)")
-    make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)")
-    make_table_solvers(records, group_name="solvers_medium", base_filename="table_solvers_medium", title="SAT Solver Performance Comparison (Medium Graphs)")
-    make_table_methods(records)
+    make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs", output_dirs=output_dirs)
+    make_table_ablation(records, group_name="ablation_medium", base_filename="table_ablation_medium", title="Ablation Study: Medium Graph (662_bus_n60)", output_dirs=output_dirs)
+    make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=output_dirs)
+    make_table_solvers(records, group_name="solvers_medium", base_filename="table_solvers_medium", title="SAT Solver Performance Comparison (Medium Graphs)", output_dirs=output_dirs)
+    make_table_methods(records, output_dirs=output_dirs)
 
     print("\nAll tables generated successfully!")
 

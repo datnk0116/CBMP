@@ -1,5 +1,6 @@
 import pytest
 import os
+import sys
 import json
 import yaml
 import numpy as np
@@ -213,20 +214,55 @@ def test_aggregate_repetitions():
     assert r["status"] == "OPTIMAL"
     assert r["best_ub"] == 3
 
-def test_cross_validation_pass_and_fail():
+def test_cross_validation_pass_and_fail(tmp_path):
+    out_dir = str(tmp_path / "tables")
     matching_records = [
         {"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
         {"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
         {"dataset": "g2", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 5, "groups": ["solvers"]},
     ]
-    cross_validate_optima(matching_records)
+    cross_validate_optima(matching_records, output_dirs=[out_dir])
+    csv_file = os.path.join(out_dir, "cross_validation.csv")
+    assert os.path.isfile(csv_file)
+    import pandas as pd
+    df_match = pd.read_csv(csv_file)
+    assert len(df_match) == 2
+    assert all(df_match["agreed"] == True)
 
     conflicting_records = [
         {"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
         {"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 4, "groups": ["solvers"]},
     ]
     with pytest.raises(ValueError, match="conflicting optima"):
-        cross_validate_optima(conflicting_records)
+        cross_validate_optima(conflicting_records, output_dirs=[out_dir])
+    assert os.path.isfile(csv_file)
+    df_conflict = pd.read_csv(csv_file)
+    assert len(df_conflict) == 2
+    assert all(df_conflict["agreed"] == False)
+
+def test_cross_validation_cli_exit_code(tmp_path):
+    import subprocess
+    import json
+
+    out_dir = str(tmp_path / "tables")
+
+    # Matching jsonl -> exit code 0
+    match_file = tmp_path / "match.jsonl"
+    with open(match_file, "w") as f:
+        f.write(json.dumps({"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]}) + "\n")
+        f.write(json.dumps({"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]}) + "\n")
+    res_ok = subprocess.run([sys.executable, "analysis/make_tables.py", str(match_file), out_dir], capture_output=True, text=True)
+    assert res_ok.returncode == 0
+    assert os.path.isfile(os.path.join(out_dir, "cross_validation.csv"))
+
+    # Conflicting jsonl -> exit code != 0
+    conflict_file = tmp_path / "conflict.jsonl"
+    with open(conflict_file, "w") as f:
+        f.write(json.dumps({"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]}) + "\n")
+        f.write(json.dumps({"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 4, "groups": ["solvers"]}) + "\n")
+    res_err = subprocess.run([sys.executable, "analysis/make_tables.py", str(conflict_file), out_dir], capture_output=True, text=True)
+    assert res_err.returncode != 0
+    assert "conflicting optima" in res_err.stderr.lower() or "conflicting optima" in res_err.stdout.lower()
 
 def test_canonical_key_consistency():
     rec_sat = {
