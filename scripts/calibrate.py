@@ -78,9 +78,9 @@ def run_calibration(datasets=DATASETS, timeout=120.0, output_dir="calibration"):
     csv_path = os.path.join(output_dir, "calibration.csv")
 
     results = []
-    print("=" * 95)
-    print(f"{'Dataset':<16} | {'N':>4} | {'|E|':>5} | {'Status':<8} | {'Best UB':>7} | {'Time (s)':>9} | {'Clauses':>9} | {'RAM (MB)':>8}")
-    print("-" * 95)
+    print("=" * 115)
+    print(f"{'Dataset':<16} | {'N':>4} | {'|E|':>5} | {'Status':<8} | {'Best UB':>7} | {'Last UB':>7} | {'Iters':>5} | {'Time (s)':>9} | {'Clauses':>9} | {'RAM (MB)':>8}")
+    print("-" * 115)
 
     for ds in datasets:
         n, m = get_graph_meta(ds)
@@ -140,12 +140,19 @@ def run_calibration(datasets=DATASETS, timeout=120.0, output_dir="calibration"):
             best_ub = -1
             solve_time = wall_time
             num_clauses = 0
+            n_sat_iterations = 0
         else:
             status = record.get("status", "UNKNOWN")
             best_ub = record.get("best_ub", -1)
-            solve_time = record.get("solve_time", wall_time)
+            # For TIMEOUT rows, solve_time records wall time (~120s)
+            if status == "TIMEOUT":
+                solve_time = wall_time
+            else:
+                solve_time = record.get("solve_time", wall_time)
             num_clauses = record.get("num_clauses", 0)
+            n_sat_iterations = record.get("num_iterations", len(record.get("per_iter_times", [])))
 
+        last_iter_ub = best_ub
         peak_ram_mb = round(max_mem_box[0] / 1024, 2)
 
         res_entry = {
@@ -154,6 +161,8 @@ def run_calibration(datasets=DATASETS, timeout=120.0, output_dir="calibration"):
             "num_edges": m,
             "status": status,
             "best_ub": best_ub,
+            "last_iter_ub": last_iter_ub,
+            "n_sat_iterations": n_sat_iterations,
             "solve_time": solve_time,
             "wall_time": wall_time,
             "num_clauses": num_clauses,
@@ -166,16 +175,17 @@ def run_calibration(datasets=DATASETS, timeout=120.0, output_dir="calibration"):
 
         clauses_str = f"{num_clauses:,}" if num_clauses else "-"
         ub_str = str(best_ub) if best_ub is not None and best_ub >= 0 else "-"
-        print(f"{ds:<16} | {n:>4} | {m:>5} | {status:<8} | {ub_str:>7} | {solve_time:>9.3f} | {clauses_str:>9} | {peak_ram_mb:>8.1f}")
+        last_ub_str = str(last_iter_ub) if last_iter_ub is not None and last_iter_ub >= 0 else "-"
+        print(f"{ds:<16} | {n:>4} | {m:>5} | {status:<8} | {ub_str:>7} | {last_ub_str:>7} | {n_sat_iterations:>5} | {solve_time:>9.3f} | {clauses_str:>9} | {peak_ram_mb:>8.1f}")
         sys.stdout.flush()
 
     # Write CSV summary
     with open(csv_path, "w", encoding="utf-8") as f:
-        f.write("dataset,N,num_edges,status,best_ub,solve_time,wall_time,num_clauses,peak_ram_mb\n")
+        f.write("dataset,N,num_edges,status,best_ub,last_iter_ub,n_sat_iterations,solve_time,wall_time,num_clauses,peak_ram_mb\n")
         for r in results:
-            f.write(f"{r['dataset']},{r['N']},{r['num_edges']},{r['status']},{r['best_ub']},{r['solve_time']:.4f},{r['wall_time']:.4f},{r['num_clauses']},{r['peak_ram_mb']}\n")
+            f.write(f"{r['dataset']},{r['N']},{r['num_edges']},{r['status']},{r['best_ub']},{r['last_iter_ub']},{r['n_sat_iterations']},{r['solve_time']:.4f},{r['wall_time']:.4f},{r['num_clauses']},{r['peak_ram_mb']}\n")
 
-    print("=" * 95)
+    print("=" * 115)
     print(f"Calibration completed! Results saved to {jsonl_path} and {csv_path}\n")
     return results
 
