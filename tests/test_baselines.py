@@ -25,6 +25,7 @@ def test_cpsat_matches_bruteforce(name, N, edges):
 
 @pytest.mark.parametrize("name, N, edges", TEST_GRAPHS)
 def test_cplex_matches_bruteforce(name, N, edges):
+    pytest.importorskip("cplex")
     expected = cyclic_bandwidth_bruteforce(N, edges)
     actual, stats = solve_cplex(N=N, edges=edges, timeout=10.0, verbose=False)
     assert actual == expected
@@ -32,6 +33,7 @@ def test_cplex_matches_bruteforce(name, N, edges):
     assert stats["solver"] == "cplex"
 
 def test_cplex_timeout_with_incumbent():
+    pytest.importorskip("cplex")
     import random
     random.seed(42)
     N = 12
@@ -46,6 +48,25 @@ def test_cplex_timeout_with_incumbent():
     assert res == stats["best_ub"]
 
 def test_cplex_size_limit_handling():
+    pytest.importorskip("cplex")
+    from docplex.mp.model import Model
+    import docplex.mp.utils as utils
+
+    # Check if Community Edition limits (1000 vars/constraints) are present
+    m_probe = Model("probe_community_limit")
+    xs = [m_probe.binary_var(name=f"x_{i}") for i in range(1005)]
+    m_probe.maximize(m_probe.sum(xs))
+    is_community = False
+    try:
+        m_probe.solve(log_output=False)
+    except utils.DOcplexLimitsExceeded:
+        is_community = True
+    except Exception:
+        pass
+
+    if not is_community:
+        pytest.skip("Full CPLEX edition detected (Community Edition 1000 size limit not active)")
+
     # 30_bus has 1018 variables, exceeding the 1000 limit of Community Edition
     res, stats = solve_cplex(dataset="30_bus", timeout=5.0, verbose=False)
     assert stats["status"] == "SIZE_LIMIT"
