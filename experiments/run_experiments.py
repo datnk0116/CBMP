@@ -54,7 +54,14 @@ def discover_datasets(dataset_dir="datasets", min_n=1, max_n=None, allowed_names
     discovered.sort(key=lambda d: (d["N"], d["name"]))
     return discovered
 
-def collect_environment_info(output_path="results/env.json"):
+def get_git_commit_hash():
+    """Retrieve current git commit hash."""
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return "unknown"
+
+def collect_environment_info(output_path="results/env.json", timeout=None, config_path=None, record_metadata=False):
     """Collect hardware and software environment details."""
     info = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -65,6 +72,13 @@ def collect_environment_info(output_path="results/env.json"):
         "python_version": sys.version.split()[0],
         "cpu_count": os.cpu_count(),
     }
+
+    if record_metadata:
+        info["git_commit"] = get_git_commit_hash()
+        if timeout is not None:
+            info["timeout"] = timeout
+        if config_path is not None:
+            info["config_path"] = os.path.abspath(config_path)
 
     # CPU model
     try:
@@ -149,6 +163,8 @@ def load_existing_runs(runs_jsonl_path):
                     continue
                 try:
                     data = json.loads(line)
+                    if data.get("_type") == "metadata" or "dataset" not in data:
+                        continue
                     key = get_canonical_key(data)
                     rep = int(data.get("rep", 1))
                     completed[(key, rep)] = data
@@ -507,13 +523,23 @@ def run_experiments(
     resume=False,
     dry_run=False,
     output_dir="results",
+    record_metadata=False,
 ):
+    from scripts.check_datasets import validate_datasets
+
     # 1. Load config
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     defaults = config.get("defaults", {})
     dataset_dir = defaults.get("dataset_dir", "datasets")
+
+    # 1b. Validate datasets referenced in config
+    try:
+        validate_datasets(config_path=config_path, dataset_dir=dataset_dir)
+    except FileNotFoundError as e:
+        print(f"[ERROR] Dataset validation failed:\n{e}", file=sys.stderr)
+        sys.exit(1)
 
     # 2. Discover all available datasets in dataset_dir
     all_datasets = discover_datasets(dataset_dir=dataset_dir, min_n=1, max_n=None, allowed_names=None)
@@ -524,7 +550,13 @@ def run_experiments(
     # 3. Environment info
     os.makedirs(output_dir, exist_ok=True)
     env_file = os.path.join(output_dir, "env.json")
-    collect_environment_info(env_file)
+    effective_timeout = timeout if timeout is not None else defaults.get("timeout", 600)
+    collect_environment_info(
+        output_path=env_file,
+        timeout=effective_timeout,
+        config_path=config_path,
+        record_metadata=record_metadata,
+    )
 
     # 4. Build deduplicated execution plan
     plan, group_stats = build_experiment_plan(
@@ -572,6 +604,17 @@ def run_experiments(
 
     # 6. Sequential execution
     runs_file = os.path.join(output_dir, "runs.jsonl")
+    if record_metadata and not os.path.exists(runs_file):
+        meta_header = {
+            "_type": "metadata",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "git_commit": get_git_commit_hash(),
+            "config_path": os.path.abspath(config_path),
+            "timeout": effective_timeout,
+        }
+        with open(runs_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(meta_header) + "\n")
+
     existing_runs = load_existing_runs(runs_file) if resume else {}
 
     # Build execution queue: (task, rep, rep_groups)
@@ -711,6 +754,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume", action="store_true", help="skip combinations already recorded in runs.jsonl")
     parser.add_argument("--dry-run", action="store_true", help="list planned runs without executing")
     parser.add_argument("--output-dir", type=str, default="results", help="directory to store results")
+    parser.add_argument("--record-metadata", action="store_true", default=False, help="record timeout, git commit hash, and config path into results/env.json and runs.jsonl header")
     args = parser.parse_args()
 
     run_experiments(
@@ -724,4 +768,5 @@ if __name__ == "__main__":
         resume=args.resume,
         dry_run=args.dry_run,
         output_dir=args.output_dir,
+        record_metadata=args.record_metadata,
     )

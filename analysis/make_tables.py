@@ -116,6 +116,8 @@ def load_records(jsonl_source=None):
                     continue
                 try:
                     data = json.loads(line)
+                    if data.get("_type") == "metadata" or "dataset" not in data:
+                        continue
                     if "groups" not in data or not isinstance(data["groups"], list):
                         data["groups"] = [data.get("_group", group_name)]
                     if "rep" not in data:
