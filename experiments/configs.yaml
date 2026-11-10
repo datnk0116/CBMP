@@ -16,16 +16,36 @@ groups:
     heuristic_ub: true
     timeout: 600
 
-  solvers:
-    description: "Fixed best symmetry & heuristic configuration, varying SAT solvers"
+  solvers_small:
+    description: "SAT solvers comparison on small graphs (N <= 40)"
     datasets:
       - "14_bus"
       - "30_bus"
-    max_n: 200
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 5
+    timeout: 600
     sb_rotation: true
     sb_reflection: true
     heuristic_ub: true
+    solvers:
+      - "cadical195"
+      - "glucose4"
+      - "maplechrono"
+      - "minisat22"
+      - "lingeling"
+
+  solvers_medium:
+    description: "SAT solvers comparison on medium graphs (N=60, 80)"
+    datasets:
+      - "494_bus_n60"
+      - "662_bus_n60"
+      - "662_bus_n80"
+    repetitions: 1
     timeout: 600
+    sb_rotation: true
+    sb_reflection: true
+    heuristic_ub: true
     solvers:
       - "cadical195"
       - "glucose4"
@@ -34,8 +54,16 @@ groups:
       - "lingeling"
 
   methods:
-    description: "Comparison of methods: Best SAT vs OR-Tools CP-SAT vs CPLEX MIP"
-    datasets: "all"
+    description: "Comparison of methods: Best SAT vs OR-Tools CP-SAT vs CPLEX MIP on small and medium graphs"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+      - "494_bus_n60"
+      - "662_bus_n60"
+      - "662_bus_n80"
+    repetitions: 1
     timeout: 600
     methods:
       - name: "sat_best"
@@ -50,13 +78,43 @@ groups:
       - name: "cplex"
         type: "cplex"
 
-  ablation:
-    description: "Ablation study on symmetry breaking and heuristic initial upper bound"
+  ablation_small:
+    description: "Ablation study on small graphs (N <= 40)"
     datasets:
       - "14_bus"
       - "30_bus"
-    max_n: 200
-    repetitions: 3
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 5
+    solver: "cadical195"
+    timeout: 600
+    variants:
+      - name: "none"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation"
+        sb_rotation: true
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation_reflection"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: false
+      - name: "heuristic_ub"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: true
+      - name: "all"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+
+  ablation_medium:
+    description: "Ablation study on boundary medium graph (662_bus_n60)"
+    datasets:
+      - "662_bus_n60"
+    repetitions: 1
     solver: "cadical195"
     timeout: 600
     variants:

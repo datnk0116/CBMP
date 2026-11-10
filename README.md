@@ -118,7 +118,7 @@ Nếu thiếu file (ví dụ chưa có `14_bus.mtx`), script sẽ báo lỗi rõ
 
 ## 5. Chạy thực nghiệm (Running Experiments)
 
-File cấu hình tại `experiments/configs.yaml` định nghĩa 4 nhóm thực nghiệm. Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình.
+File cấu hình tại `experiments/configs.yaml` định nghĩa 6 nhóm thực nghiệm. Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình.
 
 ### Xem trước kế hoạch chạy (Dry Run)
 ```bash
@@ -131,14 +131,20 @@ python experiments/run_experiments.py --dry-run
 # 1. Nhóm per_dataset (Cấu hình SAT tốt nhất trên toàn bộ dataset)
 python experiments/run_experiments.py --group per_dataset --timeout 600
 
-# 2. Nhóm solvers (So sánh các SAT solver khác nhau)
-python experiments/run_experiments.py --group solvers --timeout 600
+# 2. Nhóm solvers_small (So sánh các SAT solver trên đồ thị nhỏ: N <= 40, 5 reps)
+python experiments/run_experiments.py --group solvers_small --timeout 600
 
-# 3. Nhóm methods (So sánh SAT vs OR-Tools CP-SAT vs IBM CPLEX)
+# 3. Nhóm solvers_medium (So sánh các SAT solver trên đồ thị trung bình: N = 60, 80, 1 rep)
+python experiments/run_experiments.py --group solvers_medium --timeout 600
+
+# 4. Nhóm methods (So sánh SAT vs OR-Tools CP-SAT vs IBM CPLEX trên đồ thị nhỏ & trung bình)
 python experiments/run_experiments.py --group methods --timeout 600
 
-# 4. Nhóm ablation (Đánh giá đóng góp của từng thành phần: quay, phản xạ, heuristic)
-python experiments/run_experiments.py --group ablation --timeout 600
+# 5. Nhóm ablation_small (Đánh giá đóng góp quay, phản xạ, heuristic trên đồ thị nhỏ, 5 reps)
+python experiments/run_experiments.py --group ablation_small --timeout 600
+
+# 6. Nhóm ablation_medium (Đánh giá ablation trên đồ thị biên trung bình 662_bus_n60, 1 rep)
+python experiments/run_experiments.py --group ablation_medium --timeout 600
 
 # Chạy kèm cờ resume (mặc định chỉ bỏ qua các record đã chạy trong runs.jsonl)
 python experiments/run_experiments.py --group all --resume
@@ -177,9 +183,10 @@ python analysis/make_tables.py results/runs.jsonl
 python analysis/make_plots.py results/runs.jsonl
 ```
 
-- Bảng `table_ablation`: Đánh giá tác động của phá đối xứng quay, đối xứng gương và heuristic khởi tạo.
-- Bảng `table_solvers`: So sánh thời gian và tỷ lệ giải được của các solver SAT.
-- Bảng `table_methods`: So sánh SAT với CP-SAT và CPLEX. Trường hợp CPLEX chạm ngưỡng Community Edition (<= 1000 biến/ràng buộc) được đánh dấu riêng bằng mã **SL** (Size Limit), tách biệt khỏi PAR2 và được chú thích dưới bảng.
+- Bảng `table_ablation_small` & `table_ablation_medium`: Đánh giá tác động của phá đối xứng quay, đối xứng gương và heuristic khởi tạo (tách riêng đồ thị nhỏ và trung bình).
+- Bảng `table_solvers_small` & `table_solvers_medium`: So sánh thời gian và tỷ lệ giải được của các solver SAT trên đồ thị nhỏ và trung bình.
+- Bảng `table_methods`: So sánh SAT với CP-SAT và CPLEX trên 7 instance (nhỏ + trung bình). Trường hợp CPLEX chạm ngưỡng Community Edition (<= 1000 biến/ràng buộc) được đánh dấu riêng bằng mã **SL** (Size Limit), tách biệt khỏi PAR2 và được chú thích dưới bảng.
+- Bảng `cross_validation.csv`: Đối chiếu nghiệm tối ưu `best_ub` giữa tất cả solver/method cùng đạt trạng thái OPTIMAL trên cùng dataset. Báo lỗi và dừng nếu phát hiện mâu thuẫn.
 
 ---
 

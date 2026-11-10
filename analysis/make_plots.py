@@ -52,7 +52,11 @@ def plot_cactus(records, group_name, category_key, title, base_filename):
     """
     Plots cumulative solved instances over solve time (Cactus plot).
     """
-    recs = [r for r in records if group_name in r.get("groups", []) and r.get("status") == "OPTIMAL"]
+    recs = [
+        r for r in records
+        if (group_name in r.get("groups", []) or (group_name == "solvers_small" and "solvers" in r.get("groups", [])) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+        and r.get("status") == "OPTIMAL"
+    ]
     if not recs:
         return
 
@@ -80,11 +84,15 @@ def plot_cactus(records, group_name, category_key, title, base_filename):
 
     save_fig(fig, base_filename)
 
-def plot_scatter_sb_vs_nosb(records):
+def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename="scatter_sb_vs_nosb_small", title="Solve Time: No Symmetry Breaking vs With Symmetry Breaking (Small Graphs)"):
     """
     Log-log scatter plot comparing solve time with vs without symmetry breaking.
     """
-    ablation_recs = [r for r in records if "ablation" in r.get("groups", []) and r.get("status") == "OPTIMAL"]
+    ablation_recs = [
+        r for r in records
+        if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+        and r.get("status") == "OPTIMAL"
+    ]
     if not ablation_recs:
         return
 
@@ -131,19 +139,23 @@ def plot_scatter_sb_vs_nosb(records):
     ax.set_xlim([min_val, max_val])
     ax.set_ylim([min_val, max_val])
 
-    ax.set_title("Solve Time: No Symmetry Breaking vs With Symmetry Breaking", pad=10, fontweight="bold")
+    ax.set_title(title, pad=10, fontweight="bold")
     ax.set_xlabel("Solve Time without Symmetry Breaking (s) [log scale]")
     ax.set_ylabel("Solve Time with Symmetry Breaking (s) [log scale]")
     ax.grid(True, which="both", linestyle="--", alpha=0.5)
     ax.legend(frameon=True, loc="upper left")
 
-    save_fig(fig, "scatter_sb_vs_nosb")
+    save_fig(fig, base_filename)
 
-def plot_ablation_median_time(records):
+def plot_ablation_median_time(records, group_name="ablation_small", base_filename="ablation_median_time_small", title="Ablation Study: Median Solve Time Across Configurations (Small Graphs)"):
     """
     Bar chart showing median solve time per configuration.
     """
-    ablation_recs = [r for r in records if "ablation" in r.get("groups", []) and r.get("status") == "OPTIMAL"]
+    ablation_recs = [
+        r for r in records
+        if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+        and r.get("status") == "OPTIMAL"
+    ]
     if not ablation_recs:
         return
 
@@ -164,18 +176,22 @@ def plot_ablation_median_time(records):
     for bar, val in zip(bars, medians):
         ax.text(bar.get_x() + bar.get_width() / 2, val + (max(medians) * 0.02 if medians else 0.01), f"{val:.4f}s", ha="center", va="bottom", fontsize=9, fontweight="bold")
 
-    ax.set_title("Ablation Study: Median Solve Time Across Configurations", pad=10, fontweight="bold")
+    ax.set_title(title, pad=10, fontweight="bold")
     ax.set_ylabel("Median Solve Time (seconds)")
     ax.set_ylim([0, max(medians) * 1.15 if any(medians) else 1.0])
     ax.grid(axis="y", linestyle="--", alpha=0.5)
 
-    save_fig(fig, "ablation_median_time")
+    save_fig(fig, base_filename)
 
-def plot_ablation_iterations_and_unsat(records):
+def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)"):
     """
     Plots number of SAT iterations and time spent on the final UNSAT iteration.
     """
-    ablation_recs = [r for r in records if "ablation" in r.get("groups", []) and r.get("status") == "OPTIMAL"]
+    ablation_recs = [
+        r for r in records
+        if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+        and r.get("status") == "OPTIMAL"
+    ]
     if not ablation_recs:
         return
 
@@ -214,9 +230,9 @@ def plot_ablation_iterations_and_unsat(records):
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
     ax2.tick_params(axis="x", rotation=15)
 
-    fig.suptitle("Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time", fontsize=13, fontweight="bold")
+    fig.suptitle(title, fontsize=13, fontweight="bold")
 
-    save_fig(fig, "ablation_iterations_and_unsat")
+    save_fig(fig, base_filename)
 
 def main():
     print("=" * 70)
@@ -234,39 +250,55 @@ def main():
     # Cross-validation
     cross_validate_optima(records)
 
-    # 1. Cactus plots for groups B, C, D
+    # 1. Cactus plots for groups
     plot_cactus(
         records,
-        group_name="solvers",
+        group_name="solvers_small",
         category_key=lambda r: r.get("solver", "unknown"),
-        title="Cactus Plot: Solvers (Group B)",
-        base_filename="cactus_solvers",
+        title="Cactus Plot: Solvers (Small Graphs)",
+        base_filename="cactus_solvers_small",
+    )
+    plot_cactus(
+        records,
+        group_name="solvers_medium",
+        category_key=lambda r: r.get("solver", "unknown"),
+        title="Cactus Plot: Solvers (Medium Graphs)",
+        base_filename="cactus_solvers_medium",
     )
 
     plot_cactus(
         records,
         group_name="methods",
         category_key=lambda r: "cpsat" if r.get("solver", "").lower() in ("cp_sat", "cpsat") else ("cplex" if r.get("solver", "").lower() == "cplex" else f"sat ({r.get('solver')})"),
-        title="Cactus Plot: Methods Comparison (Group C)",
+        title="Cactus Plot: Methods Comparison",
         base_filename="cactus_methods",
     )
 
     plot_cactus(
         records,
-        group_name="ablation",
+        group_name="ablation_small",
         category_key=lambda r: get_ablation_var_name(r.get("config", {})),
-        title="Cactus Plot: Ablation (Group D)",
-        base_filename="cactus_ablation",
+        title="Cactus Plot: Ablation (Small Graphs)",
+        base_filename="cactus_ablation_small",
+    )
+    plot_cactus(
+        records,
+        group_name="ablation_medium",
+        category_key=lambda r: get_ablation_var_name(r.get("config", {})),
+        title="Cactus Plot: Ablation (Medium Graph)",
+        base_filename="cactus_ablation_medium",
     )
 
     # 2. Scatter log-log
-    plot_scatter_sb_vs_nosb(records)
+    plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename="scatter_sb_vs_nosb_small", title="Solve Time: No Symmetry Breaking vs With Symmetry Breaking (Small Graphs)")
 
     # 3. Ablation median time bar chart
-    plot_ablation_median_time(records)
+    plot_ablation_median_time(records, group_name="ablation_small", base_filename="ablation_median_time_small", title="Ablation Study: Median Solve Time Across Configurations (Small Graphs)")
+    plot_ablation_median_time(records, group_name="ablation_medium", base_filename="ablation_median_time_medium", title="Ablation Study: Solve Time Across Configurations (662_bus_n60)")
 
     # 4. Iterations & UNSAT time
-    plot_ablation_iterations_and_unsat(records)
+    plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)")
+    plot_ablation_iterations_and_unsat(records, group_name="ablation_medium", base_filename="ablation_iterations_and_unsat_medium", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (662_bus_n60)")
 
     print("\nAll figures generated successfully in analysis/figures/ and results/figures/!")
 

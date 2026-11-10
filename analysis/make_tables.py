@@ -341,12 +341,12 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("a
     print(f"Table saved: {base_filename}.csv and {base_filename}.tex in {output_dirs[0]}/")
     return full_df
 
-    print(f"Table saved: {base_filename}.csv and {base_filename}.tex in {output_dirs[0]}/")
-    return full_df
-
-def make_table_ablation(records):
-    """Generate Ablation study table."""
-    ablation_recs = [r for r in records if "ablation" in r.get("groups", [])]
+def make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs"):
+    """Generate Ablation study table for a specific ablation group."""
+    ablation_recs = [
+        r for r in records
+        if group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", []))
+    ]
     if not ablation_recs:
         return
 
@@ -415,11 +415,14 @@ def make_table_ablation(records):
         ("Speedup (geom)", sum_spdup),
     ])
 
-    export_table(df_display, summary, "Ablation Study: Symmetry Breaking and Initial Upper Bound", "table_ablation")
+    export_table(df_display, summary, title, base_filename)
 
-def make_table_solvers(records):
-    """Generate Solvers comparison table."""
-    solver_recs = [r for r in records if "solvers" in r.get("groups", [])]
+def make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)"):
+    """Generate Solvers comparison table for a specific solvers group."""
+    solver_recs = [
+        r for r in records
+        if group_name in r.get("groups", []) or (group_name == "solvers_small" and "solvers" in r.get("groups", []))
+    ]
     if not solver_recs:
         return
 
@@ -472,7 +475,7 @@ def make_table_solvers(records):
         ("Speedup (geom)", sum_spdup),
     ])
 
-    export_table(df_display, summary, "SAT Solver Performance Comparison", "table_solvers")
+    export_table(df_display, summary, title, base_filename)
 
 def make_table_methods(records):
     """Generate Methods comparison table (SAT vs CP-SAT vs CPLEX)."""
@@ -550,8 +553,10 @@ def main():
     cross_validate_optima(records)
 
     # Step 2: Make tables
-    make_table_ablation(records)
-    make_table_solvers(records)
+    make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs")
+    make_table_ablation(records, group_name="ablation_medium", base_filename="table_ablation_medium", title="Ablation Study: Medium Graph (662_bus_n60)")
+    make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)")
+    make_table_solvers(records, group_name="solvers_medium", base_filename="table_solvers_medium", title="SAT Solver Performance Comparison (Medium Graphs)")
     make_table_methods(records)
 
     print("\nAll tables generated successfully!")

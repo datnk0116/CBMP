@@ -338,7 +338,7 @@ def build_experiment_plan(
                         tasks_map[key]["groups"].append(grp)
                     tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
-        elif grp == "solvers":
+        elif grp == "solvers" or grp.startswith("solvers_"):
             rot = bool(grp_cfg.get("sb_rotation", True))
             ref = bool(grp_cfg.get("sb_reflection", True))
             heur = bool(grp_cfg.get("heuristic_ub", True))
@@ -436,7 +436,7 @@ def build_experiment_plan(
                             tasks_map[key]["groups"].append(grp)
                         tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
-        elif grp == "ablation":
+        elif grp == "ablation" or grp.startswith("ablation_"):
             solver = grp_cfg.get("solver", "cadical195")
             variants = grp_cfg.get("variants", [])
             method = "sat"
@@ -825,7 +825,21 @@ def run_experiments(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CBMP Experiment Runner")
     parser.add_argument("--config", type=str, default="experiments/configs.yaml", help="path to config YAML")
-    parser.add_argument("--group", type=str, default="all", choices=["all", "per_dataset", "solvers", "methods", "ablation"], help="experiment group to run")
+    parser.add_argument(
+        "--group",
+        type=str,
+        default="all",
+        choices=[
+            "all",
+            "per_dataset",
+            "solvers_small",
+            "solvers_medium",
+            "methods",
+            "ablation_small",
+            "ablation_medium",
+        ],
+        help="experiment group to run",
+    )
     parser.add_argument("--timeout", type=float, default=None, help="override timeout in seconds")
     parser.add_argument("--repetitions", type=int, default=None, help="override number of repetitions per configuration")
     parser.add_argument("--min-n", type=int, default=None, help="override minimum N vertices filter")
