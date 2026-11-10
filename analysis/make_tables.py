@@ -33,22 +33,43 @@ def aggregate_repetitions(records):
             aggregated.append(reps[0])
             continue
 
-        # Sort repetitions by solve_time (or wall_time)
-        reps_sorted = sorted(
-            reps,
-            key=lambda x: (
-                0 if x.get("status") == "OPTIMAL" else 1,
-                x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
-            ),
-        )
-        median_idx = len(reps_sorted) // 2
-        rep_chosen = reps_sorted[median_idx]
+        optimal_reps = [r for r in reps if r.get("status") == "OPTIMAL"]
+        statuses = set(r.get("status") for r in reps)
+        is_mixed = len(statuses) > 1
 
-        agg = dict(rep_chosen)
+        if optimal_reps:
+            # If >= 1 rep is OPTIMAL, status is OPTIMAL; median is computed ONLY over OPTIMAL reps
+            reps_sorted = sorted(
+                optimal_reps,
+                key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
+            )
+            median_idx = len(reps_sorted) // 2
+            rep_chosen = reps_sorted[median_idx]
+            agg = dict(rep_chosen)
+            agg["status"] = "OPTIMAL"
+            if is_mixed:
+                agg["mixed"] = True
+                agg["is_mixed"] = True
 
-        solve_times = [r["solve_time"] for r in reps if r.get("solve_time") is not None]
-        wall_times = [r["wall_time"] for r in reps if r.get("wall_time") is not None]
-        encode_times = [r["encode_time"] for r in reps if r.get("encode_time") is not None]
+            solve_times = [r["solve_time"] for r in optimal_reps if r.get("solve_time") is not None]
+            wall_times = [r["wall_time"] for r in optimal_reps if r.get("wall_time") is not None]
+            encode_times = [r["encode_time"] for r in optimal_reps if r.get("encode_time") is not None]
+        else:
+            # No optimal rep: preserve non-optimal status
+            reps_sorted = sorted(
+                reps,
+                key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
+            )
+            median_idx = len(reps_sorted) // 2
+            rep_chosen = reps_sorted[median_idx]
+            agg = dict(rep_chosen)
+            if is_mixed:
+                agg["mixed"] = True
+                agg["is_mixed"] = True
+
+            solve_times = [r["solve_time"] for r in reps if r.get("solve_time") is not None]
+            wall_times = [r["wall_time"] for r in reps if r.get("wall_time") is not None]
+            encode_times = [r["encode_time"] for r in reps if r.get("encode_time") is not None]
 
         if solve_times:
             agg["solve_time"] = float(np.median(solve_times))
@@ -156,10 +177,12 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
     """
     Computes summary rows:
     - Solved count
-    - PAR2 score (solve_time if optimal, else 2 * timeout)
+    - SL (Size limit count)
+    - PAR2 score (solve_time if optimal, else 2 * timeout; SIZE_LIMIT is excluded)
     - Geometric mean speedup relative to baseline_col
     """
     solved_counts = {}
+    sl_counts = {}
     par2_scores = {}
     speedups = {}
 
@@ -172,6 +195,7 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
 
     for col in column_names:
         solved = 0
+        sl_count = 0
         par2_vals = []
         ratios = []
 
@@ -188,11 +212,15 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
                 par2_vals.append(t)
                 if ds in baseline_times and t > 0:
                     ratios.append(baseline_times[ds] / t)
+            elif st == "SIZE_LIMIT":
+                sl_count += 1
+                # SIZE_LIMIT is reported separately in SL and not penalized in PAR2 as timeout
             else:
                 par2_vals.append(2.0 * float(rec_timeout))
 
         solved_counts[col] = solved
-        par2_scores[col] = np.mean(par2_vals) if par2_vals else float("nan")
+        sl_counts[col] = sl_count
+        par2_scores[col] = float(np.mean(par2_vals)) if par2_vals else float("nan")
 
         if col == baseline_col:
             speedups[col] = 1.00
@@ -201,9 +229,9 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
         else:
             speedups[col] = float("nan")
 
-    return solved_counts, par2_scores, speedups
+    return solved_counts, sl_counts, par2_scores, speedups
 
-def export_table(df_display, summary_rows, title, base_filename, output_dirs=("analysis/tables", "results/tables")):
+def export_table(df_display, summary_rows, title, base_filename, output_dirs=("analysis/tables", "results/tables"), note=None):
     """Saves formatted table as both CSV and LaTeX."""
     full_df = df_display.astype(object).copy()
     for row_name, row_data in summary_rows:
@@ -240,8 +268,14 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("a
                 f.write(f"{rname_escaped} & " + " & ".join(vals) + " \\\\\n")
 
             f.write("\\bottomrule\n")
+            if note:
+                total_cols = len(full_df.columns) + 1
+                f.write(f"\\multicolumn{{{total_cols}}}{{l}}{{\\footnotesize {note}}} \\\\\n")
             f.write("\\end{tabular}\n")
             f.write("\\end{table}\n")
+
+    print(f"Table saved: {base_filename}.csv and {base_filename}.tex in {output_dirs[0]}/")
+    return full_df
 
     print(f"Table saved: {base_filename}.csv and {base_filename}.tex in {output_dirs[0]}/")
     return full_df
@@ -295,21 +329,27 @@ def make_table_ablation(records):
                 col_vals.append("-")
         df_display[col] = col_vals
 
-    solved_cnt, par2_val, spdups = compute_summary_stats(df_raw, columns, baseline_col="none")
+    solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, columns, baseline_col="none")
 
     sum_solved = {"N": "-", "|E|": "-"}
+    sum_sl = {"N": "-", "|E|": "-"}
     sum_par2 = {"N": "-", "|E|": "-"}
     sum_spdup = {"N": "-", "|E|": "-"}
     for col in columns:
         sum_solved[col] = str(solved_cnt[col])
-        sum_par2[col] = f"{par2_val[col]:.3f}"
+        sum_sl[col] = str(sl_cnt[col])
+        sum_par2[col] = f"{par2_val[col]:.3f}" if not math.isnan(par2_val[col]) else "-"
         sum_spdup[col] = f"{spdups[col]:.2f}x" if not math.isnan(spdups[col]) else "-"
 
     summary = [
         ("Solved", sum_solved),
+    ]
+    if any(v > 0 for v in sl_cnt.values()):
+        summary.append(("SL", sum_sl))
+    summary.extend([
         ("PAR2 (s)", sum_par2),
         ("Speedup (geom)", sum_spdup),
-    ]
+    ])
 
     export_table(df_display, summary, "Ablation Study: Symmetry Breaking and Initial Upper Bound", "table_ablation")
 
@@ -346,21 +386,27 @@ def make_table_solvers(records):
                 col_vals.append("-")
         df_display[sol] = col_vals
 
-    solved_cnt, par2_val, spdups = compute_summary_stats(df_raw, solvers, baseline_col="cadical195")
+    solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, solvers, baseline_col="cadical195")
 
     sum_solved = {"N": "-", "|E|": "-"}
+    sum_sl = {"N": "-", "|E|": "-"}
     sum_par2 = {"N": "-", "|E|": "-"}
     sum_spdup = {"N": "-", "|E|": "-"}
     for sol in solvers:
         sum_solved[sol] = str(solved_cnt[sol])
-        sum_par2[sol] = f"{par2_val[sol]:.3f}"
+        sum_sl[sol] = str(sl_cnt[sol])
+        sum_par2[sol] = f"{par2_val[sol]:.3f}" if not math.isnan(par2_val[sol]) else "-"
         sum_spdup[sol] = f"{spdups[sol]:.2f}x" if not math.isnan(spdups[sol]) else "-"
 
     summary = [
         ("Solved", sum_solved),
+    ]
+    if any(v > 0 for v in sl_cnt.values()):
+        summary.append(("SL", sum_sl))
+    summary.extend([
         ("PAR2 (s)", sum_par2),
         ("Speedup (geom)", sum_spdup),
-    ]
+    ])
 
     export_table(df_display, summary, "SAT Solver Performance Comparison", "table_solvers")
 
@@ -403,23 +449,27 @@ def make_table_methods(records):
                 col_vals.append("-")
         df_display[m] = col_vals
 
-    solved_cnt, par2_val, spdups = compute_summary_stats(df_raw, methods, baseline_col="sat_best")
+    solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, methods, baseline_col="sat_best")
 
     sum_solved = {"N": "-", "|E|": "-"}
+    sum_sl = {"N": "-", "|E|": "-"}
     sum_par2 = {"N": "-", "|E|": "-"}
     sum_spdup = {"N": "-", "|E|": "-"}
     for m in methods:
         sum_solved[m] = str(solved_cnt[m])
-        sum_par2[m] = f"{par2_val[m]:.3f}"
+        sum_sl[m] = str(sl_cnt[m])
+        sum_par2[m] = f"{par2_val[m]:.3f}" if not math.isnan(par2_val[m]) else "-"
         sum_spdup[m] = f"{spdups[m]:.2f}x" if not math.isnan(spdups[m]) else "-"
 
     summary = [
         ("Solved", sum_solved),
+        ("SL", sum_sl),
         ("PAR2 (s)", sum_par2),
         ("Speedup (geom)", sum_spdup),
     ]
 
-    export_table(df_display, summary, "Comparison of Methods: SAT vs CP-SAT vs CPLEX", "table_methods")
+    note = "Note: SL = Size Limit (exceeded CPLEX Community Edition limits, excluded from PAR2)."
+    export_table(df_display, summary, "Comparison of Methods: SAT vs CP-SAT vs CPLEX", "table_methods", note=note)
 
 def main():
     print("=" * 70)

@@ -266,3 +266,80 @@ def test_main_optimal_exit(tmp_path):
     assert stats["status"] == "OPTIMAL"
     assert stats["best_ub"] == 4
     assert out_file.exists()
+
+def test_aggregate_repetitions_mixed_optimal_timeout():
+    """
+    Test 4 repetitions: OPTIMAL 10s, OPTIMAL 20s, TIMEOUT 30s, TIMEOUT 600s.
+    Status must be OPTIMAL (mixed flag set).
+    Median time must be computed only over OPTIMAL reps: median(10s, 20s) = 15s.
+    """
+    records = [
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "status": "OPTIMAL",
+            "best_ub": 3,
+            "solve_time": 10.0,
+            "rep": 1,
+        },
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "status": "OPTIMAL",
+            "best_ub": 3,
+            "solve_time": 20.0,
+            "rep": 2,
+        },
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "status": "TIMEOUT",
+            "best_ub": 4,
+            "solve_time": 30.0,
+            "rep": 3,
+        },
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "status": "TIMEOUT",
+            "best_ub": 4,
+            "solve_time": 600.0,
+            "rep": 4,
+        },
+    ]
+
+    agg = aggregate_repetitions(records)
+    assert len(agg) == 1
+    r = agg[0]
+    assert r["status"] == "OPTIMAL"
+    assert r.get("mixed") is True or r.get("is_mixed") is True
+    # Median of OPTIMAL reps only: (10.0 + 20.0) / 2 = 15.0
+    assert r["solve_time"] == pytest.approx(15.0)
+    assert r["best_ub"] == 3
+
+def test_compute_summary_stats_size_limit_excluded_from_par2():
+    """
+    Verify that SIZE_LIMIT is not added to PAR2 as timeout,
+    and is reported separately in sl_counts.
+    """
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    df_raw = pd.DataFrame({
+        "cplex": {
+            "d1": {"status": "OPTIMAL", "solve_time": 2.0, "config": {"time_limit": 10.0}},
+            "d2": {"status": "SIZE_LIMIT", "solve_time": 0.0, "config": {"time_limit": 10.0}},
+            "d3": {"status": "TIMEOUT", "solve_time": 10.0, "config": {"time_limit": 10.0}},
+        }
+    })
+
+    solved, sl, par2, spdup = compute_summary_stats(df_raw, ["cplex"], timeout=10.0)
+    assert solved["cplex"] == 1
+    assert sl["cplex"] == 1
+    # PAR2 has d1 (2.0s) and d3 (2*10.0 = 20.0s), d2 (SIZE_LIMIT) is excluded
+    # Mean of [2.0, 20.0] = 11.0s (not including 2*10 for d2 which would make it 14.0s)
+    assert par2["cplex"] == pytest.approx(11.0)
