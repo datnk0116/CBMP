@@ -131,7 +131,14 @@ def test_invalid_solver_raises_error():
     with pytest.raises(ValueError, match="Unknown or unavailable solver"):
         solve(N=4, edges=[(0, 1)], solver="non_existent_solver", verbose=False)
 
-def test_best_ub_not_recorded_without_assignment(monkeypatch):
+@pytest.fixture
+def mp_manager():
+    import multiprocessing as mp
+    manager = mp.Manager()
+    yield manager
+    manager.shutdown()
+
+def test_best_ub_not_recorded_without_assignment(monkeypatch, mp_manager):
     import multiprocessing as mp
     from pysat.solvers import Cadical195
 
@@ -142,7 +149,7 @@ def test_best_ub_not_recorded_without_assignment(monkeypatch):
     monkeypatch.setattr(Cadical195, "solve", fake_solve)
 
     best_ub = mp.Value("i", -1)
-    shared_stats = mp.Manager().dict()
+    shared_stats = mp_manager.dict()
 
     with pytest.raises(TimeoutError):
         solve(
@@ -158,7 +165,7 @@ def test_best_ub_not_recorded_without_assignment(monkeypatch):
     assert shared_stats.get("best_ub") == -1
     assert shared_stats.get("initial_ub") == 30 // 2 + 1
 
-def test_heuristic_ub_recorded_only_when_verified(monkeypatch):
+def test_heuristic_ub_recorded_only_when_verified(monkeypatch, mp_manager):
     import multiprocessing as mp
     from pysat.solvers import Cadical195
 
@@ -168,7 +175,7 @@ def test_heuristic_ub_recorded_only_when_verified(monkeypatch):
     monkeypatch.setattr(Cadical195, "solve", fake_solve)
 
     best_ub = mp.Value("i", -1)
-    shared_stats = mp.Manager().dict()
+    shared_stats = mp_manager.dict()
 
     with pytest.raises(TimeoutError):
         solve(
