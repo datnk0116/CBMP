@@ -13,6 +13,40 @@ from docplex.mp.model import Model
 import docplex.mp.utils
 from cbmp import SolveResult
 
+def map_cplex_status(status_str, status_code, has_hit_limit, sol_available):
+    """
+    Pure mapping function from CPLEX/DOcplex solve indicators to (status, use_incumbent).
+
+    Rules:
+    - OPTIMAL: only when solver reports optimal AND sol_available is True.
+    - If solver reports optimal but sol_available is False -> ERROR.
+    - If sol_available is True but solver did not report optimal -> TIMEOUT (use incumbent).
+    - If sol_available is False and hit limit (has_hit_limit or time limit status) -> TIMEOUT (-1).
+    - All other outcomes -> ERROR.
+    """
+    s_str = (status_str or "").lower()
+    code = int(status_code) if status_code is not None else -1
+
+    is_optimal_reported = (code in (1, 101, 102)) or (
+        ("integer optimal" in s_str or s_str == "optimal")
+        and "infeasible" not in s_str
+        and "non_optimal" not in s_str
+    )
+
+    hit_limit = bool(has_hit_limit or ("time limit" in s_str))
+
+    if is_optimal_reported:
+        if sol_available:
+            return ("OPTIMAL", True)
+        else:
+            return ("ERROR", False)
+    elif sol_available:
+        return ("TIMEOUT", True)
+    elif hit_limit:
+        return ("TIMEOUT", False)
+    else:
+        return ("ERROR", False)
+
 def solve_cplex(
     dataset=None,
     N=None,
@@ -134,37 +168,30 @@ def solve_cplex(
     stats["num_iterations"] = 1
 
     details = getattr(mdl, "solve_details", None)
-    cpx_status_str = (getattr(details, "status", None) or "").lower() if details else ""
+    cpx_status_str = getattr(details, "status", None) or ""
     cpx_status_code = getattr(details, "status_code", -1) if details else -1
     has_hit_limit = details.has_hit_limit() if details and hasattr(details, "has_hit_limit") else False
+    sol_available = sol is not None
 
-    # Check if CPLEX reported optimal
-    # docplex status strings: "integer optimal solution", "optimal", "integer optimal, tolerance"
-    # CPLEX status codes: 1 (optimal), 101 (integer optimal), 102 (integer optimal with tolerance)
-    is_optimal = cpx_status_code in (1, 101, 102) or (
-        ("integer optimal" in cpx_status_str or cpx_status_str == "optimal")
-        and "infeasible" not in cpx_status_str
+    status, use_incumbent = map_cplex_status(
+        cpx_status_str, cpx_status_code, has_hit_limit, sol_available
     )
 
-    if is_optimal:
-        best_ub = int(round(sol.get_value(k))) if sol is not None else -1
-        status = "OPTIMAL"
-        if verbose:
-            print("minimum bandwidth:", best_ub)
-    elif sol is not None:
-        # Incumbent exists but optimality was not proven within limit -> TIMEOUT
+    if use_incumbent and sol is not None:
         best_ub = int(round(sol.get_value(k)))
-        status = "TIMEOUT"
-        if verbose:
-            print("timeout, lowest bandwidth found:", best_ub)
-    elif has_hit_limit or "time limit" in cpx_status_str:
-        best_ub = -1
-        status = "TIMEOUT"
-        if verbose:
-            print("timeout, no valid assignment was found")
     else:
         best_ub = -1
-        status = "ERROR"
+
+    if status == "OPTIMAL":
+        if verbose:
+            print("minimum bandwidth:", best_ub)
+    elif status == "TIMEOUT":
+        if verbose:
+            if best_ub != -1:
+                print("timeout, lowest bandwidth found:", best_ub)
+            else:
+                print("timeout, no valid assignment was found")
+    else:
         if verbose:
             print(f"CPLEX finished with status: {cpx_status_str or cpx_status_code}")
 

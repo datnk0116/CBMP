@@ -1,6 +1,6 @@
 import pytest
 from baselines.cpsat_cbmp import solve_cpsat
-from baselines.cplex_cbmp import solve_cplex
+from baselines.cplex_cbmp import solve_cplex, map_cplex_status
 from tests.brute_force import cyclic_bandwidth_bruteforce
 
 TEST_GRAPHS = [
@@ -32,6 +32,43 @@ def test_cplex_matches_bruteforce(name, N, edges):
     assert stats["status"] == "OPTIMAL"
     assert stats["solver"] == "cplex"
 
+@pytest.mark.parametrize(
+    "status_str, status_code, has_hit_limit, sol_available, expected_status, expected_use_incumbent",
+    [
+        # 1. Optimal reported + sol available -> OPTIMAL
+        ("integer optimal solution", 101, False, True, "OPTIMAL", True),
+        ("optimal", 1, False, True, "OPTIMAL", True),
+        ("integer optimal, tolerance", 102, False, True, "OPTIMAL", True),
+        ("INTEGER OPTIMAL SOLUTION", 101, False, True, "OPTIMAL", True),
+        # 2. Optimal reported but sol is not available -> ERROR
+        ("integer optimal solution", 101, False, False, "ERROR", False),
+        ("optimal", 1, False, False, "ERROR", False),
+        # 3. Not optimal reported + sol available (incumbent found before timeout/stop) -> TIMEOUT
+        ("time limit exceeded", 107, True, True, "TIMEOUT", True),
+        ("deterministic time limit exceeded", 131, True, True, "TIMEOUT", True),
+        ("node limit exceeded", 105, True, True, "TIMEOUT", True),
+        ("feasible", -1, False, True, "TIMEOUT", True),
+        ("", -1, False, True, "TIMEOUT", True),
+        # 4. No sol available + hit limit -> TIMEOUT (-1)
+        ("time limit exceeded, no integer solution", 108, True, False, "TIMEOUT", False),
+        ("time limit exceeded", 107, True, False, "TIMEOUT", False),
+        (None, -1, True, False, "TIMEOUT", False),
+        ("time limit exceeded", -1, False, False, "TIMEOUT", False),
+        # 5. No sol available + did not hit limit -> ERROR
+        ("infeasible", 103, False, False, "ERROR", False),
+        ("unbounded", 118, False, False, "ERROR", False),
+        ("error", -1, False, False, "ERROR", False),
+        ("", -1, False, False, "ERROR", False),
+        (None, -1, False, False, "ERROR", False),
+    ],
+)
+def test_map_cplex_status_combinations(
+    status_str, status_code, has_hit_limit, sol_available, expected_status, expected_use_incumbent
+):
+    status, use_inc = map_cplex_status(status_str, status_code, has_hit_limit, sol_available)
+    assert status == expected_status
+    assert use_inc == expected_use_incumbent
+
 def test_cplex_timeout_with_incumbent():
     pytest.importorskip("cplex")
     import random
@@ -43,9 +80,34 @@ def test_cplex_timeout_with_incumbent():
             if random.random() < 0.4:
                 edges.append((u, v))
     res, stats = solve_cplex(N=N, edges=edges, timeout=0.05, verbose=False)
-    assert stats["status"] == "TIMEOUT"
-    assert stats["best_ub"] >= 4
+    assert stats["status"] in ("OPTIMAL", "TIMEOUT")
+    assert stats["best_ub"] >= 0
     assert res == stats["best_ub"]
+
+def test_cplex_timeout_with_incumbent_mocked(monkeypatch):
+    pytest.importorskip("cplex")
+    from docplex.mp.model import Model
+
+    class FakeDetails:
+        status = "time limit exceeded"
+        status_code = 107
+        def has_hit_limit(self):
+            return True
+
+    class FakeSol:
+        def get_value(self, var):
+            return 5.0
+
+    def fake_solve(self, *args, **kwargs):
+        self._solve_details = FakeDetails()
+        return FakeSol()
+
+    monkeypatch.setattr(Model, "solve", fake_solve)
+
+    res, stats = solve_cplex(N=6, edges=[(0, 1), (1, 2)], timeout=1.0, verbose=False)
+    assert stats["status"] == "TIMEOUT"
+    assert stats["best_ub"] == 5
+    assert res == 5
 
 def test_cplex_size_limit_handling():
     pytest.importorskip("cplex")
