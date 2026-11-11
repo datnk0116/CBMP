@@ -5,40 +5,97 @@ import json
 import math
 import argparse
 from pathlib import Path
+from typing import Optional, Union, List, Tuple, Any, Dict
 import numpy as np
 
 # Ensure repo root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scipy.io import mmread
+from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
 from ortools.sat.python import cp_model
 from cbmp import SolveResult
 
+def build_cpsat_model(N: int, edges: list, sb_rotation: bool = True):
+    """
+    Build and return the CP-SAT model for CBMP.
+    Returns: (model, f, k, diff_vars, b_vars)
+    """
+    model = cp_model.CpModel()
+
+    # Variables f[u] in [1, N]
+    f = [model.NewIntVar(1, N, f"f_{u}") for u in range(N)]
+    model.AddAllDifferent(f)
+
+    # Rotation symmetry breaking: pin vertex 0 to position 1
+    if sb_rotation and N >= 1:
+        model.Add(f[0] == 1)
+
+    # Objective k in [0, N // 2]
+    k = model.NewIntVar(0, N // 2, "k")
+
+    diff_vars = {}
+    b_vars = {}
+    for u, v in edges:
+        diff = model.NewIntVar(1, N - 1, f"diff_{u}_{v}")
+        model.AddAbsEquality(diff, f[u] - f[v])
+        b = model.NewBoolVar(f"b_{u}_{v}")
+
+        # if b: diff <= k; if not b: diff >= N - k
+        model.Add(diff <= k).OnlyEnforceIf(b)
+        model.Add(diff >= N - k).OnlyEnforceIf(b.Not())
+        diff_vars[(u, v)] = diff
+        b_vars[(u, v)] = b
+
+    model.Minimize(k)
+    return model, f, k, diff_vars, b_vars
+
 def solve_cpsat(
-    dataset=None,
-    N=None,
-    edges=None,
-    timeout=600.0,
-    num_workers=1,
-    relabel_seed=None,
-    verbose=True,
-):
+    dataset: Optional[Union[str, int]] = None,
+    N: Optional[int] = None,
+    edges: Optional[List[Tuple[int, int]]] = None,
+    timeout: float = 600.0,
+    num_workers: int = 1,
+    relabel_seed: Optional[int] = None,
+    verbose: bool = True,
+    sb_rotation: bool = True,
+) -> SolveResult:
+    """
+    Solve Cyclic Bandwidth Minimization Problem using Google OR-Tools CP-SAT.
+
+    Supports positional and keyword calls:
+      - solve_cpsat(dataset="30_bus")
+      - solve_cpsat("30_bus")
+      - solve_cpsat(N=6, edges=[(0, 1), (1, 2)])
+      - solve_cpsat(6, [(0, 1), (1, 2)])
+
+    Parameters:
+      dataset: Name of dataset or path to .mtx file.
+      N: Number of vertices (if providing graph directly).
+      edges: List of undirected edges (u, v).
+      timeout: Time limit in seconds.
+      num_workers: Number of search worker threads.
+      relabel_seed: Seed for random vertex permutation.
+      verbose: Print solver status and optimum.
+      sb_rotation: Pin vertex 0 label to 1 to break rotational symmetry.
+
+    Returns:
+      SolveResult containing optimal cyclic bandwidth and stats dictionary.
+    """
     t_start = time.perf_counter()
 
-    if isinstance(dataset, int):
-        # solve_cpsat(N, edges, ...)
+    if isinstance(dataset, int) and not isinstance(dataset, bool):
+        # Positional call: solve_cpsat(N, edges, ...)
+        edges = N
         N = dataset
-        edges = N_or_edges if 'N_or_edges' in locals() else edges
+        dataset = None
 
     if N is not None and edges is not None:
+        N, edges = validate_and_normalize_graph(N, edges)
         dataset_name = dataset if isinstance(dataset, str) else "custom"
+    elif dataset is not None:
+        N, edges, dataset_name = load_graph_from_mtx(dataset)
     else:
-        dataset_name = dataset if isinstance(dataset, str) else "unknown"
-        filepath = f"datasets/{dataset}.mtx" if not dataset.endswith(".mtx") else dataset
-        GRAPH = mmread(filepath)
-        N = GRAPH.shape[0]
-        rows, cols = GRAPH.nonzero()
-        edges = [(u, v) for u, v in zip(rows, cols) if u < v]
+        raise ValueError("Either (N, edges) or dataset must be provided to solve_cpsat.")
 
     if relabel_seed is not None:
         rng = np.random.default_rng(relabel_seed)
@@ -54,6 +111,7 @@ def solve_cpsat(
             "time_limit": timeout,
             "num_workers": num_workers,
             "relabel_seed": relabel_seed,
+            "sb_rotation": sb_rotation,
         },
         "solver": "cp_sat",
         "status": "RUNNING",
@@ -77,25 +135,7 @@ def solve_cpsat(
 
     # ============ BUILD MODEL
     t_enc_start = time.perf_counter()
-    model = cp_model.CpModel()
-
-    # Variables f[u] in [1, N]
-    f = [model.NewIntVar(1, N, f"f_{u}") for u in range(N)]
-    model.AddAllDifferent(f)
-
-    # Objective k in [0, N // 2]
-    k = model.NewIntVar(0, N // 2, "k")
-
-    for u, v in edges:
-        diff = model.NewIntVar(1, N - 1, f"diff_{u}_{v}")
-        model.AddAbsEquality(diff, f[u] - f[v])
-        b = model.NewBoolVar(f"b_{u}_{v}")
-
-        # if b: diff <= k; if not b: diff >= N - k
-        model.Add(diff <= k).OnlyEnforceIf(b)
-        model.Add(diff >= N - k).OnlyEnforceIf(b.Not())
-
-    model.Minimize(k)
+    model, f, k, diff_vars, b_vars = build_cpsat_model(N, edges, sb_rotation=sb_rotation)
     t_enc_end = time.perf_counter()
     encode_time = t_enc_end - t_enc_start
 
@@ -164,6 +204,7 @@ if __name__ == "__main__":
     parser.add_argument("--timeout", type=float, default=600.0, help="time limit in seconds")
     parser.add_argument("--num-workers", type=int, default=1, help="number of worker threads (default: 1)")
     parser.add_argument("--relabel-seed", type=int, default=None, help="seed for random vertex relabeling")
+    parser.add_argument("--sb-rotation", action=argparse.BooleanOptionalAction, default=True, help="enable rotation symmetry breaking (default: True)")
     parser.add_argument("--json-out", type=str, default=None, help="path to append statistics as JSON line")
     args = parser.parse_args()
 
@@ -173,6 +214,7 @@ if __name__ == "__main__":
         num_workers=args.num_workers,
         relabel_seed=args.relabel_seed,
         verbose=True,
+        sb_rotation=args.sb_rotation,
     )
 
     if args.json_out:

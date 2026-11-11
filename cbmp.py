@@ -1,10 +1,11 @@
-from scipy.io import mmread
+import time
+from typing import Optional, Dict, Any, Tuple, List, Union
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 from sat_encodings import *
+from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
 import pysat.solvers
 import numpy as np
-import time
 
 SOLVER_MAP = {
     "cadical195": getattr(pysat.solvers, "Cadical195", None),
@@ -65,25 +66,47 @@ def cuthill_mckee_layout(GRAPH, N):
     return assignment
 
 def solve(
-    dataset=None,
-    sb_rotation=False,
-    sb_reflection=False,
-    use_heuristic_initial_ub=False,
-    best_ub=None,
-    N=None,
-    edges=None,
-    verbose=True,
-    use_symmetry_break=None,
-    solver="cadical195",
-    shared_stats=None,
-    relabel_seed=None,
-):
+    dataset: Optional[Union[str, int]] = None,
+    sb_rotation: bool = False,
+    sb_reflection: bool = False,
+    use_heuristic_initial_ub: bool = False,
+    best_ub: Any = None,
+    N: Optional[int] = None,
+    edges: Optional[List[Tuple[int, int]]] = None,
+    verbose: bool = True,
+    use_symmetry_break: Optional[bool] = None,
+    solver: str = "cadical195",
+    shared_stats: Optional[Dict[str, Any]] = None,
+    relabel_seed: Optional[int] = None,
+    timeout: Optional[float] = None,
+) -> SolveResult:
+    """
+    Solve Cyclic Bandwidth Minimization Problem using iterative SAT solving.
+
+    Parameters:
+      dataset: Name of dataset in datasets/ or direct path to .mtx file.
+      sb_rotation: Enable rotation symmetry breaking (fix anchor vertex label to 0).
+      sb_reflection: Enable reflection symmetry breaking (requires sb_rotation).
+      use_heuristic_initial_ub: Compute initial UB via Reverse Cuthill-McKee layout.
+      best_ub: Shared multiprocessing.Value or None for incumbent tracking.
+      N: Number of vertices (if providing graph explicitly).
+      edges: List of undirected edges (u, v) with 0 <= u, v < N.
+      verbose: Whether to print progress during search.
+      use_symmetry_break: Legacy alias enabling both rotation and reflection SB.
+      solver: SAT solver backend ("cadical195", "glucose4", "maplechrono", "minisat22", "lingeling").
+      shared_stats: Shared dictionary for inter-process statistics reporting.
+      relabel_seed: Random seed for vertex relabeling experiments.
+      timeout: Optional time limit (kept for API compatibility with baseline solvers).
+
+    Returns:
+      SolveResult containing optimal cyclic bandwidth and execution statistics dict.
+    """
     # ============ RESOLVE BACKWARD COMPATIBILITY & ARGUMENTS
     if use_symmetry_break is not None:
         sb_rotation = bool(use_symmetry_break)
         sb_reflection = bool(use_symmetry_break)
 
-    if isinstance(dataset, int):
+    if isinstance(dataset, int) and not isinstance(dataset, bool):
         # Direct positional call: solve(N, edges, ...)
         N = dataset
         edges = sb_rotation
@@ -117,18 +140,13 @@ def solve(
     solver_cls = get_solver_class(solver)
     solver_name = solver if isinstance(solver, str) else getattr(solver_cls, "__name__", "custom")
 
-    dataset_name = dataset if isinstance(dataset, str) else "custom"
-
     if N is not None and edges is not None:
-        # Direct (N, edges) input
-        edges = list(edges)
+        N, edges = validate_and_normalize_graph(N, edges)
+        dataset_name = dataset if isinstance(dataset, str) else "custom"
+    elif dataset is not None and not isinstance(dataset, int):
+        N, edges, dataset_name = load_graph_from_mtx(dataset)
     else:
-        # Read from file
-        GRAPH_orig = mmread(f"datasets/{dataset}.mtx") 
-        N = GRAPH_orig.shape[0]  # num vertices
-
-        rows, cols = GRAPH_orig.nonzero()  # edge if: matrix cell has nonzero val
-        edges = [(u, v) for u, v in zip(rows, cols) if u < v] # ignoring duplicate pairs, and diagonal
+        raise ValueError("Either (N, edges) or dataset must be provided to solve.")
 
     if relabel_seed is not None:
         rng = np.random.default_rng(relabel_seed)

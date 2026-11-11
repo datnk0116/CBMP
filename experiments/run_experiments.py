@@ -4,10 +4,15 @@ import glob
 import json
 import time
 import yaml
+import signal
+import logging
 import argparse
 import platform
 import subprocess
 from pathlib import Path
+
+# Setup module logger
+logger = logging.getLogger("experiments")
 
 # Ensure repo root is in sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -159,10 +164,17 @@ def get_canonical_key(record):
         relabel_seed = cfg.get("relabel_seed", None)
     if solver in ("cp_sat", "cpsat"):
         method = "cpsat"
-        flags = (cfg.get("num_workers", 1),)
+        workers = cfg.get("num_workers", 1)
+        if "sb_rotation" in cfg:
+            flags = (workers, bool(cfg["sb_rotation"]))
+        else:
+            flags = (workers,)
     elif solver == "cplex":
         method = "cplex"
-        flags = ()
+        if "sb_rotation" in cfg:
+            flags = (bool(cfg["sb_rotation"]),)
+        else:
+            flags = ()
     else:
         method = "sat"
         rot = bool(cfg.get("sb_rotation", False))
@@ -179,9 +191,11 @@ def load_existing_runs(runs_jsonl_path, retry_failed=False):
     if not os.path.exists(runs_jsonl_path):
         return {}
     completed = {}
+    valid_count = 0
+    skipped_count = 0
     try:
         with open(runs_jsonl_path, "r", encoding="utf-8") as f:
-            for line in f:
+            for line_no, line in enumerate(f, start=1):
                 line = line.strip()
                 if not line:
                     continue
@@ -195,12 +209,24 @@ def load_existing_runs(runs_jsonl_path, retry_failed=False):
                     if retry_failed:
                         if status in ("OPTIMAL", "SIZE_LIMIT"):
                             completed[(key, rep)] = data
+                            valid_count += 1
                     else:
                         completed[(key, rep)] = data
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                        valid_count += 1
+                except (json.JSONDecodeError, ValueError) as e:
+                    skipped_count += 1
+                    logger.warning("Corrupt or invalid JSON at %s:%d: %s (skipped)", runs_jsonl_path, line_no, e)
+                except Exception as e:
+                    skipped_count += 1
+                    logger.warning("Error processing record at %s:%d: %s (skipped)", runs_jsonl_path, line_no, e)
+    except Exception as e:
+        logger.error("Could not read existing runs from %s: %s", runs_jsonl_path, e)
+
+    if skipped_count > 0:
+        logger.warning(
+            "Loaded %d completed runs from %s (%d invalid/corrupt lines skipped)",
+            valid_count, runs_jsonl_path, skipped_count
+        )
     return completed
 
 def filter_datasets_for_group(all_datasets, group_cfg, defaults, cli_datasets=None, cli_min_n=None, cli_max_n=None):
@@ -822,19 +848,38 @@ def run_experiments(
 
         try:
             # 10s grace period for child process to flush its own timeout handling
-            proc = subprocess.run(
-                cmd,
-                cwd=str(REPO_ROOT),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=task_timeout + 10,
-            )
+            popen_kwargs = {
+                "cwd": str(REPO_ROOT),
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True,
+            }
+            if hasattr(os, "setsid"):
+                popen_kwargs["start_new_session"] = True
+
+            proc = subprocess.Popen(cmd, **popen_kwargs)
+            try:
+                stdout, stderr = proc.communicate(timeout=task_timeout + 10)
+                wall_time = round(time.perf_counter() - t0, 4)
+                returncode = proc.returncode
+            except subprocess.TimeoutExpired:
+                wall_time = round(time.perf_counter() - t0, 4)
+                timed_out = True
+                returncode = -1
+                if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+                else:
+                    proc.kill()
+                try:
+                    proc.communicate(timeout=2)
+                except Exception:
+                    pass
+        except Exception:
             wall_time = round(time.perf_counter() - t0, 4)
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired:
-            wall_time = round(time.perf_counter() - t0, 4)
-            timed_out = True
+            timed_out = False
             returncode = -1
 
         # Read child output json if created
@@ -863,7 +908,7 @@ def run_experiments(
                 "config": task["config_dict"],
                 "solver": task["solver"],
                 "status": status,
-                "best_ub": None,
+                "best_ub": -1,
                 "encode_time": 0.0,
                 "solve_time": wall_time,
                 "per_iter_times": [],
@@ -871,6 +916,8 @@ def run_experiments(
                 "num_vars": 0,
                 "num_clauses": 0,
             }
+        elif record.get("best_ub") is None:
+            record["best_ub"] = -1
 
         # Attach parent-measured wall_time, rep, groups, git_commit, git_dirty, relabel_seed
         record["groups"] = rep_groups

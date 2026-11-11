@@ -561,6 +561,33 @@ def test_resume_and_retry_failed_behavior(tmp_path):
     assert (get_canonical_key(sl_rec), 1) in loaded_retry
     assert (get_canonical_key(timeout_rec), 1) not in loaded_retry
 
+
+def test_load_existing_runs_corrupt_lines(tmp_path):
+    from experiments.run_experiments import load_existing_runs, get_canonical_key
+
+    runs_file = tmp_path / "corrupt_runs.jsonl"
+    valid_rec = {
+        "dataset": "bus14",
+        "solver": "cadical195",
+        "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+        "status": "OPTIMAL",
+        "best_ub": 3,
+        "solve_time": 0.1,
+        "rep": 1,
+    }
+    with open(runs_file, "w") as f:
+        f.write(json.dumps(valid_rec) + "\n")
+        f.write("{corrupt json line truncated here...\n")
+        f.write("\n")  # empty line
+        f.write("not json at all\n")
+        f.write(json.dumps({**valid_rec, "rep": 2}) + "\n")
+
+    loaded = load_existing_runs(str(runs_file), retry_failed=False)
+    # Both valid lines should be loaded despite the two corrupted lines
+    assert len(loaded) == 2
+    assert (get_canonical_key(valid_rec), 1) in loaded
+    assert (get_canonical_key(valid_rec), 2) in loaded
+
 def test_runner_rejects_dirty_without_allow_dirty(monkeypatch, tmp_path):
     from experiments import run_experiments as runner
 

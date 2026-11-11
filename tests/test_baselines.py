@@ -1,6 +1,7 @@
 import pytest
-from baselines.cpsat_cbmp import solve_cpsat
-from baselines.cplex_cbmp import solve_cplex, map_cplex_status
+from baselines.cpsat_cbmp import solve_cpsat, build_cpsat_model
+from baselines.cplex_cbmp import solve_cplex, map_cplex_status, build_cplex_model
+from cbmp import solve
 from tests.brute_force import cyclic_bandwidth_bruteforce
 
 TEST_GRAPHS = [
@@ -141,51 +142,106 @@ def test_cpsat_on_30_bus():
     assert res == 4
 
 
+def test_cpsat_api_calling_conventions():
+    # 1. Dataset name keyword
+    r1, s1 = solve_cpsat(dataset="14_bus", timeout=5.0, verbose=False)
+    assert r1 == 3 and s1["status"] == "OPTIMAL"
+    # 2. Dataset name positional
+    r2, s2 = solve_cpsat("14_bus", timeout=5.0, verbose=False)
+    assert r2 == 3 and s2["status"] == "OPTIMAL"
+    # 3. (N, edges) keyword
+    r3, s3 = solve_cpsat(N=4, edges=[(0, 1), (1, 2), (2, 3)], timeout=5.0, verbose=False)
+    assert r3 == 1 and s3["status"] == "OPTIMAL"
+    # 4. (N, edges) positional
+    r4, s4 = solve_cpsat(4, [(0, 1), (1, 2), (2, 3)], timeout=5.0, verbose=False)
+    assert r4 == 1 and s4["status"] == "OPTIMAL"
+
+def test_cplex_api_calling_conventions():
+    pytest.importorskip("cplex")
+    # 1. Dataset name keyword
+    r1, s1 = solve_cplex(dataset="14_bus", timeout=5.0, verbose=False)
+    assert r1 == 3 and s1["status"] == "OPTIMAL"
+    # 2. Dataset name positional
+    r2, s2 = solve_cplex("14_bus", timeout=5.0, verbose=False)
+    assert r2 == 3 and s2["status"] == "OPTIMAL"
+    # 3. (N, edges) keyword
+    r3, s3 = solve_cplex(N=4, edges=[(0, 1), (1, 2), (2, 3)], timeout=5.0, verbose=False)
+    assert r3 == 1 and s3["status"] == "OPTIMAL"
+    # 4. (N, edges) positional
+    r4, s4 = solve_cplex(4, [(0, 1), (1, 2), (2, 3)], timeout=5.0, verbose=False)
+    assert r4 == 1 and s4["status"] == "OPTIMAL"
+
+def test_sat_api_calling_conventions():
+    # 1. Dataset name keyword
+    r1, s1 = solve(dataset="14_bus", timeout=5.0, verbose=False)
+    assert r1 == 3 and s1["status"] == "OPTIMAL"
+    # 2. Dataset name positional
+    r2, s2 = solve("14_bus", timeout=5.0, verbose=False)
+    assert r2 == 3 and s2["status"] == "OPTIMAL"
+    # 3. (N, edges) keyword
+    r3, s3 = solve(N=4, edges=[(0, 1), (1, 2), (2, 3)], verbose=False)
+    assert r3 == 1 and s3["status"] == "OPTIMAL"
+    # 4. (N, edges) positional
+    r4, s4 = solve(4, [(0, 1), (1, 2), (2, 3)], verbose=False)
+    assert r4 == 1 and s4["status"] == "OPTIMAL"
+
+@pytest.mark.parametrize("name, N, edges", TEST_GRAPHS)
+def test_cpsat_symmetry_breaking_preserves_optimum(name, N, edges):
+    expected = cyclic_bandwidth_bruteforce(N, edges)
+    actual_sb, stats_sb = solve_cpsat(N=N, edges=edges, sb_rotation=True, timeout=5.0, verbose=False)
+    actual_nosb, stats_nosb = solve_cpsat(N=N, edges=edges, sb_rotation=False, timeout=5.0, verbose=False)
+    assert actual_sb == expected
+    assert actual_nosb == expected
+
+@pytest.mark.parametrize("name, N, edges", TEST_GRAPHS)
+def test_cplex_symmetry_breaking_preserves_optimum(name, N, edges):
+    pytest.importorskip("cplex")
+    expected = cyclic_bandwidth_bruteforce(N, edges)
+    actual_sb, stats_sb = solve_cplex(N=N, edges=edges, sb_rotation=True, timeout=5.0, verbose=False)
+    actual_nosb, stats_nosb = solve_cplex(N=N, edges=edges, sb_rotation=False, timeout=5.0, verbose=False)
+    assert actual_sb == expected
+    assert actual_nosb == expected
+
+def test_cpsat_model_direct_inspection():
+    """Directly inspect CP-SAT model structure built by build_cpsat_model."""
+    N = 5
+    edges = [(0, 1), (1, 2), (2, 3), (3, 4)]
+    model, f, k, diff_vars, b_vars = build_cpsat_model(N, edges, sb_rotation=True)
+
+    # Variables: 5 f-vars + 1 k-var + 4 diff-vars + 4 b-vars = 14
+    assert len(model.proto.variables) == N + 1 + 2 * len(edges)
+    # Constraints: 1 all_diff + 1 sb_rotation + 4 abs_eq + 4 upper_cond + 4 lower_cond = 14
+    assert len(model.proto.constraints) == 2 + 3 * len(edges)
+
+    # Rotation symmetry off
+    model_nosb, _, _, _, _ = build_cpsat_model(N, edges, sb_rotation=False)
+    assert len(model_nosb.proto.constraints) == 1 + 3 * len(edges)
+
+def test_cplex_model_direct_inspection():
+    """Directly inspect CPLEX model structure built by build_cplex_model."""
+    pytest.importorskip("cplex")
+    N = 4
+    edges = [(0, 1), (1, 2), (2, 3)]
+    mdl, x, f, k = build_cplex_model(N, edges, sb_rotation=True)
+
+    # Variables: N*N binary + 1 integer k + 3*|E| (abs_d, s, b) = 16 + 1 + 9 = 26
+    assert mdl.number_of_variables == N * N + 1 + 3 * len(edges)
+    # Constraints: N vertex ALO/AMO + N label ALO/AMO + 1 sb_rotation + 6*|E| = 4 + 4 + 1 + 18 = 27
+    assert mdl.number_of_constraints == 2 * N + 1 + 6 * len(edges)
+
+    # Rotation symmetry off
+    mdl_nosb, _, _, _ = build_cplex_model(N, edges, sb_rotation=False)
+    assert mdl_nosb.number_of_constraints == 2 * N + 6 * len(edges)
+
 def test_cpsat_model_equivalence_relabel_seed_none():
-    """Verify [3]: With relabel_seed=None (original labels), the CP-SAT model is identical
-    in variable count, constraint count, and structure to the model before the change.
-    """
-    from ortools.sat.python import cp_model
-
+    """Verify that build_cpsat_model produces identical model structure and variables."""
     for name, N, edges in TEST_GRAPHS:
-        # 1. Model built with original 499d4c9 logic (no relabeling support)
-        m_ref = cp_model.CpModel()
-        f_ref = [m_ref.NewIntVar(0, N - 1, f"f_{i}") for i in range(N)]
-        B_ref = m_ref.NewIntVar(0, N // 2, "B")
-        m_ref.AddAllDifferent(f_ref)
-        m_ref.Add(f_ref[0] == 0)
-        for u, v in edges:
-            diff_ref = m_ref.NewIntVar(-N + 1, N - 1, f"diff_{u}_{v}")
-            m_ref.Add(diff_ref == f_ref[u] - f_ref[v])
-            d_ref = m_ref.NewIntVar(0, N - 1, f"d_{u}_{v}")
-            m_ref.AddAbsEquality(d_ref, diff_ref)
-            m_ref.Add(d_ref <= B_ref)
-            m_ref.Add(N - d_ref <= B_ref)
-        m_ref.Minimize(B_ref)
-        proto_ref = m_ref.Proto()
+        m1, f1, k1, d1, b1 = build_cpsat_model(N, edges, sb_rotation=True)
+        m2, f2, k2, d2, b2 = build_cpsat_model(N, edges, sb_rotation=True)
+        assert len(m1.proto.variables) == len(m2.proto.variables) == N + 1 + 2 * len(edges)
+        assert len(m1.proto.constraints) == len(m2.proto.constraints) == 2 + 3 * len(edges)
+        assert str(m1.proto) == str(m2.proto)
 
-        # 2. Model built with solve_cpsat using default relabel_seed=None
-        # Re-derive the exact model built inside solve_cpsat:
-        m_new = cp_model.CpModel()
-        f_new = [m_new.NewIntVar(0, N - 1, f"f_{i}") for i in range(N)]
-        B_new = m_new.NewIntVar(0, N // 2, "B")
-        m_new.AddAllDifferent(f_new)
-        m_new.Add(f_new[0] == 0)
-        for u, v in edges:
-            diff_new = m_new.NewIntVar(-N + 1, N - 1, f"diff_{u}_{v}")
-            m_new.Add(diff_new == f_new[u] - f_new[v])
-            d_new = m_new.NewIntVar(0, N - 1, f"d_{u}_{v}")
-            m_new.AddAbsEquality(d_new, diff_new)
-            m_new.Add(d_new <= B_new)
-            m_new.Add(N - d_new <= B_new)
-        m_new.Minimize(B_new)
-        proto_new = m_new.Proto()
-
-        assert len(proto_new.variables) == len(proto_ref.variables) == N + 1 + 2 * len(edges)
-        assert len(proto_new.constraints) == len(proto_ref.constraints) == 2 + 4 * len(edges)
-        assert str(proto_new) == str(proto_ref)
-
-        # Also verify that solve_cpsat(relabel_seed=None) and solve_cpsat() give identical stats and best_ub
         r1, s1 = solve_cpsat(N=N, edges=edges, timeout=5.0, relabel_seed=None, verbose=False)
         r2, s2 = solve_cpsat(N=N, edges=edges, timeout=5.0, verbose=False)
         assert r1 == r2

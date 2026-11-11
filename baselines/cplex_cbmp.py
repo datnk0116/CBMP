@@ -4,11 +4,12 @@ import time
 import json
 import argparse
 from pathlib import Path
+from typing import Optional, Union, List, Tuple, Any, Dict
 
 # Ensure repo root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scipy.io import mmread
+from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
 from docplex.mp.model import Model
 import docplex.mp.utils
 from cbmp import SolveResult
@@ -47,25 +48,86 @@ def map_cplex_status(status_str, status_code, has_hit_limit, sol_available):
     else:
         return ("ERROR", False)
 
+def build_cplex_model(N: int, edges: list, sb_rotation: bool = True):
+    """
+    Build and return the CPLEX DOcplex MIP model for CBMP.
+    Returns: (mdl, x, f, k)
+    """
+    mdl = Model(name="cbmp_mip")
+
+    # Binary assignment variables x[u, i] = 1 iff vertex u has label i in 1..N
+    x = {(u, i): mdl.binary_var(name=f"x_{u}_{i}") for u in range(N) for i in range(1, N + 1)}
+
+    for u in range(N):
+        mdl.add_constraint(mdl.sum(x[u, i] for i in range(1, N + 1)) == 1, ctname=f"alo_amo_v_{u}")
+    for i in range(1, N + 1):
+        mdl.add_constraint(mdl.sum(x[u, i] for u in range(N)) == 1, ctname=f"alo_amo_l_{i}")
+
+    # Rotation symmetry breaking: pin vertex 0 to position 1
+    if sb_rotation and N >= 1:
+        mdl.add_constraint(x[0, 1] == 1, ctname="sb_rotation")
+
+    f = {u: mdl.sum(i * x[u, i] for i in range(1, N + 1)) for u in range(N)}
+    k = mdl.integer_var(lb=0, ub=N // 2, name="k")
+
+    for u, v in edges:
+        diff = f[u] - f[v]
+        abs_d = mdl.integer_var(lb=1, ub=N - 1, name=f"abs_{u}_{v}")
+        s = mdl.binary_var(name=f"s_{u}_{v}")
+        b = mdl.binary_var(name=f"b_{u}_{v}")
+
+        mdl.add_constraint(abs_d >= diff)
+        mdl.add_constraint(abs_d >= -diff)
+        mdl.add_constraint(abs_d <= diff + 2 * N * (1 - s))
+        mdl.add_constraint(abs_d <= -diff + 2 * N * s)
+
+        mdl.add_constraint(abs_d <= k + N * (1 - b))
+        mdl.add_constraint(N - abs_d <= k + N * b)
+
+    mdl.minimize(k)
+    return mdl, x, f, k
+
 def solve_cplex(
-    dataset=None,
-    N=None,
-    edges=None,
-    timeout=600.0,
-    verbose=True,
-):
-    if isinstance(dataset, int):
+    dataset: Optional[Union[str, int]] = None,
+    N: Optional[int] = None,
+    edges: Optional[List[Tuple[int, int]]] = None,
+    timeout: float = 600.0,
+    verbose: bool = True,
+    sb_rotation: bool = True,
+) -> SolveResult:
+    """
+    Solve Cyclic Bandwidth Minimization Problem using IBM CPLEX / DOcplex MIP baseline.
+
+    Supports positional and keyword calls:
+      - solve_cplex(dataset="30_bus")
+      - solve_cplex("30_bus")
+      - solve_cplex(N=6, edges=[(0, 1), (1, 2)])
+      - solve_cplex(6, [(0, 1), (1, 2)])
+
+    Parameters:
+      dataset: Name of dataset or path to .mtx file.
+      N: Number of vertices (if providing graph directly).
+      edges: List of undirected edges (u, v).
+      timeout: Time limit in seconds.
+      verbose: Print solver status and optimum.
+      sb_rotation: Pin vertex 0 label to 1 via assignment variable x[0, 1] == 1.
+
+    Returns:
+      SolveResult containing optimal cyclic bandwidth and stats dictionary.
+    """
+    if isinstance(dataset, int) and not isinstance(dataset, bool):
+        # Positional call: solve_cplex(N, edges, ...)
+        edges = N
         N = dataset
+        dataset = None
 
     if N is not None and edges is not None:
+        N, edges = validate_and_normalize_graph(N, edges)
         dataset_name = dataset if isinstance(dataset, str) else "custom"
+    elif dataset is not None:
+        N, edges, dataset_name = load_graph_from_mtx(dataset)
     else:
-        dataset_name = dataset if isinstance(dataset, str) else "unknown"
-        filepath = f"datasets/{dataset}.mtx" if not dataset.endswith(".mtx") else dataset
-        GRAPH = mmread(filepath)
-        N = GRAPH.shape[0]
-        rows, cols = GRAPH.nonzero()
-        edges = [(u, v) for u, v in zip(rows, cols) if u < v]
+        raise ValueError("Either (N, edges) or dataset must be provided to solve_cplex.")
 
     stats = {
         "dataset": dataset_name,
@@ -73,6 +135,7 @@ def solve_cplex(
         "num_edges": len(edges),
         "config": {
             "time_limit": timeout,
+            "sb_rotation": sb_rotation,
         },
         "solver": "cplex",
         "status": "RUNNING",
@@ -94,34 +157,7 @@ def solve_cplex(
 
     # ============ BUILD MIP MODEL
     t_enc_start = time.perf_counter()
-    mdl = Model(name="cbmp_mip")
-
-    # Binary assignment variables x[u, i] = 1 iff vertex u has label i in 1..N
-    x = {(u, i): mdl.binary_var(name=f"x_{u}_{i}") for u in range(N) for i in range(1, N + 1)}
-
-    for u in range(N):
-        mdl.add_constraint(mdl.sum(x[u, i] for i in range(1, N + 1)) == 1, ctname=f"alo_amo_v_{u}")
-    for i in range(1, N + 1):
-        mdl.add_constraint(mdl.sum(x[u, i] for u in range(N)) == 1, ctname=f"alo_amo_l_{i}")
-
-    f = {u: mdl.sum(i * x[u, i] for i in range(1, N + 1)) for u in range(N)}
-    k = mdl.integer_var(lb=0, ub=N // 2, name="k")
-
-    for u, v in edges:
-        diff = f[u] - f[v]
-        abs_d = mdl.integer_var(lb=1, ub=N - 1, name=f"abs_{u}_{v}")
-        s = mdl.binary_var(name=f"s_{u}_{v}")
-        b = mdl.binary_var(name=f"b_{u}_{v}")
-
-        mdl.add_constraint(abs_d >= diff)
-        mdl.add_constraint(abs_d >= -diff)
-        mdl.add_constraint(abs_d <= diff + 2 * N * (1 - s))
-        mdl.add_constraint(abs_d <= -diff + 2 * N * s)
-
-        mdl.add_constraint(abs_d <= k + N * (1 - b))
-        mdl.add_constraint(N - abs_d <= k + N * b)
-
-    mdl.minimize(k)
+    mdl, x, f, k = build_cplex_model(N, edges, sb_rotation=sb_rotation)
     t_enc_end = time.perf_counter()
     encode_time = t_enc_end - t_enc_start
 
@@ -204,6 +240,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Solve CBMP using IBM CPLEX / docplex MIP baseline")
     parser.add_argument("dataset", help="name of .mtx file in datasets/ or direct path")
     parser.add_argument("--timeout", type=float, default=600.0, help="time limit in seconds")
+    parser.add_argument("--sb-rotation", action=argparse.BooleanOptionalAction, default=True, help="enable rotation symmetry breaking (default: True)")
     parser.add_argument("--json-out", type=str, default=None, help="path to append statistics as JSON line")
     args = parser.parse_args()
 
@@ -211,6 +248,7 @@ if __name__ == "__main__":
         dataset=args.dataset,
         timeout=args.timeout,
         verbose=True,
+        sb_rotation=args.sb_rotation,
     )
 
     if args.json_out:
