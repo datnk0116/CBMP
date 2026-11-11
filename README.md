@@ -201,14 +201,20 @@ python analysis/make_plots.py results_v2/runs.jsonl --output-dir results_v2/figu
 ## 7. Hoàn thiện kết quả (Finalize)
 
 Khi toàn bộ thực nghiệm sạch trong `results_v2/` đã hoàn thành và được kiểm chứng hợp lệ:
-1. Lưu trữ kết quả pilot cũ (timeout 10s, 2 đồ thị, không dùng cho báo cáo chính thức):
-   ```bash
-   git mv results results_pilot
-   ```
+1. Lưu trữ kết quả pilot cũ (chạy trên 4 đồ thị: `14_bus`, `30_bus`, `494_bus`, `662_bus`, timeout 60s, không ghi `git_commit`):
+   - Để tránh lồng thư mục (do `results/` cũ đang chứa thư mục con `results/pilot/` bên trong):
+     ```bash
+     # Nếu results/pilot tồn tại, tách riêng thư mục pilot trước:
+     git mv results/pilot results_pilot
+
+     # Sau đó di chuyển phần còn lại (bảng biểu, đồ thị cũ):
+     git mv results results_pilot_tables
+     ```
+     *(Ghi chú: Nếu di chuyển trực tiếp cả thư mục thì dùng `git mv results results_pilot_old`, chứa results/pilot/ lồng bên trong).*
 2. Sao chép kết quả chính thức từ `results_v2/` sang `results/` và commit:
    ```bash
    cp -r results_v2 results
-   git add results_pilot results
+   git add results_pilot results_pilot_tables results
    git commit -m "chore: archive pilot results and commit finalized experiment results"
    ```
 
