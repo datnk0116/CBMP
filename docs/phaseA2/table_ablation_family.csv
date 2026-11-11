@@ -5,4 +5,4 @@ variant vs none,heuristic_ub,0.8389,"[0.6307, 0.9988]","[0.3872, 2.3243]",22/30
 variant vs none,all,0.4037,"[0.2796, 0.6815]","[0.1078, 1.1426]",27/30
 rotation_reflection vs rotation,rotation_reflection,1.1308,"[0.9246, 1.3815]","[0.5920, 1.8806]",12/30
 all vs rotation_reflection,all,0.8097,"[0.5401, 1.2120]","[0.1093, 1.8656]",21/30
-heuristic_ub vs none,heuristic_ub,0.8389,"[0.6307, 0.9988]","[0.3872, 2.3243]",22/30
+all vs rotation,all,0.8861,"[0.6433, 1.3030]","[0.2055, 2.2286]",19/30

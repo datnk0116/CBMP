@@ -733,7 +733,7 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
         ("variant vs none", "all", "all", "none"),
         ("rotation_reflection vs rotation", "rotation_reflection", "rotation_reflection", "rotation"),
         ("all vs rotation_reflection", "all", "all", "rotation_reflection"),
-        ("heuristic_ub vs none", "heuristic_ub", "heuristic_ub", "none"),
+        ("all vs rotation", "all", "all", "rotation"),
     ]
 
     rows = []
@@ -785,6 +785,59 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
         csv_path = os.path.join(out_dir, f"{base_filename}.csv")
         df.to_csv(csv_path, index=False)
     print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
+
+    # Generate table_ablation_family_per_graph.csv
+    datasets = sorted(list(set(ds for (ds, seed) in pairs_map.keys())))
+    per_graph_rows = []
+    for ds in datasets:
+        for comp_group, var_label, var_target, var_ref in comparisons:
+            comp_name = f"{var_target} vs {var_ref}"
+            ratios = []
+            faster_count = 0
+            total_count = 0
+            for (d, seed), vmap in pairs_map.items():
+                if d == ds and var_target in vmap and var_ref in vmap:
+                    rec_t = vmap[var_target]
+                    rec_r = vmap[var_ref]
+                    if rec_t.get("status") == "OPTIMAL" and rec_r.get("status") == "OPTIMAL":
+                        t_target = rec_t.get("solve_time", 0.0)
+                        t_ref = rec_r.get("solve_time", 0.0)
+                        if t_ref > 0:
+                            ratio = t_target / t_ref
+                            ratios.append(ratio)
+                            total_count += 1
+                            if t_target < t_ref:
+                                faster_count += 1
+            if ratios:
+                med = float(np.median(ratios))
+                min_r = float(np.min(ratios))
+                max_r = float(np.max(ratios))
+                med_str = f"{med:.4f}"
+                min_str = f"{min_r:.4f}"
+                max_str = f"{max_r:.4f}"
+                faster_str = f"{faster_count}/{total_count}"
+            else:
+                med_str = "-"
+                min_str = "-"
+                max_str = "-"
+                faster_str = "0/0"
+
+            per_graph_rows.append({
+                "dataset": ds,
+                "comparison": comp_name,
+                "median_time_ratio": med_str,
+                "min": min_str,
+                "max": max_str,
+                "faster_pairs": faster_str,
+            })
+
+    df_per_graph = pd.DataFrame(per_graph_rows)
+    for out_dir in output_dirs:
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path_pg = os.path.join(out_dir, "table_ablation_family_per_graph.csv")
+        df_per_graph.to_csv(csv_path_pg, index=False)
+    print(f"Table saved: table_ablation_family_per_graph.csv in {output_dirs[0]}/")
+
     return df
 
 def make_table_ablation_phases(records, base_filename="table_ablation_phases", output_dirs=("results_v2/tables",)):
