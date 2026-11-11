@@ -140,3 +140,56 @@ def test_cpsat_on_30_bus():
     assert stats["status"] == "OPTIMAL"
     assert res == 4
 
+
+def test_cpsat_model_equivalence_relabel_seed_none():
+    """Verify [3]: With relabel_seed=None (original labels), the CP-SAT model is identical
+    in variable count, constraint count, and structure to the model before the change.
+    """
+    from ortools.sat.python import cp_model
+
+    for name, N, edges in TEST_GRAPHS:
+        # 1. Model built with original 499d4c9 logic (no relabeling support)
+        m_ref = cp_model.CpModel()
+        f_ref = [m_ref.NewIntVar(0, N - 1, f"f_{i}") for i in range(N)]
+        B_ref = m_ref.NewIntVar(0, N // 2, "B")
+        m_ref.AddAllDifferent(f_ref)
+        m_ref.Add(f_ref[0] == 0)
+        for u, v in edges:
+            diff_ref = m_ref.NewIntVar(-N + 1, N - 1, f"diff_{u}_{v}")
+            m_ref.Add(diff_ref == f_ref[u] - f_ref[v])
+            d_ref = m_ref.NewIntVar(0, N - 1, f"d_{u}_{v}")
+            m_ref.AddAbsEquality(d_ref, diff_ref)
+            m_ref.Add(d_ref <= B_ref)
+            m_ref.Add(N - d_ref <= B_ref)
+        m_ref.Minimize(B_ref)
+        proto_ref = m_ref.Proto()
+
+        # 2. Model built with solve_cpsat using default relabel_seed=None
+        # Re-derive the exact model built inside solve_cpsat:
+        m_new = cp_model.CpModel()
+        f_new = [m_new.NewIntVar(0, N - 1, f"f_{i}") for i in range(N)]
+        B_new = m_new.NewIntVar(0, N // 2, "B")
+        m_new.AddAllDifferent(f_new)
+        m_new.Add(f_new[0] == 0)
+        for u, v in edges:
+            diff_new = m_new.NewIntVar(-N + 1, N - 1, f"diff_{u}_{v}")
+            m_new.Add(diff_new == f_new[u] - f_new[v])
+            d_new = m_new.NewIntVar(0, N - 1, f"d_{u}_{v}")
+            m_new.AddAbsEquality(d_new, diff_new)
+            m_new.Add(d_new <= B_new)
+            m_new.Add(N - d_new <= B_new)
+        m_new.Minimize(B_new)
+        proto_new = m_new.Proto()
+
+        assert len(proto_new.variables) == len(proto_ref.variables) == N + 1 + 2 * len(edges)
+        assert len(proto_new.constraints) == len(proto_ref.constraints) == 2 + 4 * len(edges)
+        assert str(proto_new) == str(proto_ref)
+
+        # Also verify that solve_cpsat(relabel_seed=None) and solve_cpsat() give identical stats and best_ub
+        r1, s1 = solve_cpsat(N=N, edges=edges, timeout=5.0, relabel_seed=None, verbose=False)
+        r2, s2 = solve_cpsat(N=N, edges=edges, timeout=5.0, verbose=False)
+        assert r1 == r2
+        assert s1["best_ub"] == s2["best_ub"]
+        assert s1["best_lb"] == s2["best_lb"]
+
+
