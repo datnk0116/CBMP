@@ -335,65 +335,249 @@ def test_reflection_only_enforces_prerequisite():
 
 
 @pytest.mark.parametrize("encoding", ["order", "pairwise"])
-def test_formula_level_reflection_without_rotation(encoding):
-    """Verify formula-level reflection symmetry breaking independently generates valid clauses."""
+def test_rotation_anchor_present_in_formula_when_both_enabled(encoding):
+    """
+    Verify that when both rotation and reflection symmetry breaking are enabled,
+    the generated formula explicitly contains the unit clause fixing f(0) = 0.
+    """
     N = 4
+    if encoding == "order":
+        from sat_encodings import build_order_base_formula, break_rotation_symmetry, break_reflection_symmetry_order
+        base_clauses, X, G, nv = build_order_base_formula(N)
+        rot_clauses = break_rotation_symmetry(X, 0)
+        ref_clauses = break_reflection_symmetry_order(N, X, G)
+    else:
+        from sat_encodings import build_pairwise_base_formula, break_rotation_symmetry, break_reflection_symmetry_pairwise
+        base_clauses, X, nv = build_pairwise_base_formula(N)
+        rot_clauses = break_rotation_symmetry(X, 0)
+        ref_clauses = break_reflection_symmetry_pairwise(N, X)
+
+    combined = base_clauses + rot_clauses + ref_clauses
+    expected_unit = [X[0][0]]
+    assert expected_unit in combined, f"Formula for {encoding} must contain rotation anchor unit clause {expected_unit}"
+
+
+@pytest.mark.parametrize("encoding", ["order", "pairwise"])
+@pytest.mark.parametrize("N", [1, 2, 3, 4])
+def test_formula_level_reflection_semantics(encoding, N):
+    """
+    Verify semantic correctness of reflection symmetry breaking at formula level:
+    - N < 3 must return empty list (safe boundary handling).
+    - N >= 3 must enforce f(1) < f(N - 1).
+    """
     if encoding == "order":
         from sat_encodings import build_order_base_formula, break_reflection_symmetry_order
         clauses, X, G, nv = build_order_base_formula(N)
         ref_clauses = break_reflection_symmetry_order(N, X, G)
-        assert len(ref_clauses) > 0
+        if N < 3:
+            assert ref_clauses == [], f"Order reflection for N={N} must be empty"
+        else:
+            assert len(ref_clauses) == N
+            for i, cl in enumerate(ref_clauses):
+                assert cl == [-X[N - 1][i], -G[1][i]]
     else:
         from sat_encodings import build_pairwise_base_formula, break_reflection_symmetry_pairwise
         clauses, X, nv = build_pairwise_base_formula(N)
         ref_clauses = break_reflection_symmetry_pairwise(N, X)
-        assert len(ref_clauses) > 0
+        if N < 3:
+            assert ref_clauses == [], f"Pairwise reflection for N={N} must be empty"
+        else:
+            expected_count = N * (N + 1) // 2
+            assert len(ref_clauses) == expected_count
+            for cl in ref_clauses:
+                assert len(cl) == 2
+                assert cl[0] < 0 and cl[1] < 0
 
 
-def test_symmetry_breaking_orbit_representative_preservation():
+@pytest.mark.parametrize("encoding", ["order", "pairwise"])
+@pytest.mark.parametrize("sb_rot,sb_ref", [
+    (False, False),
+    (True, False),
+    (True, True),
+])
+def test_formula_level_symmetry_combinations(encoding, sb_rot, sb_ref):
     """
-    For small graphs, enumerate all optimal bijections V -> {0..N-1} by brute force,
-    partition them into rotational and dihedral equivalence classes,
-    and verify that:
-    1. Every rotational orbit contains at least one representative with f(0) == 0.
-    2. Every dihedral orbit contains at least one representative with f(0) == 0 and f(1) < f(N-1) (for N >= 3).
-    3. Measure the exact solution counts and verify that SAT models match these representatives.
+    Verify formula construction across symmetry breaking combinations:
+    - Unit clause [X[0][0]] is present if and only if sb_rotation=True.
+    - Reflection clauses are present if and only if sb_rotation=True and sb_reflection=True (for N >= 3).
+    - Ensures tests never assert reflection symmetry clauses when reflection is disabled.
+    """
+    N = 4
+    if encoding == "order":
+        from sat_encodings import (
+            build_order_base_formula,
+            break_rotation_symmetry,
+            break_reflection_symmetry_order,
+        )
+        base_clauses, X, G, nv = build_order_base_formula(N)
+        clauses = list(base_clauses)
+        if sb_rot:
+            clauses.extend(break_rotation_symmetry(X, 0))
+            if sb_ref and N >= 3:
+                clauses.extend(break_reflection_symmetry_order(N, X, G))
+        ref_candidates = break_reflection_symmetry_order(N, X, G)
+    else:
+        from sat_encodings import (
+            build_pairwise_base_formula,
+            break_rotation_symmetry,
+            break_reflection_symmetry_pairwise,
+        )
+        base_clauses, X, nv = build_pairwise_base_formula(N)
+        clauses = list(base_clauses)
+        if sb_rot:
+            clauses.extend(break_rotation_symmetry(X, 0))
+            if sb_ref and N >= 3:
+                clauses.extend(break_reflection_symmetry_pairwise(N, X))
+        ref_candidates = break_reflection_symmetry_pairwise(N, X)
+
+    unit_anchor = [X[0][0]]
+    if sb_rot:
+        assert unit_anchor in clauses, f"Rotation anchor {unit_anchor} must be in formula when sb_rotation=True"
+    else:
+        assert unit_anchor not in clauses, f"Rotation anchor {unit_anchor} must not be in formula when sb_rotation=False"
+
+    if sb_ref:
+        for cl in ref_candidates:
+            assert cl in clauses, f"Reflection clause {cl} must be in formula when sb_reflection=True"
+    else:
+        for cl in ref_candidates:
+            assert cl not in clauses, f"Reflection clause {cl} must not be in formula when sb_reflection=False"
+
+
+def enumerate_projected_sat_models(N, edges, UB, encoding="order", sb_rot=False, sb_ref=False):
+    """
+    Enumerate all distinct vertex label assignments f: V -> {0..N-1}
+    satisfying the SAT formula for upper bound UB (cyclic bandwidth <= UB - 1).
+    Projects onto original X variables only: auxiliary variables (ladder G, commander/AMO)
+    are excluded by adding blocking clauses strictly over X variables.
+    """
+    from pysat.solvers import Cadical195
+
+    if encoding == "order":
+        from sat_encodings import (
+            build_order_base_formula,
+            cyclic_edge_order,
+            break_rotation_symmetry,
+            break_reflection_symmetry_order,
+        )
+        base_clauses, X, G, final_a = build_order_base_formula(N)
+        clauses = list(base_clauses)
+        if sb_rot:
+            clauses.extend(break_rotation_symmetry(X, 0))
+            if sb_ref and N >= 3:
+                clauses.extend(break_reflection_symmetry_order(N, X, G))
+        for u, v in edges:
+            clauses.extend(cyclic_edge_order(N, X, G, u, v, UB))
+    else:  # pairwise
+        from sat_encodings import (
+            build_pairwise_base_formula,
+            cyclic_edge_pairwise,
+            break_rotation_symmetry,
+            break_reflection_symmetry_pairwise,
+        )
+        base_clauses, X, final_a = build_pairwise_base_formula(N)
+        clauses = list(base_clauses)
+        if sb_rot:
+            clauses.extend(break_rotation_symmetry(X, 0))
+            if sb_ref and N >= 3:
+                clauses.extend(break_reflection_symmetry_pairwise(N, X))
+        for u, v in edges:
+            clauses.extend(cyclic_edge_pairwise(N, X, u, v, UB))
+
+    solver = Cadical195()
+    solver.append_formula(clauses)
+
+    projected_assignments = set()
+    while solver.solve():
+        model = set(solver.get_model())
+        assignment = [None] * N
+        blocking = []
+        for u in range(N):
+            for i in range(N):
+                var = X[u][i]
+                if var in model:
+                    assignment[u] = i
+                    blocking.append(-var)
+                    break
+        assert None not in assignment, f"Incomplete assignment in SAT model: {assignment}"
+        projected_assignments.add(tuple(assignment))
+        solver.add_clause(blocking)
+
+    solver.delete()
+    return projected_assignments
+
+
+@pytest.mark.parametrize("name, N, edges", [
+    ("edge_2", 2, [(0, 1)]),
+    ("path_3", 3, [(0, 1), (1, 2)]),
+    ("path_4", 4, [(0, 1), (1, 2), (2, 3)]),
+    ("cycle_4", 4, [(0, 1), (1, 2), (2, 3), (0, 3)]),
+    ("star_4", 4, [(0, 1), (0, 2), (0, 3)]),
+    ("disconnected_2k2_4", 4, [(0, 1), (2, 3)]),
+])
+@pytest.mark.parametrize("encoding", ["order", "pairwise"])
+@pytest.mark.parametrize("sb_rot, sb_ref", [
+    (False, False),
+    (True, False),
+    (True, True),
+])
+def test_projected_sat_models_match_canonical_orbit_representatives(name, N, edges, encoding, sb_rot, sb_ref):
+    """
+    Genuine SAT model enumeration and orbit verification:
+    1. Enumerate all valid bijections V -> {0..N-1} via brute force achieving bandwidth <= opt.
+    2. Partition solutions into rotational/dihedral equivalence classes under D_N.
+    3. Construct expected canonical representatives (f(0)=0 for rot; f(0)=0 and f(1)<f(N-1) for dihedral).
+    4. Enumerate SAT models, projecting strictly onto original X variables (excluding auxiliaries).
+    5. Compare projected SAT assignments against expected canonical representatives:
+       - Every equivalence class has exactly one representative.
+       - No equivalence class is lost.
+       - No invalid representative is introduced.
     """
     import itertools
-    test_graphs = [
-        (3, [(0, 1), (1, 2)]),
-        (4, [(0, 1), (1, 2), (2, 3)]),
-        (4, [(0, 1), (0, 2), (0, 3)]),
-        (4, [(0, 1), (2, 3)]),
-    ]
+    opt = cyclic_bandwidth_bruteforce(N, edges)
+    UB = opt + 1  # SAT upper bound condition: bandwidth < UB <=> bandwidth <= opt
 
-    for N, edges in test_graphs:
-        opt = cyclic_bandwidth_bruteforce(N, edges)
-        all_perms = list(itertools.permutations(range(N)))
-        optimal_perms = [p for p in all_perms if compute_cyclic_bandwidth(N, edges, list(p)) == opt]
-        assert len(optimal_perms) > 0
+    all_perms = list(itertools.permutations(range(N)))
+    feasible_perms = {
+        p for p in all_perms if compute_cyclic_bandwidth(N, edges, list(p)) <= opt
+    }
+    assert len(feasible_perms) > 0
 
-        # Rotational orbits: p ~ q if exists c such that q(u) = (p(u) + c) % N
-        rot_reps = [p for p in optimal_perms if p[0] == 0]
-        # Verify every optimal perm has a rotational representative with p[0] == 0
-        for p in optimal_perms:
+    # Determine expected brute-force representative set
+    if not sb_rot and not sb_ref:
+        expected_reps = feasible_perms
+    elif sb_rot and not sb_ref:
+        # Rotation only: fix f(0) = 0
+        expected_reps = {p for p in feasible_perms if p[0] == 0}
+        # Verify every feasible permutation's rotation orbit is represented
+        for p in feasible_perms:
             shift = (N - p[0]) % N
-            rot_equiv = tuple((x + shift) % N for x in p)
-            assert rot_equiv in rot_reps
-
-        # Dihedral orbits (N >= 3): p ~ q under rotation + reflection
-        if N >= 3:
-            dihedral_reps = [p for p in rot_reps if p[1] < p[N - 1]]
-            for p in optimal_perms:
-                # First rotate so p[0] == 0
+            rot_p = tuple((x + shift) % N for x in p)
+            assert rot_p in expected_reps
+    else:  # sb_rot and sb_ref
+        if N < 3:
+            expected_reps = {p for p in feasible_perms if p[0] == 0}
+        else:
+            expected_reps = {p for p in feasible_perms if p[0] == 0 and p[1] < p[N - 1]}
+            # Verify every feasible permutation's dihedral orbit is represented
+            for p in feasible_perms:
                 shift = (N - p[0]) % N
                 r = tuple((x + shift) % N for x in p)
                 if r[1] > r[N - 1]:
-                    # Reflect: x -> (N - x) % N
                     r = tuple((N - x) % N for x in r)
-                assert r[0] == 0
-                assert r[1] <= r[N - 1]
-                assert r in optimal_perms
+                assert r in expected_reps
+
+    # Enumerate actual projected SAT models
+    actual_sat_models = enumerate_projected_sat_models(
+        N=N, edges=edges, UB=UB, encoding=encoding, sb_rot=sb_rot, sb_ref=sb_ref
+    )
+
+    # Bijective set comparison between projected SAT models and expected representatives
+    assert actual_sat_models == expected_reps, (
+        f"SAT projected models mismatch on {name} ({encoding}, rot={sb_rot}, ref={sb_ref}):\n"
+        f"  Missing: {expected_reps - actual_sat_models}\n"
+        f"  Unexpected: {actual_sat_models - expected_reps}"
+    )
 
 
 

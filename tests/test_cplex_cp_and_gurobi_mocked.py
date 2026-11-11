@@ -20,13 +20,15 @@ from graph_utils import compute_cyclic_bandwidth
 # ============================================================================
 
 class FakeCpoSolution:
-    def __init__(self, solve_status="Optimal", stop_cause=None, has_solution=True, assignment=None, obj_val=1, obj_bound=None):
+    def __init__(self, solve_status="Optimal", stop_cause=None, has_solution=True, assignment=None, obj_val=1, obj_bound=None, num_constraints=None, solver_log=""):
         self._solve_status = solve_status
         self._stop_cause = stop_cause
         self._has_solution = has_solution
         self._assignment = assignment or [1, 2, 3]  # 1-indexed in docplex.cp
         self._obj_val = obj_val
         self._obj_bound = obj_bound
+        self._num_constraints = num_constraints
+        self._solver_log = solver_log
 
     def is_solution(self):
         return self._has_solution
@@ -39,6 +41,14 @@ class FakeCpoSolution:
 
     def get_objective_bound(self):
         return self._obj_bound
+
+    def get_solver_info(self, key):
+        if key == "NumberOfConstraints":
+            return self._num_constraints
+        return None
+
+    def get_solver_log(self):
+        return self._solver_log
 
     def __getitem__(self, var):
         name = getattr(var, "name", str(var))
@@ -228,21 +238,84 @@ def test_cplex_cp_docplex_search_limit_without_incumbent(monkeypatch, mock_cpo_e
     assert stats["assignment"] is None
 
 
-def test_cplex_cp_statistics_semantics(monkeypatch, mock_cpo_environment):
-    """CPLEX CP statistics must report num_clauses as None, estimated_constraints, and num_constraints."""
+def test_cplex_cp_node_limit_near_timeout_with_incumbent_is_feasible(monkeypatch, mock_cpo_environment):
+    """
+    CPLEX CP stops at NodeLimit/SearchStoppedByLimit near configured timeout with incumbent.
+    Proves that wall-clock proximity alone cannot turn status into TIMEOUT.
+    """
     fake_sol = FakeCpoSolution(
-        solve_status="Optimal",
+        solve_status="Feasible",
+        stop_cause="NodeLimit",
         has_solution=True,
         assignment=[1, 2, 3],
         obj_val=1,
     )
 
-    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
-        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], sb_rotation=True, timeout=5.0, verbose=False)
+    # Mock time.perf_counter so elapsed time is 4.95s on timeout=5.0s
+    times = [100.0, 100.0, 100.0, 104.95]
+    monkeypatch.setattr("time.perf_counter", lambda: times.pop(0) if times else 104.95)
 
-    assert stats["num_clauses"] is None, "SAT clauses must be None for CP Optimizer"
-    assert stats["estimated_constraints"] == 2 + 1 + 1  # 2 edges + 1 all_different + 1 sb_rotation
-    assert "num_constraints" in stats
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "FEASIBLE", "NodeLimit must NOT become TIMEOUT solely due to elapsed time"
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] == [0, 1, 2]
+
+
+def test_cplex_cp_node_limit_near_timeout_without_incumbent_is_error(monkeypatch, mock_cpo_environment):
+    """
+    CPLEX CP stops at NodeLimit/SearchStoppedByLimit near configured timeout without incumbent.
+    Proves that wall-clock proximity alone cannot turn status into TIMEOUT.
+    """
+    fake_sol = FakeCpoSolution(
+        solve_status="Unknown",
+        stop_cause="NodeLimit",
+        has_solution=False,
+    )
+
+    times = [100.0, 100.0, 100.0, 104.95]
+    monkeypatch.setattr("time.perf_counter", lambda: times.pop(0) if times else 104.95)
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR", "NodeLimit without solution must NOT become TIMEOUT solely due to elapsed time"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_statistics_semantics(monkeypatch, mock_cpo_environment):
+    """CPLEX CP statistics must report num_clauses as None, estimated_constraints, and num_constraints."""
+    # Case A: solver exposes genuine NumberOfConstraints
+    fake_sol_with_c = FakeCpoSolution(
+        solve_status="Optimal",
+        has_solution=True,
+        assignment=[1, 2, 3],
+        obj_val=1,
+        num_constraints=12,
+    )
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol_with_c):
+        res, stats_a = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], sb_rotation=True, timeout=5.0, verbose=False)
+
+    assert stats_a["num_clauses"] is None, "SAT clauses must be None for CP Optimizer"
+    assert stats_a["estimated_constraints"] == 2 + 1 + 1  # 2 edges + 1 all_different + 1 sb_rotation
+    assert stats_a["num_constraints"] == 12
+
+    # Case B: solver does NOT expose NumberOfConstraints -> num_constraints must be None
+    fake_sol_no_c = FakeCpoSolution(
+        solve_status="Optimal",
+        has_solution=True,
+        assignment=[1, 2, 3],
+        obj_val=1,
+        num_constraints=None,
+    )
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol_no_c):
+        res, stats_b = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], sb_rotation=True, timeout=5.0, verbose=False)
+
+    assert stats_b["num_clauses"] is None
+    assert stats_b["estimated_constraints"] == 2 + 1 + 1
+    assert stats_b["num_constraints"] is None, "num_constraints must be None when no genuine solver statistic exists"
 
 
 def test_cplex_cp_aborted_stop_preserves_incumbent(monkeypatch, mock_cpo_environment):

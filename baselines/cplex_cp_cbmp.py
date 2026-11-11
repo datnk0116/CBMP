@@ -143,16 +143,10 @@ def solve_cplex_cp(
     # to avoid mixing CP constraints with SAT clauses in comparative tables.
     stats["num_clauses"] = None
     stats["estimated_constraints"] = len(edges) + 1 + (1 if sb_rotation else 0)
-
-    num_constraints = None
-    if mdl and hasattr(mdl, "get_all_expressions"):
-        try:
-            exprs = mdl.get_all_expressions()
-            obj = mdl.get_optimization_expression() if hasattr(mdl, "get_optimization_expression") else None
-            num_constraints = len([e for e in exprs if e is not obj])
-        except Exception:
-            num_constraints = None
-    stats["num_constraints"] = num_constraints
+    # Model expressions in Docplex CP contain nested AST subexpressions rather than pure
+    # top-level constraints. Do not expose unverified expression counts as exact constraint counts.
+    # num_constraints will be populated after solve only if the solver exposes genuine statistics.
+    stats["num_constraints"] = None
 
     t_sol_start = time.perf_counter()
     try:
@@ -177,6 +171,15 @@ def solve_cplex_cp(
             raw_c = sol.get_solver_info("NumberOfConstraints")
             if raw_c is not None:
                 stats["num_constraints"] = int(raw_c)
+        except Exception:
+            pass
+    elif sol and hasattr(sol, "get_solver_infos"):
+        try:
+            infos = sol.get_solver_infos()
+            if infos and hasattr(infos, "get_number_of_constraints"):
+                c = infos.get_number_of_constraints()
+                if c is not None and c > 0:
+                    stats["num_constraints"] = int(c)
         except Exception:
             pass
 
@@ -231,17 +234,20 @@ def solve_cplex_cp(
     clean_sol_status = sol_status.lower().replace(" ", "").replace("_", "")
     clean_fail_status = fail_status.lower().replace(" ", "").replace("_", "")
 
-    # Explicit evidence of time limit from stop cause or status
+    # Explicit evidence of time limit from stop cause, status, or solver log
     is_timelimit = (
         "timelimit" in clean_stop_cause
         or "timelimit" in clean_sol_status
         or "timelimit" in clean_fail_status
     )
-    # Check solve_time if stopped by a limit and timeout was set
-    if not is_timelimit and timeout is not None and timeout > 0:
-        if "limit" in clean_stop_cause or "limit" in clean_fail_status or "limit" in clean_sol_status:
-            if solve_time >= max(timeout - 0.5, timeout * 0.9):
-                is_timelimit = True
+    if not is_timelimit and sol:
+        try:
+            if hasattr(sol, "get_solver_log"):
+                log_txt = str(sol.get_solver_log() or "").lower()
+                if "time limit reached" in log_txt or "stopped by time limit" in log_txt or "timelimit reached" in log_txt:
+                    is_timelimit = True
+        except Exception:
+            pass
 
     is_abort_stop = (
         "abort" in clean_stop_cause

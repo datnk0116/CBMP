@@ -445,3 +445,204 @@ def test_status_aggregation_and_par2_exclusion_policy():
     expected_par2 = (10.0 + 1200.0 + 1200.0) / 3.0
     assert abs(par2["s1"] - expected_par2) < 1e-3
 
+
+def test_par2_and_repetition_twelve_scenarios():
+    """
+    Comprehensive tests covering all 12 specified PAR2 and repetition scenarios:
+    1. All repetitions OPTIMAL.
+    2. OPTIMAL mixed with TIMEOUT.
+    3. OPTIMAL mixed with UNAVAILABLE.
+    4. OPTIMAL mixed with LICENSE_ERROR.
+    5. OPTIMAL mixed with SIZE_LIMIT.
+    6. Only UNAVAILABLE.
+    7. Only LICENSE_ERROR.
+    8. Only SIZE_LIMIT.
+    9. FEASIBLE mixed with TIMEOUT.
+    10. ERROR and INTERRUPTED.
+    11. Missing records.
+    12. Mixed repetitions with different timeout values.
+    """
+    from analysis.make_tables import aggregate_repetitions, compute_summary_stats, format_cell_value
+    import pandas as pd
+    import numpy as np
+
+    # 1. All repetitions OPTIMAL
+    reps_s1 = [
+        {"dataset": "d1", "solver": "cadical", "status": "OPTIMAL", "solve_time": 10.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d1", "solver": "cadical", "status": "OPTIMAL", "solve_time": 12.0, "time_limit": 600.0, "rep": 2},
+        {"dataset": "d1", "solver": "cadical", "status": "OPTIMAL", "solve_time": 11.0, "time_limit": 600.0, "rep": 3},
+    ]
+    agg_s1 = aggregate_repetitions(reps_s1)[0]
+    assert agg_s1["status"] == "OPTIMAL"
+    assert agg_s1["n_total"] == 3
+    assert agg_s1["n_algorithmic"] == 3
+    assert agg_s1["n_optimal"] == 3
+    assert agg_s1["par2"] == 11.0  # mean(10, 12, 11) = 11.0
+    assert format_cell_value(agg_s1["status"], solve_time=agg_s1["solve_time"]) == "11.0000"
+
+    # 2. OPTIMAL mixed with TIMEOUT -> PARTIAL
+    reps_s2 = [
+        {"dataset": "d2", "solver": "cadical", "status": "OPTIMAL", "solve_time": 15.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d2", "solver": "cadical", "status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0, "rep": 2},
+        {"dataset": "d2", "solver": "cadical", "status": "OPTIMAL", "solve_time": 17.0, "time_limit": 600.0, "rep": 3},
+    ]
+    agg_s2 = aggregate_repetitions(reps_s2)[0]
+    assert agg_s2["status"] == "PARTIAL"
+    assert agg_s2["n_total"] == 3
+    assert agg_s2["n_algorithmic"] == 3
+    assert agg_s2["n_optimal"] == 2
+    assert agg_s2["n_timeout"] == 1
+    # PAR2 = (15.0 + 1200.0 + 17.0) / 3 = 1232 / 3 = 410.6666...
+    assert abs(agg_s2["par2"] - (1232.0 / 3.0)) < 1e-4
+    assert format_cell_value(agg_s2["status"], solve_time=agg_s2["solve_time"], n_optimal=agg_s2["n_optimal"], n_algorithmic=agg_s2["n_algorithmic"]) == "2/3 16.0000*"
+
+    # 3. OPTIMAL mixed with UNAVAILABLE -> OPTIMAL on algorithmic population
+    reps_s3 = [
+        {"dataset": "d3", "solver": "cadical", "status": "OPTIMAL", "solve_time": 8.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d3", "solver": "cadical", "status": "UNAVAILABLE", "solve_time": 0.0, "time_limit": 600.0, "rep": 2},
+        {"dataset": "d3", "solver": "cadical", "status": "OPTIMAL", "solve_time": 10.0, "time_limit": 600.0, "rep": 3},
+    ]
+    agg_s3 = aggregate_repetitions(reps_s3)[0]
+    assert agg_s3["status"] == "OPTIMAL"
+    assert agg_s3["n_total"] == 3
+    assert agg_s3["n_algorithmic"] == 2
+    assert agg_s3["n_optimal"] == 2
+    assert agg_s3["n_unavailable"] == 1
+    assert agg_s3["par2"] == 9.0  # mean(8, 10) = 9.0; UNAVAILABLE excluded
+
+    # 4. OPTIMAL mixed with LICENSE_ERROR -> OPTIMAL on algorithmic population
+    reps_s4 = [
+        {"dataset": "d4", "solver": "cplex", "status": "OPTIMAL", "solve_time": 20.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d4", "solver": "cplex", "status": "LICENSE_ERROR", "solve_time": 0.0, "time_limit": 600.0, "rep": 2},
+    ]
+    agg_s4 = aggregate_repetitions(reps_s4)[0]
+    assert agg_s4["status"] == "OPTIMAL"
+    assert agg_s4["n_total"] == 2
+    assert agg_s4["n_algorithmic"] == 1
+    assert agg_s4["n_license_error"] == 1
+    assert agg_s4["par2"] == 20.0
+
+    # 5. OPTIMAL mixed with SIZE_LIMIT -> OPTIMAL on algorithmic population
+    reps_s5 = [
+        {"dataset": "d5", "solver": "cplex", "status": "OPTIMAL", "solve_time": 25.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d5", "solver": "cplex", "status": "SIZE_LIMIT", "solve_time": 0.05, "time_limit": 600.0, "rep": 2},
+    ]
+    agg_s5 = aggregate_repetitions(reps_s5)[0]
+    assert agg_s5["status"] == "OPTIMAL"
+    assert agg_s5["n_total"] == 2
+    assert agg_s5["n_algorithmic"] == 1
+    assert agg_s5["n_size_limit"] == 1
+    assert agg_s5["par2"] == 25.0
+
+    # 6. Only UNAVAILABLE
+    reps_s6 = [
+        {"dataset": "d6", "solver": "cadical", "status": "UNAVAILABLE", "solve_time": 0.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d6", "solver": "cadical", "status": "UNAVAILABLE", "solve_time": 0.0, "time_limit": 600.0, "rep": 2},
+    ]
+    agg_s6 = aggregate_repetitions(reps_s6)[0]
+    assert agg_s6["status"] == "UNAVAILABLE"
+    assert agg_s6["n_total"] == 2
+    assert agg_s6["n_algorithmic"] == 0
+    assert agg_s6["n_unavailable"] == 2
+    assert agg_s6.get("par2") is None
+    assert "par2" not in agg_s6
+    assert format_cell_value(agg_s6["status"]) == "UNAV"
+
+    # 7. Only LICENSE_ERROR
+    reps_s7 = [
+        {"dataset": "d7", "solver": "cplex", "status": "LICENSE_ERROR", "solve_time": 0.0, "time_limit": 600.0, "rep": 1},
+    ]
+    agg_s7 = aggregate_repetitions(reps_s7)[0]
+    assert agg_s7["status"] == "LICENSE_ERROR"
+    assert agg_s7["n_total"] == 1
+    assert agg_s7["n_algorithmic"] == 0
+    assert agg_s7["n_license_error"] == 1
+    assert agg_s7.get("par2") is None
+    assert "par2" not in agg_s7
+    assert format_cell_value(agg_s7["status"]) == "LIC"
+
+    # 8. Only SIZE_LIMIT
+    reps_s8 = [
+        {"dataset": "d8", "solver": "cplex", "status": "SIZE_LIMIT", "solve_time": 0.1, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d8", "solver": "cplex", "status": "SIZE_LIMIT", "solve_time": 0.1, "time_limit": 600.0, "rep": 2},
+    ]
+    agg_s8 = aggregate_repetitions(reps_s8)[0]
+    assert agg_s8["status"] == "SIZE_LIMIT"
+    assert agg_s8["n_total"] == 2
+    assert agg_s8["n_algorithmic"] == 0
+    assert agg_s8["n_size_limit"] == 2
+    assert agg_s8.get("par2") is None
+    assert "par2" not in agg_s8
+    assert format_cell_value(agg_s8["status"]) == "SL"
+
+    # 9. FEASIBLE mixed with TIMEOUT -> FEASIBLE with incumbent preserved
+    reps_s9 = [
+        {"dataset": "d9", "solver": "cplex", "status": "FEASIBLE", "best_ub": 4, "solve_time": 50.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d9", "solver": "cplex", "status": "TIMEOUT", "best_ub": 5, "solve_time": 600.0, "time_limit": 600.0, "rep": 2},
+    ]
+    agg_s9 = aggregate_repetitions(reps_s9)[0]
+    assert agg_s9["status"] == "FEASIBLE"
+    assert agg_s9["best_ub"] == 4
+    assert agg_s9["n_total"] == 2
+    assert agg_s9["n_algorithmic"] == 2
+    assert agg_s9["n_feasible"] == 1
+    assert agg_s9["n_timeout"] == 1
+    assert agg_s9["par2"] == 1200.0  # both non-optimal penalized as 2 * 600
+    assert format_cell_value(agg_s9["status"], best_ub=agg_s9["best_ub"]) == "FEAS(4)"
+
+    # 10. ERROR and INTERRUPTED
+    reps_s10 = [
+        {"dataset": "d10", "solver": "cadical", "status": "ERROR", "solve_time": 1.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d10", "solver": "cadical", "status": "INTERRUPTED", "solve_time": 30.0, "best_ub": 7, "time_limit": 600.0, "rep": 2},
+    ]
+    agg_s10 = aggregate_repetitions(reps_s10)[0]
+    assert agg_s10["status"] in ("ERROR", "INTERRUPTED")
+    assert agg_s10["n_total"] == 2
+    assert agg_s10["n_algorithmic"] == 2
+    assert agg_s10["n_error"] == 1
+    assert agg_s10["n_interrupted"] == 1
+    assert agg_s10["par2"] == 1200.0  # both penalized as 2 * 600
+
+    # 11. Missing records
+    assert aggregate_repetitions([]) == []
+    df_empty = pd.DataFrame({"cadical": [None, None]}, index=["d_miss1", "d_miss2"])
+    solved_e, sl_e, par2_e, sp_e = compute_summary_stats(df_empty, ["cadical"], timeout=600.0)
+    assert solved_e["cadical"] == 0
+    assert sl_e["cadical"] == 0
+    assert np.isnan(par2_e["cadical"])
+
+    # 12. Mixed repetitions with different timeout values
+    reps_s12 = [
+        {"dataset": "d12", "solver": "cadical", "status": "TIMEOUT", "solve_time": 100.0, "time_limit": 100.0, "rep": 1},
+        {"dataset": "d12", "solver": "cadical", "status": "TIMEOUT", "solve_time": 200.0, "time_limit": 200.0, "rep": 2},
+    ]
+    agg_s12 = aggregate_repetitions(reps_s12)[0]
+    assert agg_s12["status"] == "TIMEOUT"
+    # Rep 1 penalty is 2 * 100 = 200, Rep 2 penalty is 2 * 200 = 400 -> mean = 300.0
+    assert agg_s12["par2"] == 300.0
+
+    # Cross-dataset summary stats integrating scenarios 1-10
+    all_aggs = [agg_s1, agg_s2, agg_s3, agg_s4, agg_s5, agg_s6, agg_s7, agg_s8, agg_s9, agg_s10]
+    df_multi = pd.DataFrame({"solver_col": all_aggs}, index=[f"d{i}" for i in range(1, 11)])
+    solved_m, sl_m, par2_m, _ = compute_summary_stats(df_multi, ["solver_col"], timeout=600.0)
+
+    # Proven optimal: d1, d3, d4, d5 (d2 is PARTIAL, not counted as fully proven solved in summary solved count)
+    assert solved_m["solver_col"] == 4
+    # SIZE_LIMIT tracked: d8 (d5 had 1 SL rep, but was OPTIMAL on algorithmic attempt)
+    assert sl_m["solver_col"] == 1
+
+    # PAR2 population:
+    # d1: 11.0
+    # d2: 1232/3 = 410.6667
+    # d3: 9.0
+    # d4: 20.0
+    # d5: 25.0
+    # d6: UNAVAILABLE -> excluded
+    # d7: LICENSE_ERROR -> excluded
+    # d8: SIZE_LIMIT -> excluded
+    # d9: 1200.0
+    # d10: 1200.0
+    expected_par2_list = [11.0, 1232.0 / 3.0, 9.0, 20.0, 25.0, 1200.0, 1200.0]
+    expected_mean_par2 = float(np.mean(expected_par2_list))
+    assert abs(par2_m["solver_col"] - expected_mean_par2) < 1e-3
+
