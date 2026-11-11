@@ -25,7 +25,10 @@ def aggregate_repetitions(records):
         heur = bool(cfg.get("heuristic_ub", False))
         num_w = cfg.get("num_workers", 1)
         seed = r.get("relabel_seed")
-        key = (ds, sol, rot, ref, heur, num_w, seed)
+        enc = str(r.get("encoding") or cfg.get("encoding", "order")).lower()
+        mode = str(r.get("solving_mode") or cfg.get("solving_mode", "incremental")).lower()
+        eo = str(r.get("eo_strategy") or cfg.get("eo_strategy", "commander")).lower()
+        key = (ds, sol, rot, ref, heur, num_w, seed, enc, mode, eo)
         groups.setdefault(key, []).append(r)
 
     aggregated = []
@@ -188,11 +191,15 @@ def get_source_key(record):
         rot = bool(cfg.get("sb_rotation", record.get("sb_rotation", False)))
         ref = bool(cfg.get("sb_reflection", record.get("sb_reflection", False)))
         heur = bool(cfg.get("heuristic_ub", record.get("heuristic_ub", False)))
+        enc = str(record.get("encoding") or cfg.get("encoding", "order")).lower()
+        mode = str(record.get("solving_mode") or cfg.get("solving_mode", "incremental")).lower()
+        eo = str(record.get("eo_strategy") or cfg.get("eo_strategy", "commander")).lower()
         variant = cfg.get("variant", record.get("variant"))
+        extra_flags = (enc, mode, eo) if (enc != "order" or mode != "incremental" or eo != "commander") else ()
         if variant:
-            canonical_config = (str(variant), rot, ref, heur)
+            canonical_config = (str(variant), rot, ref, heur) + extra_flags
         else:
-            canonical_config = (rot, ref, heur)
+            canonical_config = (rot, ref, heur) + extra_flags
 
     return (solver_name, canonical_config)
 

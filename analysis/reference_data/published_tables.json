@@ -1,0 +1,169 @@
+{
+  "metadata": {
+    "source": "Published CBMP Literature (CBP Reference Paper)",
+    "description": "Published reference performance and statistical significance tables for TSCB, ITPS, and NILS",
+    "note": "These values are published baseline references from the literature, not produced by CBMP SAT/CP-SAT/CPLEX solvers."
+  },
+  "table2": {
+    "title": "Summary of the experimental performance comparison among the two reference methods in the CBP literature (i.e., TSCB [15] and ITPS [17]) and the NILS algorithm over 113 benchmark instances: 85 standard graphs with known optimal solutions, and 28 Harwell-Boeing instances.",
+    "columns": [
+      "Graph type",
+      "Num.",
+      "TSCB Avg. Cbb",
+      "TSCB Avg. Tb",
+      "TSCB O-RMSE",
+      "TSCB % Best",
+      "ITPS Avg. Cbb",
+      "ITPS Avg. Tb",
+      "ITPS O-RMSE",
+      "ITPS % Best",
+      "NILS Avg. Cbb",
+      "NILS Avg. Tb",
+      "NILS O-RMSE",
+      "NILS % Best"
+    ],
+    "rows": [
+      {
+        "graph_type": "path",
+        "num": 15,
+        "tscb": {"avg_cbb": "2.53", "avg_tb": "131.85", "o_rmse": "2.01", "pct_best": "66.67"},
+        "itps": {"avg_cbb": "1.87", "avg_tb": "158.22", "o_rmse": "3.01", "pct_best": "80.00"},
+        "nils": {"avg_cbb": "1.00", "avg_tb": "6.24", "o_rmse": "0.00", "pct_best": "100.00"}
+      },
+      {
+        "graph_type": "cycle",
+        "num": 15,
+        "tscb": {"avg_cbb": "2.40", "avg_tb": "40.71", "o_rmse": "1.82", "pct_best": "73.33"},
+        "itps": {"avg_cbb": "2.60", "avg_tb": "162.75", "o_rmse": "4.22", "pct_best": "73.33"},
+        "nils": {"avg_cbb": "1.00", "avg_tb": "9.38", "o_rmse": "0.00", "pct_best": "100.00"}
+      },
+      {
+        "graph_type": "mesh2D",
+        "num": 15,
+        "tscb": {"avg_cbb": "27.67", "avg_tb": "144.52", "o_rmse": "1.88", "pct_best": "66.67"},
+        "itps": {"avg_cbb": "12.07", "avg_tb": "112.86", "o_rmse": "0.44", "pct_best": "40.00"},
+        "nils": {"avg_cbb": "11.40", "avg_tb": "10.45", "o_rmse": "0.00", "pct_best": "100.00"}
+      },
+      {
+        "graph_type": "mesh3D",
+        "num": 10,
+        "tscb": {"avg_cbb": "180.30", "avg_tb": "328.32", "o_rmse": "1.47", "pct_best": "30.00"},
+        "itps": {"avg_cbb": "140.50", "avg_tb": "266.65", "o_rmse": "1.39", "pct_best": "70.00"},
+        "nils": {"avg_cbb": "64.50", "avg_tb": "132.87", "o_rmse": "0.36", "pct_best": "100.00"}
+      },
+      {
+        "graph_type": "tree",
+        "num": 12,
+        "tscb": {"avg_cbb": "55.08", "avg_tb": "75.90", "o_rmse": "0.02", "pct_best": "91.67"},
+        "itps": {"avg_cbb": "54.67", "avg_tb": "23.36", "o_rmse": "0.00", "pct_best": "100.00"},
+        "nils": {"avg_cbb": "54.67", "avg_tb": "1.52", "o_rmse": "0.00", "pct_best": "100.00"}
+      },
+      {
+        "graph_type": "caterpillar",
+        "num": 15,
+        "tscb": {"avg_cbb": "15.13", "avg_tb": "75.31", "o_rmse": "0.07", "pct_best": "93.33"},
+        "itps": {"avg_cbb": "15.07", "avg_tb": "60.54", "o_rmse": "0.07", "pct_best": "100.00"},
+        "nils": {"avg_cbb": "15.07", "avg_tb": "18.07", "o_rmse": "0.00", "pct_best": "100.00"}
+      },
+      {
+        "graph_type": "hypercube",
+        "num": 3,
+        "tscb": {"avg_cbb": "1551.67", "avg_tb": "546.23", "o_rmse": "0.34", "pct_best": "0.00"},
+        "itps": {"avg_cbb": "2017.33", "avg_tb": "591.41", "o_rmse": "0.59", "pct_best": "0.00"},
+        "nils": {"avg_cbb": "1492.00", "avg_tb": "584.21", "o_rmse": "0.26", "pct_best": "0.00"}
+      },
+      {
+        "graph_type": "Harwell-Boeing",
+        "num": 28,
+        "tscb": {"avg_cbb": "22.21", "avg_tb": "112.70", "o_rmse": "2.65", "pct_best": "28.57"},
+        "itps": {"avg_cbb": "23.50", "avg_tb": "141.24", "o_rmse": "3.90", "pct_best": "28.57"},
+        "nils": {"avg_cbb": "20.39", "avg_tb": "40.69", "o_rmse": "2.15", "pct_best": "28.57"}
+      }
+    ],
+    "summary_row": {
+      "label": "Win/Match/Fail",
+      "value": "26/87/0"
+    }
+  },
+  "table3": {
+    "title": "Summary of the statistical signification analysis from the comparison among the two reference methods in the CBP literature (i.e., TSCB [15] and ITPS [17]) and the NILS algorithm over 113 benchmark instances: 85 standard graphs with known optimal solutions, and 28 Harwell-Boeing instances.",
+    "columns": [
+      "Graph type",
+      "Num.",
+      "NILS/TSCB +",
+      "NILS/TSCB *",
+      "NILS/TSCB −",
+      "NILS/ITPS +",
+      "NILS/ITPS *",
+      "NILS/ITPS −"
+    ],
+    "rows": [
+      {
+        "graph_type": "path",
+        "num": 15,
+        "nils_vs_tscb": {"better": 8, "equal": 7, "worse": 0},
+        "nils_vs_itps": {"better": 5, "equal": 10, "worse": 0}
+      },
+      {
+        "graph_type": "cycle",
+        "num": 15,
+        "nils_vs_tscb": {"better": 5, "equal": 10, "worse": 0},
+        "nils_vs_itps": {"better": 10, "equal": 5, "worse": 0}
+      },
+      {
+        "graph_type": "mesh2D",
+        "num": 15,
+        "nils_vs_tscb": {"better": 8, "equal": 7, "worse": 0},
+        "nils_vs_itps": {"better": 10, "equal": 5, "worse": 0}
+      },
+      {
+        "graph_type": "mesh3D",
+        "num": 10,
+        "nils_vs_tscb": {"better": 10, "equal": 0, "worse": 0},
+        "nils_vs_itps": {"better": 7, "equal": 3, "worse": 0}
+      },
+      {
+        "graph_type": "tree",
+        "num": 12,
+        "nils_vs_tscb": {"better": 4, "equal": 8, "worse": 0},
+        "nils_vs_itps": {"better": 1, "equal": 11, "worse": 0}
+      },
+      {
+        "graph_type": "caterpillar",
+        "num": 15,
+        "nils_vs_tscb": {"better": 6, "equal": 9, "worse": 0},
+        "nils_vs_itps": {"better": 3, "equal": 12, "worse": 0}
+      },
+      {
+        "graph_type": "hypercube",
+        "num": 3,
+        "nils_vs_tscb": {"better": 2, "equal": 1, "worse": 0},
+        "nils_vs_itps": {"better": 3, "equal": 0, "worse": 0}
+      },
+      {
+        "graph_type": "Harwell-Boeing",
+        "num": 28,
+        "nils_vs_tscb": {"better": 15, "equal": 13, "worse": 0},
+        "nils_vs_itps": {"better": 11, "equal": 17, "worse": 0}
+      }
+    ],
+    "total_row": {
+      "graph_type": "Total",
+      "printed_num": 185,
+      "computed_num": 113,
+      "nils_vs_tscb": {"better": 58, "equal": 55, "worse": 0},
+      "nils_vs_itps": {"better": 50, "equal": 63, "worse": 0}
+    },
+    "discrepancy_analysis": {
+      "printed_total_num": 185,
+      "arithmetic_sum_num": 113,
+      "standard_graphs_num": 85,
+      "harwell_boeing_num": 28,
+      "nils_vs_tscb_total": 113,
+      "nils_vs_itps_total": 113,
+      "source_verified_in_pdf": true,
+      "exact_source_string": "Total 185 58 55 0 50 63 0",
+      "explanation": "The published paper text stream on page 17 explicitly prints 'Total 185 58 55 0 50 63 0'. The category rows sum arithmetically to 15+15+15+10+12+15+3+28 = 113 (85 standard + 28 Harwell-Boeing), and each significance column also sums to 113 (58+55+0 = 113, 50+63+0 = 113). Thus, 185 is an internal typesetting/arithmetic error in the published source itself, not an image-reading or OCR artifact."
+    }
+  }
+}
