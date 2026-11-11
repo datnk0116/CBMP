@@ -141,10 +141,12 @@ def load_records(jsonl_source=None):
     elif jsonl_source is not None and os.path.isdir(jsonl_source):
         preferred = os.path.join(jsonl_source, "runs.jsonl")
         files = [preferred] if os.path.exists(preferred) else sorted(glob.glob(os.path.join(jsonl_source, "*.jsonl")))
+    elif os.path.exists("results_v2/runs.jsonl"):
+        files = ["results_v2/runs.jsonl"]
     elif os.path.exists("results/runs.jsonl"):
         files = ["results/runs.jsonl"]
     else:
-        files = sorted(glob.glob("results/*.jsonl"))
+        files = sorted(glob.glob("results_v2/*.jsonl")) or sorted(glob.glob("results/*.jsonl"))
 
     for filepath in files:
         group_name = Path(filepath).stem
@@ -168,62 +170,147 @@ def load_records(jsonl_source=None):
 
     return aggregate_repetitions(raw_records)
 
-def cross_validate_optima(records, output_dirs=("analysis/tables", "results/tables")):
+def get_source_key(record):
+    """Extracts (solver_or_method, canonical_config) from a record."""
+    sol = str(record.get("solver") or record.get("method") or "unknown").lower()
+    cfg = record.get("config") if isinstance(record.get("config"), dict) else {}
+
+    if sol in ("cp_sat", "cpsat"):
+        solver_name = "cpsat"
+        num_w = cfg.get("num_workers", record.get("num_workers", 1))
+        canonical_config = ("cpsat", num_w)
+    elif sol == "cplex":
+        solver_name = "cplex"
+        canonical_config = ("cplex",)
+    else:
+        solver_name = sol
+        rot = bool(cfg.get("sb_rotation", record.get("sb_rotation", False)))
+        ref = bool(cfg.get("sb_reflection", record.get("sb_reflection", False)))
+        heur = bool(cfg.get("heuristic_ub", record.get("heuristic_ub", False)))
+        variant = cfg.get("variant", record.get("variant"))
+        if variant:
+            canonical_config = (str(variant), rot, ref, heur)
+        else:
+            canonical_config = (rot, ref, heur)
+
+    return (solver_name, canonical_config)
+
+def cross_validate_optima(records, output_dir=None):
     """
     Cross-validation check:
-    For every instance where >= 2 methods/solvers solved to OPTIMAL,
-    assert that their best_ub are strictly identical.
-    Exports cross_validation.csv to output_dirs.
-    Raises ValueError if conflicting optima are detected.
+    1. Group OPTIMAL records by dataset and (solver_or_method, canonical_config).
+       A dataset is considered 'verified' only when >= 2 distinct keys reach identical OPTIMAL best_ub.
+       Repetitions of the same key are deduplicated, not counted as separate sources.
+       If only 1 distinct key is present, mark as 'single_source' and warn.
+       If distinct keys report conflicting optima, mark as 'conflict' and raise ValueError.
+    2. Check incumbents: for any dataset with a proven optimum `opt`, every non-OPTIMAL record
+       with best_ub >= 0 must satisfy best_ub >= opt; otherwise raises ValueError with the offending record.
+    3. Exports cross_validation.csv to output_dir if output_dir is provided.
     """
-    by_dataset = {}
+    optimal_by_ds = {}
     for r in records:
         if r.get("status") == "OPTIMAL":
             ds = r.get("dataset")
             ub = r.get("best_ub")
-            sol = r.get("solver") or r.get("method") or "unknown"
-            grps = ",".join(r.get("groups", [])) if isinstance(r.get("groups"), list) else str(r.get("groups", ""))
-            by_dataset.setdefault(ds, []).append({
+            src_key = get_source_key(r)
+            optimal_by_ds.setdefault(ds, {}).setdefault(src_key, []).append(ub)
+
+    distinct_sources = {}
+    mismatches = []
+    proven_optima = {}
+
+    for ds, sources in optimal_by_ds.items():
+        distinct_sources[ds] = {}
+        for src_key, ubs in sources.items():
+            unique_key_ubs = set(u for u in ubs if u is not None)
+            if len(unique_key_ubs) > 1:
+                mismatches.append((ds, f"Internal conflict across repetitions of key {src_key}: {unique_key_ubs}"))
+            distinct_sources[ds][src_key] = list(unique_key_ubs)[0] if unique_key_ubs else None
+
+        all_ds_ubs = set(u for u in distinct_sources[ds].values() if u is not None)
+        if len(all_ds_ubs) > 1:
+            mismatches.append((ds, f"Conflicting optima across sources: {distinct_sources[ds]}"))
+        elif len(all_ds_ubs) == 1:
+            proven_optima[ds] = list(all_ds_ubs)[0]
+
+    # Check incumbents against proven optima
+    incumbent_violations = []
+    for r in records:
+        ds = r.get("dataset")
+        st = r.get("status")
+        if ds in proven_optima and st != "OPTIMAL":
+            ub = r.get("best_ub")
+            if ub is not None and ub >= 0:
+                opt = proven_optima[ds]
+                if ub < opt:
+                    incumbent_violations.append((ds, ub, opt, r))
+
+    # Prepare DataFrame rows
+    compared_rows = []
+    for ds, sources in distinct_sources.items():
+        all_ds_ubs = set(u for u in sources.values() if u is not None)
+        has_conflict = len(all_ds_ubs) > 1
+        num_keys = len(sources)
+        if has_conflict:
+            ds_status = "conflict"
+        elif num_keys >= 2:
+            ds_status = "verified"
+        else:
+            ds_status = "single_source"
+
+        for (solver_name, canonical_cfg), ub in sources.items():
+            compared_rows.append({
                 "dataset": ds,
-                "solver_or_method": sol,
-                "groups": grps,
+                "solver_or_method": solver_name,
+                "canonical_config": str(canonical_cfg),
                 "best_ub": ub,
+                "num_distinct_sources": num_keys,
+                "validation_status": ds_status,
             })
 
-    compared_rows = []
-    mismatches = []
-    for ds, items in by_dataset.items():
-        if len(items) >= 2:
-            unique_ubs = set(item["best_ub"] for item in items if item["best_ub"] is not None)
-            is_agreed = (len(unique_ubs) == 1)
-            for item in items:
-                row = dict(item)
-                row["agreed"] = is_agreed
-                compared_rows.append(row)
-            if not is_agreed:
-                mismatches.append((ds, items))
+    df_cv = pd.DataFrame(
+        compared_rows,
+        columns=["dataset", "solver_or_method", "canonical_config", "best_ub", "num_distinct_sources", "validation_status"]
+    )
 
-    df_cv = pd.DataFrame(compared_rows, columns=["dataset", "solver_or_method", "groups", "best_ub", "agreed"])
-    if output_dirs:
-        for out_dir in output_dirs:
-            os.makedirs(out_dir, exist_ok=True)
-            csv_path = os.path.join(out_dir, "cross_validation.csv")
-            df_cv.to_csv(csv_path, index=False)
-            print(f"Cross-validation table saved: {csv_path}")
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, "cross_validation.csv")
+        df_cv.to_csv(csv_path, index=False)
+        print(f"Cross-validation table saved: {csv_path}")
 
+    # Report / raise errors
     if mismatches:
         print("\n" + "!" * 80)
         print("[CROSS-VALIDATION FAILED] Conflicting optimal solutions detected:")
-        for ds, results in mismatches:
-            print(f"  Dataset '{ds}':")
-            for item in results:
-                print(f"    - {item['solver_or_method']} ({item['groups']}): best_ub = {item['best_ub']}")
+        for ds, err_msg in mismatches:
+            print(f"  Dataset '{ds}': {err_msg}")
         print("!" * 80 + "\n")
         raise ValueError(f"Cross-validation failed: conflicting optima on {len(mismatches)} dataset(s).")
-    else:
-        num_compared_datasets = sum(1 for ds, items in by_dataset.items() if len(items) >= 2)
-        total_checked = len(compared_rows)
-        print(f"[CROSS-VALIDATION PASSED] Verified {total_checked} optimal runs across {num_compared_datasets} dataset(s) with >= 2 optimal solutions. All optima match identically.")
+
+    if incumbent_violations:
+        print("\n" + "!" * 80)
+        print("[CROSS-VALIDATION FAILED] Non-optimal record reported best_ub < proven optimum:")
+        for ds, ub, opt, rec in incumbent_violations:
+            print(f"  Dataset '{ds}': best_ub={ub} < proven optimum opt={opt}. Record: {rec}")
+        print("!" * 80 + "\n")
+        ds, ub, opt, rec = incumbent_violations[0]
+        raise ValueError(f"Invalid incumbent on dataset '{ds}': best_ub={ub} < proven optimum opt={opt}. Record: {rec}")
+
+    verified_count = sum(1 for ds, sources in distinct_sources.items() if len(sources) >= 2)
+    single_source_count = sum(1 for ds, sources in distinct_sources.items() if len(sources) == 1)
+
+    for ds, sources in distinct_sources.items():
+        if len(sources) == 1:
+            print(f"[WARNING] Dataset '{ds}' has only 1 distinct configuration/solver source: best_ub = {proven_optima.get(ds)} (single_source). Not independently cross-verified.")
+
+    if single_source_count > 0 and verified_count == 0:
+        print(f"[CROSS-VALIDATION INCOMPLETE] 0 dataset(s) independently verified; {single_source_count} dataset(s) have single_source only.")
+    elif verified_count > 0:
+        single_msg = f" ({single_source_count} dataset(s) have single_source only)" if single_source_count > 0 else ""
+        print(f"[CROSS-VALIDATION PASSED] {verified_count} dataset(s) verified by >= 2 independent sources{single_msg}. All optima match identically.")
+
+    return df_cv
 
 def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_total=None):
     """Format single cell according to required status representations."""
@@ -319,8 +406,10 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
 
     return solved_counts, sl_counts, par2_scores, speedups
 
-def export_table(df_display, summary_rows, title, base_filename, output_dirs=("analysis/tables", "results/tables"), note=None):
+def export_table(df_display, summary_rows, title, base_filename, output_dirs=("results_v2/tables",), note=None):
     """Saves formatted table as both CSV and LaTeX."""
+    if isinstance(output_dirs, str):
+        output_dirs = (output_dirs,)
     full_df = df_display.astype(object).copy()
     for row_name, row_data in summary_rows:
         full_df.loc[row_name] = row_data
@@ -365,7 +454,7 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("a
     print(f"Table saved: {base_filename}.csv and {base_filename}.tex in {output_dirs[0]}/")
     return full_df
 
-def make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs", output_dirs=("analysis/tables", "results/tables")):
+def make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs", output_dirs=("results_v2/tables",)):
     """Generate Ablation study table for a specific ablation group."""
     ablation_recs = [
         r for r in records
@@ -441,7 +530,7 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
 
     export_table(df_display, summary, title, base_filename, output_dirs=output_dirs)
 
-def make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=("analysis/tables", "results/tables")):
+def make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=("results_v2/tables",)):
     """Generate Solvers comparison table for a specific solvers group."""
     solver_recs = [
         r for r in records
@@ -501,7 +590,7 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
 
     export_table(df_display, summary, title, base_filename, output_dirs=output_dirs)
 
-def make_table_methods(records, output_dirs=("analysis/tables", "results/tables")):
+def make_table_methods(records, output_dirs=("results_v2/tables",)):
     """Generate Methods comparison table (SAT vs CP-SAT vs CPLEX)."""
     method_recs = [r for r in records if "methods" in r.get("groups", [])]
     if not method_recs:
@@ -567,9 +656,23 @@ def main():
     print("ANALYSIS: GENERATING LATEX AND CSV TABLES")
     print("=" * 70)
 
-    input_file = sys.argv[1] if len(sys.argv) > 1 else None
-    output_dir = sys.argv[2] if len(sys.argv) > 2 else None
-    output_dirs = (output_dir,) if output_dir else ("analysis/tables", "results/tables")
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate LaTeX and CSV tables from experiment records")
+    parser.add_argument("input_file", nargs="?", default=None, help="path to runs.jsonl or results directory")
+    parser.add_argument("output_dir_pos", nargs="?", default=None, help="optional positional output directory")
+    parser.add_argument("--output-dir", type=str, default=None, help="directory to store tables (defaults to <run_dir>/tables)")
+    args = parser.parse_args()
+
+    input_file = args.input_file
+    output_dir = args.output_dir or args.output_dir_pos
+    if not output_dir:
+        if input_file and (os.path.isfile(input_file) or os.path.isdir(input_file)):
+            run_dir = os.path.dirname(input_file) if os.path.isfile(input_file) else input_file
+            run_dir = run_dir or "results_v2"
+        else:
+            run_dir = "results_v2"
+        output_dir = os.path.join(run_dir, "tables")
+
     records = load_records(input_file)
     if not records:
         print("No records found to analyze. Please run experiments first.")
@@ -577,19 +680,20 @@ def main():
 
     # Step 1: Cross-validation check
     try:
-        cross_validate_optima(records, output_dirs=output_dirs)
+        cross_validate_optima(records, output_dir=output_dir)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Step 2: Make tables
+    output_dirs = (output_dir,)
     make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs", output_dirs=output_dirs)
     make_table_ablation(records, group_name="ablation_medium", base_filename="table_ablation_medium", title="Ablation Study: Medium Graph (662_bus_n60)", output_dirs=output_dirs)
     make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=output_dirs)
     make_table_solvers(records, group_name="solvers_medium", base_filename="table_solvers_medium", title="SAT Solver Performance Comparison (Medium Graphs)", output_dirs=output_dirs)
     make_table_methods(records, output_dirs=output_dirs)
 
-    print("\nAll tables generated successfully!")
+    print(f"\nAll tables generated successfully in {output_dir}/!")
 
 if __name__ == "__main__":
     main()

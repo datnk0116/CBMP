@@ -214,31 +214,89 @@ def test_aggregate_repetitions():
     assert r["status"] == "OPTIMAL"
     assert r["best_ub"] == 3
 
-def test_cross_validation_pass_and_fail(tmp_path):
+def test_cross_validation_two_solvers_same_opt(tmp_path):
+    # (a) Two solvers with same opt -> verified
     out_dir = str(tmp_path / "tables")
     matching_records = [
         {"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
         {"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
-        {"dataset": "g2", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 5, "groups": ["solvers"]},
     ]
-    cross_validate_optima(matching_records, output_dirs=[out_dir])
-    csv_file = os.path.join(out_dir, "cross_validation.csv")
-    assert os.path.isfile(csv_file)
-    import pandas as pd
-    df_match = pd.read_csv(csv_file)
-    assert len(df_match) == 2
-    assert all(df_match["agreed"] == True)
+    df = cross_validate_optima(matching_records, output_dir=out_dir)
+    assert len(df) == 2
+    assert all(df["validation_status"] == "verified")
+    assert all(df["best_ub"] == 3)
+    assert os.path.isfile(os.path.join(out_dir, "cross_validation.csv"))
 
+def test_cross_validation_conflict_error(tmp_path):
+    # (b) Conflicting optima -> error
+    out_dir = str(tmp_path / "tables")
     conflicting_records = [
         {"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
         {"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 4, "groups": ["solvers"]},
     ]
     with pytest.raises(ValueError, match="conflicting optima"):
-        cross_validate_optima(conflicting_records, output_dirs=[out_dir])
-    assert os.path.isfile(csv_file)
-    df_conflict = pd.read_csv(csv_file)
-    assert len(df_conflict) == 2
-    assert all(df_conflict["agreed"] == False)
+        cross_validate_optima(conflicting_records, output_dir=out_dir)
+    assert os.path.isfile(os.path.join(out_dir, "cross_validation.csv"))
+    import pandas as pd
+    df = pd.read_csv(os.path.join(out_dir, "cross_validation.csv"))
+    assert all(df["validation_status"] == "conflict")
+
+def test_cross_validation_single_source_5_reps(tmp_path, capsys):
+    # (c) Only 1 key repeated 5 reps -> single_source and warning printed
+    out_dir = str(tmp_path / "tables")
+    records = [
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "status": "OPTIMAL",
+            "best_ub": 3,
+            "rep": i,
+            "groups": ["solvers"],
+        }
+        for i in range(1, 6)
+    ]
+    df = cross_validate_optima(records, output_dir=out_dir)
+    assert len(df) == 1
+    assert df.iloc[0]["validation_status"] == "single_source"
+    assert df.iloc[0]["num_distinct_sources"] == 1
+    out = capsys.readouterr().out
+    assert "[WARNING]" in out and "single_source" in out
+    assert "All optima match identically" not in out
+    assert os.path.isfile(os.path.join(out_dir, "cross_validation.csv"))
+
+def test_cross_validation_incumbent_smaller_than_opt_error():
+    # (d) Incumbent < proven opt -> error
+    records = [
+        {"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
+        {"dataset": "g1", "solver": "glucose4", "status": "TIMEOUT", "best_ub": 2, "groups": ["solvers"]},
+    ]
+    with pytest.raises(ValueError, match="Invalid incumbent"):
+        cross_validate_optima(records)
+
+def test_cross_validation_none_vs_all_two_keys(tmp_path):
+    # (e) none vs all with same cadical195 counted as 2 distinct keys
+    out_dir = str(tmp_path / "tables")
+    records = [
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+            "status": "OPTIMAL",
+            "best_ub": 3,
+        },
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "status": "OPTIMAL",
+            "best_ub": 3,
+        },
+    ]
+    df = cross_validate_optima(records, output_dir=out_dir)
+    assert len(df) == 2
+    assert df.iloc[0]["num_distinct_sources"] == 2
+    assert all(df["validation_status"] == "verified")
 
 def test_cross_validation_cli_exit_code(tmp_path):
     import subprocess
