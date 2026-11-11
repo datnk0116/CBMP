@@ -297,7 +297,7 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
 
     if any(any(d) for d in data_n40):
-        bp1 = ax1.boxplot(data_n40, labels=labels, patch_artist=True)
+        bp1 = ax1.boxplot(data_n40, tick_labels=labels, patch_artist=True)
         for box in bp1["boxes"]:
             box.set(facecolor="#4C72B0", alpha=0.7)
     ax1.set_yscale("log")
@@ -308,7 +308,7 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
     ax1.legend(loc="upper right")
 
     if any(any(d) for d in data_n50):
-        bp2 = ax2.boxplot(data_n50, labels=labels, patch_artist=True)
+        bp2 = ax2.boxplot(data_n50, tick_labels=labels, patch_artist=True)
         for box in bp2["boxes"]:
             box.set(facecolor="#55A868", alpha=0.7)
     ax2.set_yscale("log")

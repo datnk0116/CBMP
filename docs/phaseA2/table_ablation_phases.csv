@@ -1,0 +1,11 @@
+N,variant,median_last_iter_time,median_prev_iters_time,last_iter_ratio
+40,none,1.1883,0.7130,0.6711
+40,rotation,0.2630,0.5948,0.3416
+40,rotation_reflection,0.3900,0.4869,0.4631
+40,heuristic_ub,0.7780,0.6188,0.6137
+40,all,0.2162,0.5306,0.2542
+50,none,14.6612,1.1890,0.9082
+50,rotation,4.5322,1.3806,0.7181
+50,rotation_reflection,3.4799,2.1847,0.6442
+50,heuristic_ub,6.8846,1.6055,0.7855
+50,all,2.3956,0.9118,0.7682

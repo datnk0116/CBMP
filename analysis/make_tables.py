@@ -24,7 +24,8 @@ def aggregate_repetitions(records):
         ref = bool(cfg.get("sb_reflection", False))
         heur = bool(cfg.get("heuristic_ub", False))
         num_w = cfg.get("num_workers", 1)
-        key = (ds, sol, rot, ref, heur, num_w)
+        seed = r.get("relabel_seed")
+        key = (ds, sol, rot, ref, heur, num_w, seed)
         groups.setdefault(key, []).append(r)
 
     aggregated = []

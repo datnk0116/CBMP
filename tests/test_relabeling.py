@@ -50,3 +50,4 @@ def test_record_has_relabel_seed(tmp_path):
     with open(json_file, "r", encoding="utf-8") as f:
         data = json.loads(f.readline())
         assert data.get("relabel_seed") == 42
+
