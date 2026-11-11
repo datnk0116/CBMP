@@ -344,10 +344,36 @@ def test_canonical_key_consistency():
     rec_cpsat = {
         "dataset": "bus14",
         "solver": "cp_sat",
-        "config": {"num_workers": 1},
+        "config": {"num_workers": 1, "sb_rotation": True},
     }
     key_cpsat = get_canonical_key(rec_cpsat)
-    assert key_cpsat == ("bus14", "cpsat", "cp_sat", (1,), None)
+    assert key_cpsat == ("bus14", "cpsat", "cp_sat", (1, True), None)
+
+    rec_cpsat_default = {
+        "dataset": "bus14",
+        "solver": "cp_sat",
+        "config": {"num_workers": 1},
+    }
+    key_cpsat_default = get_canonical_key(rec_cpsat_default)
+    assert key_cpsat_default == ("bus14", "cpsat", "cp_sat", (1, True), None)
+
+    rec_cpsat_no_rot = {
+        "dataset": "bus14",
+        "solver": "cp_sat",
+        "config": {"num_workers": 1, "sb_rotation": False},
+    }
+    key_cpsat_no_rot = get_canonical_key(rec_cpsat_no_rot)
+    assert key_cpsat_no_rot == ("bus14", "cpsat", "cp_sat", (1, False), None)
+    assert key_cpsat != key_cpsat_no_rot, "CP-SAT with rotation enabled and disabled must produce distinct canonical keys"
+
+    rec_cpsat_w4 = {
+        "dataset": "bus14",
+        "solver": "cp_sat",
+        "config": {"num_workers": 4, "sb_rotation": True},
+    }
+    key_cpsat_w4 = get_canonical_key(rec_cpsat_w4)
+    assert key_cpsat_w4 == ("bus14", "cpsat", "cp_sat", (4, True), None)
+    assert key_cpsat != key_cpsat_w4, "Changing CP-SAT num_workers must produce distinct canonical keys"
 
     rec_cplex = {
         "dataset": "bus14",
@@ -748,4 +774,52 @@ def test_resume_and_retry_failed_status_semantics(tmp_path):
     assert "g8" not in loaded_datasets  # TIMEOUT retried
     assert "g9" not in loaded_datasets  # ERROR retried
     assert "g10" not in loaded_datasets # INTERRUPTED retried
+
+
+def test_cpsat_large_dry_run_produces_nonzero_tasks():
+    """Verify cpsat_large produces expected nonzero task count with CP-SAT method."""
+    from experiments.run_experiments import discover_datasets
+    cfg_path = "experiments/configs.yaml"
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    all_datasets = discover_datasets("datasets")
+    plan, group_stats = build_experiment_plan(config=config, all_datasets=all_datasets, selected_group="cpsat_large")
+    assert len(plan) == 7, "cpsat_large must produce 7 planned tasks (for the 7 large datasets)"
+    for task in plan:
+        assert task["method"] == "cpsat"
+        assert task["solver"] == "cp_sat"
+        assert task["config_dict"]["sb_rotation"] is True
+        assert task["flags"] == (1, True)
+
+
+def test_unintentional_zero_task_group_fails_loudly():
+    """Verify runner fails loudly when a configured group has datasets but produces 0 tasks."""
+    bad_config = {
+        "groups": {
+            "empty_methods_group": {
+                "description": "Faulty group with datasets but no methods",
+                "datasets": ["14_bus"],
+                "repetitions": 1,
+                "timeout": 60,
+                # No methods / variants provided!
+            }
+        }
+    }
+    all_datasets = [{"name": "14_bus", "N": 14, "M": 20}]
+    with pytest.raises(ValueError, match="generated 0 tasks"):
+        build_experiment_plan(config=bad_config, all_datasets=all_datasets, selected_group="empty_methods_group")
+
+
+def test_feasible_with_validation_error_is_retried():
+    """Verify FEASIBLE record with validation_error is rejected from completed runs under retry_failed."""
+    from experiments.run_experiments import is_run_completed
+    rec_bad_feasible = {
+        "dataset": "g1",
+        "status": "FEASIBLE",
+        "best_ub": 3,
+        "validation_error": "Assignment is not a permutation",
+    }
+    assert is_run_completed(rec_bad_feasible, retry_failed=False) is True
+    assert is_run_completed(rec_bad_feasible, retry_failed=True) is False
+
 

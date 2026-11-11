@@ -194,8 +194,8 @@ def test_cplex_cp_unavailable_reporting(monkeypatch):
     assert stats["assignment"] is None
 
 
-def test_cplex_cp_docplex_limit_constant(monkeypatch, mock_cpo_environment):
-    """CPLEX CP stops with official docplex constant SearchStoppedByLimit -> TIMEOUT."""
+def test_cplex_cp_docplex_search_limit_with_incumbent(monkeypatch, mock_cpo_environment):
+    """CPLEX CP stops with generic SearchStoppedByLimit with valid incumbent -> FEASIBLE (preserves incumbent)."""
     fake_sol = FakeCpoSolution(
         solve_status="Feasible",
         stop_cause="SearchStoppedByLimit",
@@ -207,9 +207,42 @@ def test_cplex_cp_docplex_limit_constant(monkeypatch, mock_cpo_environment):
     with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
         res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
 
-    assert stats["status"] == "TIMEOUT"
+    assert stats["status"] == "FEASIBLE"
     assert stats["best_ub"] == 1
     assert stats["assignment"] == [0, 1, 2]
+
+
+def test_cplex_cp_docplex_search_limit_without_incumbent(monkeypatch, mock_cpo_environment):
+    """CPLEX CP stops with generic SearchStoppedByLimit without solution and without time evidence -> ERROR."""
+    fake_sol = FakeCpoSolution(
+        solve_status="Unknown",
+        stop_cause="SearchStoppedByLimit",
+        has_solution=False,
+    )
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_statistics_semantics(monkeypatch, mock_cpo_environment):
+    """CPLEX CP statistics must report num_clauses as None, estimated_constraints, and num_constraints."""
+    fake_sol = FakeCpoSolution(
+        solve_status="Optimal",
+        has_solution=True,
+        assignment=[1, 2, 3],
+        obj_val=1,
+    )
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], sb_rotation=True, timeout=5.0, verbose=False)
+
+    assert stats["num_clauses"] is None, "SAT clauses must be None for CP Optimizer"
+    assert stats["estimated_constraints"] == 2 + 1 + 1  # 2 edges + 1 all_different + 1 sb_rotation
+    assert "num_constraints" in stats
 
 
 def test_cplex_cp_aborted_stop_preserves_incumbent(monkeypatch, mock_cpo_environment):

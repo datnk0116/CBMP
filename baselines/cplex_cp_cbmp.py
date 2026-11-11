@@ -139,7 +139,20 @@ def solve_cplex_cp(
     t_enc_end = time.perf_counter()
     stats["encode_time"] = t_enc_end - t_enc_start
     stats["num_vars"] = N + 1
-    stats["num_clauses"] = len(edges) + 1 + (1 if sb_rotation else 0)
+    # SAT clause count is not applicable to CP Optimizer; report None for num_clauses
+    # to avoid mixing CP constraints with SAT clauses in comparative tables.
+    stats["num_clauses"] = None
+    stats["estimated_constraints"] = len(edges) + 1 + (1 if sb_rotation else 0)
+
+    num_constraints = None
+    if mdl and hasattr(mdl, "get_all_expressions"):
+        try:
+            exprs = mdl.get_all_expressions()
+            obj = mdl.get_optimization_expression() if hasattr(mdl, "get_optimization_expression") else None
+            num_constraints = len([e for e in exprs if e is not obj])
+        except Exception:
+            num_constraints = None
+    stats["num_constraints"] = num_constraints
 
     t_sol_start = time.perf_counter()
     try:
@@ -158,6 +171,14 @@ def solve_cplex_cp(
     stats["solve_time"] = solve_time
     stats["per_iter_times"] = [solve_time]
     stats["num_iterations"] = 1
+
+    if sol and hasattr(sol, "get_solver_info"):
+        try:
+            raw_c = sol.get_solver_info("NumberOfConstraints")
+            if raw_c is not None:
+                stats["num_constraints"] = int(raw_c)
+        except Exception:
+            pass
 
     sol_status = str(sol.get_solve_status()) if sol and hasattr(sol, "get_solve_status") and sol.get_solve_status() is not None else ""
     stop_cause = str(sol.get_stop_cause()) if sol and hasattr(sol, "get_stop_cause") and sol.get_stop_cause() is not None else ""
@@ -205,27 +226,33 @@ def solve_cplex_cp(
     is_optimal = (sol_status.lower() == "optimal") or (
         sol is not None and hasattr(sol, "is_solution_optimal") and sol.is_solution_optimal()
     )
+
+    clean_stop_cause = stop_cause.lower().replace(" ", "").replace("_", "")
+    clean_sol_status = sol_status.lower().replace(" ", "").replace("_", "")
+    clean_fail_status = fail_status.lower().replace(" ", "").replace("_", "")
+
+    # Explicit evidence of time limit from stop cause or status
     is_timelimit = (
-        stop_cause.lower() in ("timelimit", "searchstoppedbylimit")
-        or "time limit" in sol_status.lower()
-        or "timelimit" in sol_status.lower()
-        or fail_status.lower() in ("searchstoppedbylimit",)
+        "timelimit" in clean_stop_cause
+        or "timelimit" in clean_sol_status
+        or "timelimit" in clean_fail_status
     )
-    is_limit_stop = (
-        is_timelimit
-        or "limit" in stop_cause.lower()
-        or "limit" in fail_status.lower()
-    )
+    # Check solve_time if stopped by a limit and timeout was set
+    if not is_timelimit and timeout is not None and timeout > 0:
+        if "limit" in clean_stop_cause or "limit" in clean_fail_status or "limit" in clean_sol_status:
+            if solve_time >= max(timeout - 0.5, timeout * 0.9):
+                is_timelimit = True
+
     is_abort_stop = (
-        "abort" in stop_cause.lower()
-        or "abort" in fail_status.lower()
-        or sol_status.lower() in ("jobaborted", "aborted")
+        "abort" in clean_stop_cause
+        or "abort" in clean_fail_status
+        or clean_sol_status in ("jobaborted", "aborted")
     )
     is_fail_stop = (
-        sol_status.lower() in ("jobfailed", "failed")
-        or "exception" in fail_status.lower()
+        clean_sol_status in ("jobfailed", "failed")
+        or "exception" in clean_fail_status
     )
-    is_infeasible = sol_status.lower() in ("infeasible",)
+    is_infeasible = clean_sol_status in ("infeasible",)
 
     if is_optimal:
         if valid_solution:
@@ -237,7 +264,7 @@ def solve_cplex_cp(
             best_ub = -1
             stats["assignment"] = None
     elif valid_solution:
-        # Feasible incumbent found without optimality proof
+        # Valid incumbent found without optimality proof
         best_ub = actual_bw
         stats["assignment"] = assignment
         if is_timelimit:
@@ -245,9 +272,10 @@ def solve_cplex_cp(
         elif is_abort_stop:
             status = "INTERRUPTED"
         else:
+            # Stopped by node limit, iteration limit, or other search limit with valid incumbent preserved
             status = "FEASIBLE"
     elif has_solution and not valid_solution:
-        # Solution claimed but failed permutation or objective consistency validation
+        # Solution claimed but failed validation
         status = "ERROR"
         best_ub = -1
         stats["assignment"] = None
@@ -257,14 +285,13 @@ def solve_cplex_cp(
         stats["assignment"] = None
         if is_infeasible:
             status = "INFEASIBLE"
-        elif is_limit_stop:
+        elif is_timelimit:
             status = "TIMEOUT"
         elif is_abort_stop:
             status = "INTERRUPTED"
-        elif is_fail_stop:
-            status = "ERROR"
         else:
-            # Do not classify unknown/unexpected termination reasons as TIMEOUT without evidence
+            # Generic search limits without solution and without time-limit evidence,
+            # or unclassified/failed/unknown termination -> ERROR
             status = "ERROR"
             stats["error"] = f"CP Optimizer terminated with status '{sol_status}', stop cause '{stop_cause}' without solution"
 

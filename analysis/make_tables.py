@@ -38,15 +38,16 @@ def aggregate_repetitions(records):
         n_optimal = len(optimal_reps)
 
         # Compute per-rep PAR2 values before aggregating:
-        # Each OPTIMAL rep contributes solve_time; each non-optimal rep contributes 2T; SIZE_LIMIT is excluded.
+        # Each OPTIMAL rep contributes solve_time; each non-optimal rep contributes 2T;
+        # SIZE_LIMIT, UNAVAILABLE, and LICENSE_ERROR are excluded from solver algorithmic PAR2.
         rep_par2_vals = []
         for r in reps:
-            st = r.get("status")
+            st = str(r.get("status", "")).upper()
             if st == "OPTIMAL":
                 t = r.get("solve_time")
                 if t is not None:
                     rep_par2_vals.append(float(t))
-            elif st == "SIZE_LIMIT":
+            elif st in ("SIZE_LIMIT", "UNAVAILABLE", "LICENSE_ERROR"):
                 pass
             else:
                 r_timeout = r.get("config", {}).get("time_limit") or r.get("time_limit") or 600.0
@@ -344,7 +345,20 @@ def cross_validate_optima(records, output_dir=None):
     return df_cv
 
 def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_total=None):
-    """Format single cell according to required status representations."""
+    """
+    Format single cell according to required status representations:
+      - OPTIMAL: solve_time in seconds (e.g. "0.0123")
+      - PARTIAL: "k/n time*" (e.g. "3/5 0.1234*")
+      - FEASIBLE: "FEAS(ub)" or "FEAS"
+      - TIMEOUT: "TO(ub)" or "TO"
+      - INTERRUPTED: "INT(ub)" or "INT"
+      - SIZE_LIMIT: "SL"
+      - UNAVAILABLE: "UNAV"
+      - LICENSE_ERROR: "LIC"
+      - INFEASIBLE: "UNSAT"
+      - NUMERIC_ERROR: "NUM_ERR"
+      - ERROR: "ERR"
+    """
     if isinstance(status, dict):
         rec = status
         status = rec.get("status")
@@ -356,17 +370,33 @@ def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_to
     if solve_time is None:
         solve_time = 0.0
 
-    if status == "OPTIMAL":
+    st = str(status).upper() if status is not None else ""
+
+    if st == "OPTIMAL":
         return f"{solve_time:.4f}"
-    elif status == "PARTIAL":
+    elif st == "PARTIAL":
         k_n = f"{n_optimal}/{n_total}" if (n_optimal is not None and n_total is not None) else "PARTIAL"
         return f"{k_n} {solve_time:.4f}*"
-    elif status == "TIMEOUT":
+    elif st == "FEASIBLE":
+        return f"FEAS({best_ub})" if best_ub is not None and best_ub >= 0 else "FEAS"
+    elif st == "TIMEOUT":
         return f"TO({best_ub})" if best_ub is not None and best_ub >= 0 else "TO"
-    elif status == "SIZE_LIMIT":
+    elif st == "INTERRUPTED":
+        return f"INT({best_ub})" if best_ub is not None and best_ub >= 0 else "INT"
+    elif st == "SIZE_LIMIT":
         return "SL"
-    elif status == "ERROR":
+    elif st == "UNAVAILABLE":
+        return "UNAV"
+    elif st == "LICENSE_ERROR":
+        return "LIC"
+    elif st == "INFEASIBLE":
+        return "UNSAT"
+    elif st == "NUMERIC_ERROR":
+        return "NUM_ERR"
+    elif st == "ERROR":
         return "ERR"
+    elif not st or st == "NONE":
+        return "-"
     else:
         return str(status)
 
@@ -422,6 +452,9 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             elif st == "SIZE_LIMIT":
                 sl_count += 1
                 # SIZE_LIMIT is reported separately in SL and not penalized in PAR2 as timeout
+            elif st in ("UNAVAILABLE", "LICENSE_ERROR"):
+                # Solver environment unavailability / missing license is excluded from algorithmic PAR2
+                pass
             else:
                 par2_val = rec.get("par2") if rec.get("par2") is not None else (2.0 * float(rec_timeout))
                 par2_vals.append(par2_val)

@@ -166,9 +166,12 @@ def get_canonical_key(record):
         method = "cpsat"
         workers = cfg.get("num_workers", 1)
         if "sb_rotation" in cfg:
-            flags = (workers, bool(cfg["sb_rotation"]))
+            sb_rot = bool(cfg["sb_rotation"])
+        elif "sb_rotation" in record:
+            sb_rot = bool(record["sb_rotation"])
         else:
-            flags = (workers,)
+            sb_rot = True
+        flags = (workers, sb_rot)
     elif solver == "cplex":
         method = "cplex"
         if "sb_rotation" in cfg:
@@ -242,7 +245,7 @@ def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool
         best_ub = record.get("best_ub")
         if best_ub is not None:
             try:
-                if int(best_ub) >= 0:
+                if int(best_ub) >= 0 and not record.get("validation_error"):
                     return True
             except (ValueError, TypeError):
                 pass
@@ -547,10 +550,12 @@ def build_experiment_plan(
                             num_w = m.get("num_workers", 1)
                             method = "cpsat"
                             solver = "cp_sat"
-                            flags = (num_w,)
+                            sb_rot = bool(m.get("sb_rotation", True))
+                            flags = (num_w, sb_rot)
                             key = (d["name"], method, solver, flags, seed)
                             cfg_dict = {
                                 "num_workers": num_w,
+                                "sb_rotation": sb_rot,
                                 "time_limit": grp_timeout,
                                 "relabel_seed": seed,
                             }
@@ -656,6 +661,12 @@ def build_experiment_plan(
                                 tasks_map[key]["groups"].append(grp)
                             tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
+        if len(grp_datasets) > 0 and grp_tasks_count == 0:
+            raise ValueError(
+                f"Group '{grp}' has {len(grp_datasets)} dataset(s) configured, "
+                f"but generated 0 tasks! Check group methods/variants/solvers configuration."
+            )
+
         group_stats[grp] = {
             "datasets_count": len(grp_datasets),
             "tasks_count": grp_tasks_count,
@@ -707,6 +718,10 @@ def build_task_cmd(task, json_out_path):
             "--num-workers", str(num_w),
             "--json-out", json_out_path,
         ]
+        sb_rot = task.get("config_dict", {}).get("sb_rotation", True)
+        if len(task.get("flags", ())) > 1:
+            sb_rot = task["flags"][1]
+        cmd.append("--sb-rotation" if sb_rot else "--no-sb-rotation")
         if task.get("relabel_seed") is not None:
             cmd.extend(["--relabel-seed", str(task["relabel_seed"])])
         return cmd
@@ -748,10 +763,12 @@ def format_task_flags(task):
             res += f"+seed={task['relabel_seed']}"
         return res
     elif task["method"] == "cpsat":
-        res = f"workers={task['flags'][0]}"
+        parts = [f"workers={task['flags'][0]}"]
+        if len(task["flags"]) > 1:
+            parts.append(f"rot={task['flags'][1]}")
         if task.get("relabel_seed") is not None:
-            res += f"+seed={task['relabel_seed']}"
-        return res
+            parts.append(f"seed={task['relabel_seed']}")
+        return "+".join(parts)
     elif task["method"] in ("cplex", "cplex_cp", "gurobi"):
         parts = []
         if task.get("flags") and len(task["flags"]) > 0:

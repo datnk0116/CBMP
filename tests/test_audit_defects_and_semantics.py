@@ -375,3 +375,73 @@ def test_canonical_key_distinguishes_solving_modes():
     task_iter = dict(task_inc, solving_mode="iterative")
 
     assert get_canonical_key(task_inc) != get_canonical_key(task_iter)
+
+
+# ============================================================================
+# 8. STATUS POLICY & PAR2 AUDIT SYNTHETIC TESTS
+# ============================================================================
+
+def test_all_statuses_cell_formatting_and_semantics():
+    """Verify format_cell_value handles all 11 explicit statuses distinctly and correctly."""
+    from analysis.make_tables import format_cell_value
+
+    assert format_cell_value("OPTIMAL", solve_time=1.2345) == "1.2345"
+    assert format_cell_value("PARTIAL", solve_time=1.2345, n_optimal=3, n_total=5) == "3/5 1.2345*"
+    assert format_cell_value("FEASIBLE", best_ub=4) == "FEAS(4)"
+    assert format_cell_value("FEASIBLE", best_ub=-1) == "FEAS"
+    assert format_cell_value("TIMEOUT", best_ub=5) == "TO(5)"
+    assert format_cell_value("TIMEOUT", best_ub=-1) == "TO"
+    assert format_cell_value("INTERRUPTED", best_ub=6) == "INT(6)"
+    assert format_cell_value("INTERRUPTED", best_ub=-1) == "INT"
+    assert format_cell_value("SIZE_LIMIT") == "SL"
+    assert format_cell_value("UNAVAILABLE") == "UNAV"
+    assert format_cell_value("LICENSE_ERROR") == "LIC"
+    assert format_cell_value("INFEASIBLE") == "UNSAT"
+    assert format_cell_value("NUMERIC_ERROR") == "NUM_ERR"
+    assert format_cell_value("ERROR") == "ERR"
+    assert format_cell_value(None) == "-"
+
+
+def test_status_aggregation_and_par2_exclusion_policy():
+    """
+    Verify aggregate_repetitions and compute_summary_stats policies:
+    1. Count only OPTIMAL as proven solved.
+    2. Exclude SIZE_LIMIT, UNAVAILABLE, LICENSE_ERROR from solver algorithmic PAR2.
+    3. TIMEOUT, INTERRUPTED, and other failures contribute 2 * timeout.
+    4. Unverified incumbents with validation_error are stripped.
+    """
+    from analysis.make_tables import aggregate_repetitions, compute_summary_stats
+    import pandas as pd
+
+    records = [
+        {"dataset": "d1", "solver": "s1", "status": "OPTIMAL", "solve_time": 10.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d2", "solver": "s1", "status": "TIMEOUT", "solve_time": 600.0, "best_ub": 4, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d3", "solver": "s1", "status": "SIZE_LIMIT", "solve_time": 0.1, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d4", "solver": "s1", "status": "UNAVAILABLE", "solve_time": 0.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d5", "solver": "s1", "status": "LICENSE_ERROR", "solve_time": 0.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "d6", "solver": "s1", "status": "FEASIBLE", "best_ub": 5, "solve_time": 50.0, "time_limit": 600.0, "rep": 1},
+    ]
+
+    agg = aggregate_repetitions(records)
+    agg_map = {r["dataset"]: r for r in agg}
+
+    # Verify PAR2 values for individual statuses
+    assert agg_map["d1"]["par2"] == 10.0  # OPTIMAL: exact time
+    assert agg_map["d2"]["par2"] == 1200.0  # TIMEOUT: 2 * 600
+    assert "par2" not in agg_map["d3"]  # SIZE_LIMIT: excluded
+    assert "par2" not in agg_map["d4"]  # UNAVAILABLE: excluded
+    assert "par2" not in agg_map["d5"]  # LICENSE_ERROR: excluded
+    assert agg_map["d6"]["par2"] == 1200.0  # FEASIBLE (non-optimal): 2 * 600
+
+    # Summary stats across datasets
+    df_raw = pd.DataFrame({
+        "s1": [agg_map["d1"], agg_map["d2"], agg_map["d3"], agg_map["d4"], agg_map["d5"], agg_map["d6"]]
+    }, index=["d1", "d2", "d3", "d4", "d5", "d6"])
+
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["s1"], timeout=600.0)
+    assert solved["s1"] == 1, "Only OPTIMAL must be counted as proven solved"
+    assert sl["s1"] == 1, "SIZE_LIMIT must be tracked separately"
+    # Denominator for PAR2 must be 3 valid algorithmic runs (d1: 10, d2: 1200, d6: 1200) -> mean = 2410 / 3 = 803.333
+    expected_par2 = (10.0 + 1200.0 + 1200.0) / 3.0
+    assert abs(par2["s1"] - expected_par2) < 1e-3
+

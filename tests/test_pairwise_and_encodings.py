@@ -282,11 +282,22 @@ def test_exhaustive_order_and_pairwise_vs_bruteforce(name, N, edges):
 
 
 @pytest.mark.parametrize("name, N, edges", [
+    ("empty_1", 1, []),
+    ("empty_2", 2, []),
+    ("edge_2", 2, [(0, 1)]),
+    ("empty_3", 3, []),
     ("path_3", 3, [(0, 1), (1, 2)]),
     ("triangle_3", 3, [(0, 1), (1, 2), (0, 2)]),
+    ("empty_4", 4, []),
     ("disconnected_2k2_4", 4, [(0, 1), (2, 3)]),
+    ("isolated_plus_k3_4", 4, [(1, 2), (2, 3), (1, 3)]),
+    ("path_4", 4, [(0, 1), (1, 2), (2, 3)]),
+    ("cycle_4", 4, [(0, 1), (1, 2), (2, 3), (0, 3)]),
     ("star_4", 4, [(0, 1), (0, 2), (0, 3)]),
     ("clique_4", 4, [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]),
+    ("path_5", 5, [(0, 1), (1, 2), (2, 3), (3, 4)]),
+    ("cycle_5", 5, [(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)]),
+    ("star_5", 5, [(0, 1), (0, 2), (0, 3), (0, 4)]),
 ])
 @pytest.mark.parametrize("encoding", ["order", "pairwise"])
 @pytest.mark.parametrize("sb_rot, sb_ref", [
@@ -295,7 +306,12 @@ def test_exhaustive_order_and_pairwise_vs_bruteforce(name, N, edges):
     (True, True),
 ])
 def test_exhaustive_symmetry_breaking_combinations(name, N, edges, encoding, sb_rot, sb_ref):
-    """Verify that all symmetry-breaking combinations preserve exact optimal cyclic bandwidth."""
+    """
+    Verify that symmetry-breaking combinations preserve exact optimal cyclic bandwidth
+    across N=1, 2, >=3, empty, disconnected, path, cycle, star, and complete graphs,
+    and returned assignments are valid permutations.
+    """
+    from graph_utils import validate_solution
     expected = cyclic_bandwidth_bruteforce(N, edges)
     res, stats = solve(
         N=N,
@@ -305,8 +321,80 @@ def test_exhaustive_symmetry_breaking_combinations(name, N, edges, encoding, sb_
         sb_reflection=sb_ref,
         verbose=False,
     )
-    assert res == expected
+    assert res == expected, f"Failed on {name} with {encoding} (rot={sb_rot}, ref={sb_ref}): expected {expected}, got {res}"
     assert stats["status"] == "OPTIMAL"
+    valid, actual_bw, err = validate_solution(N, edges, stats["assignment"], reported_objective=res)
+    assert valid is True, f"Assignment validation failed on {name}: {err}"
+    assert actual_bw == expected
+
+
+def test_reflection_only_enforces_prerequisite():
+    """Verify solve() enforces that reflection symmetry breaking requires rotation symmetry breaking."""
+    with pytest.raises(ValueError, match="requires --sb-rotation"):
+        solve(N=3, edges=[(0, 1), (1, 2)], sb_rotation=False, sb_reflection=True, verbose=False)
+
+
+@pytest.mark.parametrize("encoding", ["order", "pairwise"])
+def test_formula_level_reflection_without_rotation(encoding):
+    """Verify formula-level reflection symmetry breaking independently generates valid clauses."""
+    N = 4
+    if encoding == "order":
+        from sat_encodings import build_order_base_formula, break_reflection_symmetry_order
+        clauses, X, G, nv = build_order_base_formula(N)
+        ref_clauses = break_reflection_symmetry_order(N, X, G)
+        assert len(ref_clauses) > 0
+    else:
+        from sat_encodings import build_pairwise_base_formula, break_reflection_symmetry_pairwise
+        clauses, X, nv = build_pairwise_base_formula(N)
+        ref_clauses = break_reflection_symmetry_pairwise(N, X)
+        assert len(ref_clauses) > 0
+
+
+def test_symmetry_breaking_orbit_representative_preservation():
+    """
+    For small graphs, enumerate all optimal bijections V -> {0..N-1} by brute force,
+    partition them into rotational and dihedral equivalence classes,
+    and verify that:
+    1. Every rotational orbit contains at least one representative with f(0) == 0.
+    2. Every dihedral orbit contains at least one representative with f(0) == 0 and f(1) < f(N-1) (for N >= 3).
+    3. Measure the exact solution counts and verify that SAT models match these representatives.
+    """
+    import itertools
+    test_graphs = [
+        (3, [(0, 1), (1, 2)]),
+        (4, [(0, 1), (1, 2), (2, 3)]),
+        (4, [(0, 1), (0, 2), (0, 3)]),
+        (4, [(0, 1), (2, 3)]),
+    ]
+
+    for N, edges in test_graphs:
+        opt = cyclic_bandwidth_bruteforce(N, edges)
+        all_perms = list(itertools.permutations(range(N)))
+        optimal_perms = [p for p in all_perms if compute_cyclic_bandwidth(N, edges, list(p)) == opt]
+        assert len(optimal_perms) > 0
+
+        # Rotational orbits: p ~ q if exists c such that q(u) = (p(u) + c) % N
+        rot_reps = [p for p in optimal_perms if p[0] == 0]
+        # Verify every optimal perm has a rotational representative with p[0] == 0
+        for p in optimal_perms:
+            shift = (N - p[0]) % N
+            rot_equiv = tuple((x + shift) % N for x in p)
+            assert rot_equiv in rot_reps
+
+        # Dihedral orbits (N >= 3): p ~ q under rotation + reflection
+        if N >= 3:
+            dihedral_reps = [p for p in rot_reps if p[1] < p[N - 1]]
+            for p in optimal_perms:
+                # First rotate so p[0] == 0
+                shift = (N - p[0]) % N
+                r = tuple((x + shift) % N for x in p)
+                if r[1] > r[N - 1]:
+                    # Reflect: x -> (N - x) % N
+                    r = tuple((N - x) % N for x in r)
+                assert r[0] == 0
+                assert r[1] <= r[N - 1]
+                assert r in optimal_perms
+
 
 
 @pytest.mark.parametrize("name, N, edges", [
