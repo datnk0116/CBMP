@@ -585,16 +585,17 @@ def run_experiments(
         print("No datasets found in dataset directory.")
         return
 
-    # 3. Environment info
-    os.makedirs(output_dir, exist_ok=True)
-    env_file = os.path.join(output_dir, "env.json")
-    effective_timeout = timeout if timeout is not None else defaults.get("timeout", 600)
-    collect_environment_info(
-        output_path=env_file,
-        timeout=effective_timeout,
-        config_path=config_path,
-        record_metadata=record_metadata,
-    )
+    # 3. Environment info (only for actual execution)
+    if not dry_run:
+        os.makedirs(output_dir, exist_ok=True)
+        env_file = os.path.join(output_dir, "env.json")
+        effective_timeout = timeout if timeout is not None else defaults.get("timeout", 600)
+        collect_environment_info(
+            output_path=env_file,
+            timeout=effective_timeout,
+            config_path=config_path,
+            record_metadata=record_metadata,
+        )
 
     # 4. Build deduplicated execution plan
     plan, group_stats = build_experiment_plan(
