@@ -863,7 +863,7 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
     print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
 
     # Generate table_ablation_family_per_graph.csv
-    datasets = sorted(list(set(ds for (ds, seed) in pairs_map.keys())))
+    datasets = sorted(list(set(ds for (ds, seed), mmap in pairs_map.items() if "cpsat" in mmap and "sat" in mmap)))
     per_graph_rows = []
     for ds in datasets:
         for comp_group, var_label, var_target, var_ref in comparisons:
@@ -1095,7 +1095,7 @@ def make_table_methods_family(records, base_filename="table_methods_family", out
     if not pairs_map:
         return
 
-    datasets = sorted(list(set(ds for (ds, seed) in pairs_map.keys())))
+    datasets = sorted(list(set(ds for (ds, seed), mmap in pairs_map.items() if "cpsat" in mmap and "sat" in mmap)))
     rows = []
     for ds in datasets:
         ratios = []
