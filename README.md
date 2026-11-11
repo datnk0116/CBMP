@@ -196,10 +196,16 @@ python analysis/make_plots.py results_v2/runs.jsonl --output-dir results_v2/figu
 
 - Bảng `table_ablation_small` & `table_ablation_medium`: Đánh giá tác động của phá đối xứng quay, đối xứng gương và heuristic khởi tạo (tách riêng đồ thị nhỏ và trung bình).
 - Bảng `table_ablation_family`: Đánh giá phân phối tỷ lệ thời gian giữa các biến thể trên họ các đồ thị hoán vị nhãn ngẫu nhiên (seeds), cung cấp median tỷ lệ thời gian, IQR (25-75%), min-max, và tỷ lệ số cặp nhanh hơn.
+- Bảng `table_ablation_family_per_graph`: Chi tiết các so sánh cặp trên từng đồ thị con họ bus ($N=40, 50$).
 - Bảng `table_ablation_phases`: Phân tích thời gian giải theo từng giai đoạn (vòng SAT cuối cùng `last_iter_time` vs các vòng trước `prev_iters_time`), phân tách theo $N=40$ và $N=50$.
-- Bảng `table_solvers_small` & `table_solvers_medium`: So sánh thời gian và tỷ lệ giải được của các solver SAT trên đồ thị nhỏ và trung bình.
+- Bảng `table_solvers_small` & `table_solvers_medium`: So sánh thời gian và tỷ lệ giải được của 5 solver SAT trên đồ thị nhỏ và trung bình.
+  - *Ghi chú cho `table_solvers_small`*: Mỗi dataset được chạy trên 5 hoán vị nhãn ngẫu nhiên (`relabel_seeds` 0..4). Thời gian giải được gộp theo trung vị (**median**); điểm PAR2 được tính theo trung bình cộng (**mean**) trên 5 seed.
 - Bảng `table_methods`: So sánh SAT với CP-SAT và CPLEX trên 7 instance (nhỏ + trung bình). Trường hợp CPLEX chạm ngưỡng Community Edition (<= 1000 biến/ràng buộc) được đánh dấu riêng bằng mã **SL** (Size Limit), tách biệt khỏi PAR2 và được chú thích dưới bảng.
-- Bảng `cross_validation.csv`: Đối chiếu nghiệm tối ưu `best_ub` giữa tất cả solver/method cùng đạt trạng thái OPTIMAL trên cùng dataset. Báo lỗi và dừng nếu phát hiện mâu thuẫn hoặc nghiệm incumbent không hợp lệ (< opt).
+  - *Quy tắc Speedup & Mean time*: Tốc độ tăng trung bình nhân (Speedup) chỉ tính trên các instance mà baseline $\ge 0.1\text{s}$ (kèm hiển thị số instance đủ điều kiện, ví dụ `[5/7]`). Nếu solver/method chưa giải được hết các instance này thì ghi `-`. Nếu một method chưa giải hết toàn bộ instance trong bảng thì dòng "mean time" ghi `-`.
+- Bảng `table_methods_family`: So sánh hiệu năng giữa CP-SAT và SAT best trên 6 đồ thị có hoán vị nhãn ngẫu nhiên (seeds 0..4 và 0..2): median tỷ lệ thời gian `cpsat/sat`, min, max, và số cặp CP-SAT nhanh hơn / tổng số cặp.
+- Bảng `table_methods_large`: So sánh CP-SAT và SAT best trên các đồ thị lớn ($N \ge 80$, nhãn gốc) gồm status, best_ub, best_lb (từ CP-SAT hoặc `lb_degree = ceil(Delta/2)`) và thời gian giải.
+- Bảng `table_per_dataset`: Tổng hợp kết quả SAT best (CaDiCaL 195) trên toàn bộ 16 dataset MatrixMarket, bổ sung cận dưới $LB = \max(LB_{\text{degree}}, LB_{\text{solver}})$ và khoảng cách $Gap = UB - LB$ cho các dòng TIMEOUT.
+- Bảng `cross_validation.csv`: Đối chiếu nghiệm tối ưu `best_ub` giữa tất cả solver/method cùng đạt trạng thái OPTIMAL trên cùng dataset/seed (cột `relabel_seed` kiểu Int64, để trống cho nhãn gốc). Báo lỗi và dừng nếu phát hiện mâu thuẫn hoặc nghiệm incumbent không hợp lệ (< opt).
 
 ---
 
