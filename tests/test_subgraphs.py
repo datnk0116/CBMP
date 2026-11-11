@@ -6,11 +6,13 @@ import networkx as nx
 
 SUBGRAPH_NAMES = [
     "494_bus_n40",
+    "494_bus_n50",
     "494_bus_n60",
     "494_bus_n80",
     "494_bus_n100",
     "494_bus_n150",
     "662_bus_n40",
+    "662_bus_n50",
     "662_bus_n60",
     "662_bus_n80",
     "662_bus_n100",

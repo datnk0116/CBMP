@@ -236,6 +236,90 @@ def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", bas
 
     save_fig(fig, base_filename, output_dirs=output_dirs)
 
+def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_family", output_dirs=("results_v2/figures",)):
+    """
+    Boxplot (log scale) of time ratio relative to 'none' across vertex relabeling families.
+    Separate panels for N=40 and N=50.
+    Variants compared to none: rotation, rot+ref, heur_ub, all.
+    """
+    family_recs = [r for r in records if r.get("relabel_seed") is not None]
+    if not family_recs:
+        return
+
+    def get_var(rec):
+        cfg = rec.get("config", {})
+        rot = cfg.get("sb_rotation", False)
+        ref = cfg.get("sb_reflection", False)
+        heur = cfg.get("heuristic_ub", False)
+        if not rot and not ref and not heur:
+            return "none"
+        elif rot and not ref and not heur:
+            return "rotation"
+        elif rot and ref and not heur:
+            return "rot_ref"
+        elif not rot and not ref and heur:
+            return "heur_ub"
+        elif rot and ref and heur:
+            return "all"
+        return "other"
+
+    pairs_map = {}
+    for r in family_recs:
+        ds = r.get("dataset")
+        seed = r.get("relabel_seed")
+        var = get_var(r)
+        pairs_map.setdefault((ds, seed), {})[var] = r
+
+    variants = ["rotation", "rot_ref", "heur_ub", "all"]
+    labels = ["Rotation", "Rot + Ref", "Heur UB", "All (SB+Heur)"]
+
+    data_n40 = [[] for _ in variants]
+    data_n50 = [[] for _ in variants]
+
+    for (ds, seed), vmap in pairs_map.items():
+        if "none" not in vmap or vmap["none"].get("status") != "OPTIMAL":
+            continue
+        t_none = vmap["none"].get("solve_time", 0.0)
+        if t_none <= 0:
+            continue
+        n_val = vmap["none"].get("N", 0)
+
+        for i, var in enumerate(variants):
+            if var in vmap and vmap[var].get("status") == "OPTIMAL":
+                t_var = vmap[var].get("solve_time", 0.0)
+                ratio = t_var / t_none
+                if n_val == 40:
+                    data_n40[i].append(ratio)
+                elif n_val == 50:
+                    data_n50[i].append(ratio)
+
+    setup_matplotlib()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
+
+    if any(any(d) for d in data_n40):
+        bp1 = ax1.boxplot(data_n40, labels=labels, patch_artist=True)
+        for box in bp1["boxes"]:
+            box.set(facecolor="#4C72B0", alpha=0.7)
+    ax1.set_yscale("log")
+    ax1.axhline(1.0, color="red", linestyle="--", alpha=0.8, label="none (baseline = 1.0)")
+    ax1.set_title("N = 40 (494_bus & 662_bus, 10 seeds each)")
+    ax1.set_ylabel("Time Ratio relative to 'none' (log scale)")
+    ax1.grid(True, linestyle=":", alpha=0.6, which="both")
+    ax1.legend(loc="upper right")
+
+    if any(any(d) for d in data_n50):
+        bp2 = ax2.boxplot(data_n50, labels=labels, patch_artist=True)
+        for box in bp2["boxes"]:
+            box.set(facecolor="#55A868", alpha=0.7)
+    ax2.set_yscale("log")
+    ax2.axhline(1.0, color="red", linestyle="--", alpha=0.8, label="none (baseline = 1.0)")
+    ax2.set_title("N = 50 (494_bus & 662_bus, 5 seeds each)")
+    ax2.grid(True, linestyle=":", alpha=0.6, which="both")
+    ax2.legend(loc="upper right")
+
+    fig.suptitle("Ablation Study on Random Relabeling Families: Time Ratio vs 'none'", y=1.02)
+    save_fig(fig, base_filename, output_dirs=output_dirs)
+
 def main():
     print("=" * 70)
     print("ANALYSIS: GENERATING FIGURES (PNG AND PDF)")
@@ -329,6 +413,9 @@ def main():
     # 4. Iterations & UNSAT time
     plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)", output_dirs=output_dirs)
     plot_ablation_iterations_and_unsat(records, group_name="ablation_medium", base_filename="ablation_iterations_and_unsat_medium", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (662_bus_n60)", output_dirs=output_dirs)
+
+    # 5. Ablation Family boxplots
+    plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_family", output_dirs=output_dirs)
 
     print(f"\nAll figures generated successfully in {output_dir}/!")
 

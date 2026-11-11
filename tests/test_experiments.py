@@ -329,7 +329,17 @@ def test_canonical_key_consistency():
         "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": True},
     }
     key_sat = get_canonical_key(rec_sat)
-    assert key_sat == ("bus14", "sat", "cadical195", (True, False, True))
+    assert key_sat == ("bus14", "sat", "cadical195", (True, False, True), None)
+
+    rec_sat_seed0 = {
+        "dataset": "bus14",
+        "solver": "cadical195",
+        "relabel_seed": 0,
+        "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": True},
+    }
+    key_sat_seed0 = get_canonical_key(rec_sat_seed0)
+    assert key_sat_seed0 == ("bus14", "sat", "cadical195", (True, False, True), 0)
+    assert key_sat != key_sat_seed0
 
     rec_cpsat = {
         "dataset": "bus14",
@@ -337,7 +347,7 @@ def test_canonical_key_consistency():
         "config": {"num_workers": 1},
     }
     key_cpsat = get_canonical_key(rec_cpsat)
-    assert key_cpsat == ("bus14", "cpsat", "cp_sat", (1,))
+    assert key_cpsat == ("bus14", "cpsat", "cp_sat", (1,), None)
 
     rec_cplex = {
         "dataset": "bus14",
@@ -345,7 +355,7 @@ def test_canonical_key_consistency():
         "config": {},
     }
     key_cplex = get_canonical_key(rec_cplex)
-    assert key_cplex == ("bus14", "cplex", "cplex", ())
+    assert key_cplex == ("bus14", "cplex", "cplex", (), None)
 
 def test_main_optimal_exit(tmp_path):
     from main import main

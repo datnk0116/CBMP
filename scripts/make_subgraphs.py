@@ -108,7 +108,7 @@ def write_mtx_symmetric(filepath, n, edges):
     with open(filepath, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
-def make_all_subgraphs(output_dir="datasets", sizes=(40, 60, 80, 100, 150)):
+def make_all_subgraphs(output_dir="datasets", sizes=(40, 50, 60, 80, 100, 150)):
     """Generate subgraphs for 494_bus and 662_bus."""
     base_graphs = [
         ("494_bus", os.path.join(output_dir, "494_bus.mtx")),

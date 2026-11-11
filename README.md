@@ -146,6 +146,9 @@ python experiments/run_experiments.py --group ablation_small --timeout 600
 # 6. Nhóm ablation_medium (Đánh giá ablation trên đồ thị biên trung bình 662_bus_n60, 1 rep)
 python experiments/run_experiments.py --group ablation_medium --timeout 600
 
+# 7. Nhóm ablation_family (Đánh giá ablation trên các họ hoán vị nhãn ngẫu nhiên: n40 với 10 seeds, n50 với 5 seeds, 1 rep)
+python experiments/run_experiments.py --group ablation_family --timeout 600
+
 # Chỉ định thư mục lưu kết quả tùy chỉnh qua --output-dir
 python experiments/run_experiments.py --group solvers_small --output-dir results_v2
 
@@ -192,6 +195,8 @@ python analysis/make_plots.py results_v2/runs.jsonl --output-dir results_v2/figu
 ```
 
 - Bảng `table_ablation_small` & `table_ablation_medium`: Đánh giá tác động của phá đối xứng quay, đối xứng gương và heuristic khởi tạo (tách riêng đồ thị nhỏ và trung bình).
+- Bảng `table_ablation_family`: Đánh giá phân phối tỷ lệ thời gian giữa các biến thể trên họ các đồ thị hoán vị nhãn ngẫu nhiên (seeds), cung cấp median tỷ lệ thời gian, IQR (25-75%), min-max, và tỷ lệ số cặp nhanh hơn.
+- Bảng `table_ablation_phases`: Phân tích thời gian giải theo từng giai đoạn (vòng SAT cuối cùng `last_iter_time` vs các vòng trước `prev_iters_time`), phân tách theo $N=40$ và $N=50$.
 - Bảng `table_solvers_small` & `table_solvers_medium`: So sánh thời gian và tỷ lệ giải được của các solver SAT trên đồ thị nhỏ và trung bình.
 - Bảng `table_methods`: So sánh SAT với CP-SAT và CPLEX trên 7 instance (nhỏ + trung bình). Trường hợp CPLEX chạm ngưỡng Community Edition (<= 1000 biến/ràng buộc) được đánh dấu riêng bằng mã **SL** (Size Limit), tách biệt khỏi PAR2 và được chú thích dưới bảng.
 - Bảng `cross_validation.csv`: Đối chiếu nghiệm tối ưu `best_ub` giữa tất cả solver/method cùng đạt trạng thái OPTIMAL trên cùng dataset. Báo lỗi và dừng nếu phát hiện mâu thuẫn hoặc nghiệm incumbent không hợp lệ (< opt).

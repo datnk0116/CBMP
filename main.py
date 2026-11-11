@@ -4,7 +4,7 @@ import multiprocessing as mp
 import json
 import os
 
-def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout, solver="cadical195", json_out=None):
+def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout, solver="cadical195", json_out=None, relabel_seed=None):
     manager = mp.Manager()
     shared_stats = manager.dict()
     best_ub = mp.Value('i', -1)
@@ -16,6 +16,7 @@ def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout,
             "solver": solver,
             "shared_stats": shared_stats,
             "verbose": True,
+            "relabel_seed": relabel_seed,
         },
     )
     
@@ -53,6 +54,9 @@ def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout,
         final_stats["config"] = dict(final_stats["config"])
     if "per_iter_times" in final_stats:
         final_stats["per_iter_times"] = list(final_stats["per_iter_times"])
+
+    if "relabel_seed" not in final_stats:
+        final_stats["relabel_seed"] = relabel_seed
 
     if json_out:
         out_path = os.path.abspath(json_out)
@@ -92,6 +96,10 @@ if __name__ == "__main__":
                         type=str,
                         default=None,
                         help="path to append statistics dict as a single JSON line")
+    parser.add_argument("--relabel-seed",
+                        type=int,
+                        default=None,
+                        help="seed for random vertex relabeling (default: None = original labels)")
     args = parser.parse_args()
 
     sb_rotation = args.sb_rotation
@@ -115,4 +123,5 @@ if __name__ == "__main__":
         args.timeout,
         solver=args.solver.lower(),
         json_out=args.json_out,
+        relabel_seed=args.relabel_seed,
     )

@@ -76,6 +76,7 @@ def solve(
     use_symmetry_break=None,
     solver="cadical195",
     shared_stats=None,
+    relabel_seed=None,
 ):
     # ============ RESOLVE BACKWARD COMPATIBILITY & ARGUMENTS
     if use_symmetry_break is not None:
@@ -120,25 +121,38 @@ def solve(
 
     if N is not None and edges is not None:
         # Direct (N, edges) input
-        if edges:
-            rows = [u for u, v in edges] + [v for u, v in edges]
-            cols = [v for u, v in edges] + [u for u, v in edges]
-            data = [1] * len(rows)
-            GRAPH = csr_matrix((data, (rows, cols)), shape=(N, N))
-        else:
-            GRAPH = csr_matrix((N, N), dtype=int)
+        edges = list(edges)
     else:
         # Read from file
-        GRAPH = mmread(f"datasets/{dataset}.mtx") 
-        N = GRAPH.shape[0]  # num vertices
+        GRAPH_orig = mmread(f"datasets/{dataset}.mtx") 
+        N = GRAPH_orig.shape[0]  # num vertices
 
-        rows, cols = GRAPH.nonzero()  # edge if: matrix cell has nonzero val
+        rows, cols = GRAPH_orig.nonzero()  # edge if: matrix cell has nonzero val
         edges = [(u, v) for u, v in zip(rows, cols) if u < v] # ignoring duplicate pairs, and diagonal
+
+    if relabel_seed is not None:
+        rng = np.random.default_rng(relabel_seed)
+        pi = rng.permutation(N)
+        new_edges = []
+        for u, v in edges:
+            pu, pv = int(pi[u]), int(pi[v])
+            if pu != pv:
+                new_edges.append((min(pu, pv), max(pu, pv)))
+        edges = sorted(list(set(new_edges)))
+
+    if edges:
+        rows = [u for u, v in edges] + [v for u, v in edges]
+        cols = [v for u, v in edges] + [u for u, v in edges]
+        data = [1] * len(rows)
+        GRAPH = csr_matrix((data, (rows, cols)), shape=(N, N))
+    else:
+        GRAPH = csr_matrix((N, N), dtype=int)
 
     stats = {
         "dataset": dataset_name,
         "N": N,
         "num_edges": len(edges),
+        "relabel_seed": relabel_seed,
         "config": {
             "sb_rotation": sb_rotation,
             "sb_reflection": sb_reflection,

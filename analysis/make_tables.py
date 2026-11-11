@@ -198,58 +198,69 @@ def get_source_key(record):
 def cross_validate_optima(records, output_dir=None):
     """
     Cross-validation check:
-    1. Group OPTIMAL records by dataset and (solver_or_method, canonical_config).
-       A dataset is considered 'verified' only when >= 2 distinct keys reach identical OPTIMAL best_ub.
+    1. Group OPTIMAL records by (dataset, relabel_seed) and (solver_or_method, canonical_config).
+       For a given (dataset, relabel_seed), verified only when >= 2 distinct keys reach identical OPTIMAL best_ub.
        Repetitions of the same key are deduplicated, not counted as separate sources.
        If only 1 distinct key is present, mark as 'single_source' and warn.
        If distinct keys report conflicting optima, mark as 'conflict' and raise ValueError.
-    2. Check incumbents: for any dataset with a proven optimum `opt`, every non-OPTIMAL record
+    2. Check across seeds: all seeds of the same base dataset must reach the exact same optimum.
+       If different seeds report conflicting optima, mark as 'conflict' and raise ValueError.
+    3. Check incumbents: for any dataset with a proven optimum `opt`, every non-OPTIMAL record
        with best_ub >= 0 must satisfy best_ub >= opt; otherwise raises ValueError with the offending record.
-    3. Exports cross_validation.csv to output_dir if output_dir is provided.
+    4. Exports cross_validation.csv to output_dir if output_dir is provided.
     """
-    optimal_by_ds = {}
+    optimal_by_inst = {}
     for r in records:
         if r.get("status") == "OPTIMAL":
             ds = r.get("dataset")
+            seed = r.get("relabel_seed")
             ub = r.get("best_ub")
             src_key = get_source_key(r)
-            optimal_by_ds.setdefault(ds, {}).setdefault(src_key, []).append(ub)
+            optimal_by_inst.setdefault((ds, seed), {}).setdefault(src_key, []).append(ub)
 
     distinct_sources = {}
     mismatches = []
-    proven_optima = {}
+    proven_optima_by_inst = {}
+    proven_optima_by_ds = {}
 
-    for ds, sources in optimal_by_ds.items():
-        distinct_sources[ds] = {}
+    for (ds, seed), sources in optimal_by_inst.items():
+        distinct_sources[(ds, seed)] = {}
         for src_key, ubs in sources.items():
             unique_key_ubs = set(u for u in ubs if u is not None)
             if len(unique_key_ubs) > 1:
-                mismatches.append((ds, f"Internal conflict across repetitions of key {src_key}: {unique_key_ubs}"))
-            distinct_sources[ds][src_key] = list(unique_key_ubs)[0] if unique_key_ubs else None
+                mismatches.append((ds, f"Internal conflict across repetitions of key {src_key} on seed {seed}: {unique_key_ubs}"))
+            distinct_sources[(ds, seed)][src_key] = list(unique_key_ubs)[0] if unique_key_ubs else None
 
-        all_ds_ubs = set(u for u in distinct_sources[ds].values() if u is not None)
-        if len(all_ds_ubs) > 1:
-            mismatches.append((ds, f"Conflicting optima across sources: {distinct_sources[ds]}"))
-        elif len(all_ds_ubs) == 1:
-            proven_optima[ds] = list(all_ds_ubs)[0]
+        all_inst_ubs = set(u for u in distinct_sources[(ds, seed)].values() if u is not None)
+        if len(all_inst_ubs) > 1:
+            mismatches.append((ds, f"Conflicting optima across sources on {ds} (seed {seed}): {distinct_sources[(ds, seed)]}"))
+        elif len(all_inst_ubs) == 1:
+            opt = list(all_inst_ubs)[0]
+            proven_optima_by_inst[(ds, seed)] = opt
+            if ds in proven_optima_by_ds and proven_optima_by_ds[ds] != opt:
+                mismatches.append((ds, f"Conflicting optima across seeds for dataset '{ds}': {proven_optima_by_ds[ds]} vs {opt} (seed {seed})"))
+            else:
+                proven_optima_by_ds[ds] = opt
 
     # Check incumbents against proven optima
     incumbent_violations = []
     for r in records:
         ds = r.get("dataset")
         st = r.get("status")
-        if ds in proven_optima and st != "OPTIMAL":
+        if ds in proven_optima_by_ds and st != "OPTIMAL":
             ub = r.get("best_ub")
             if ub is not None and ub >= 0:
-                opt = proven_optima[ds]
+                opt = proven_optima_by_ds[ds]
                 if ub < opt:
                     incumbent_violations.append((ds, ub, opt, r))
 
     # Prepare DataFrame rows
+    conflicting_ds = set(m[0] for m in mismatches)
     compared_rows = []
-    for ds, sources in distinct_sources.items():
-        all_ds_ubs = set(u for u in sources.values() if u is not None)
-        has_conflict = len(all_ds_ubs) > 1
+    has_any_seeds = any(seed is not None for (ds, seed) in distinct_sources.keys())
+    for (ds, seed), sources in distinct_sources.items():
+        all_inst_ubs = set(u for u in sources.values() if u is not None)
+        has_conflict = len(all_inst_ubs) > 1 or ds in conflicting_ds
         num_keys = len(sources)
         if has_conflict:
             ds_status = "conflict"
@@ -259,18 +270,26 @@ def cross_validate_optima(records, output_dir=None):
             ds_status = "single_source"
 
         for (solver_name, canonical_cfg), ub in sources.items():
-            compared_rows.append({
+            row_dict = {
                 "dataset": ds,
                 "solver_or_method": solver_name,
                 "canonical_config": str(canonical_cfg),
                 "best_ub": ub,
                 "num_distinct_sources": num_keys,
                 "validation_status": ds_status,
-            })
+            }
+            if has_any_seeds:
+                row_dict["relabel_seed"] = seed
+            compared_rows.append(row_dict)
+
+    cols = ["dataset"]
+    if has_any_seeds:
+        cols.append("relabel_seed")
+    cols.extend(["solver_or_method", "canonical_config", "best_ub", "num_distinct_sources", "validation_status"])
 
     df_cv = pd.DataFrame(
         compared_rows,
-        columns=["dataset", "solver_or_method", "canonical_config", "best_ub", "num_distinct_sources", "validation_status"]
+        columns=cols
     )
 
     if output_dir:
@@ -297,12 +316,14 @@ def cross_validate_optima(records, output_dir=None):
         ds, ub, opt, rec = incumbent_violations[0]
         raise ValueError(f"Invalid incumbent on dataset '{ds}': best_ub={ub} < proven optimum opt={opt}. Record: {rec}")
 
-    verified_count = sum(1 for ds, sources in distinct_sources.items() if len(sources) >= 2)
-    single_source_count = sum(1 for ds, sources in distinct_sources.items() if len(sources) == 1)
+    verified_count = sum(1 for (ds, seed), sources in distinct_sources.items() if len(sources) >= 2)
+    single_source_count = sum(1 for (ds, seed), sources in distinct_sources.items() if len(sources) == 1)
 
-    for ds, sources in distinct_sources.items():
+    for (ds, seed), sources in distinct_sources.items():
         if len(sources) == 1:
-            print(f"[WARNING] Dataset '{ds}' has only 1 distinct configuration/solver source: best_ub = {proven_optima.get(ds)} (single_source). Not independently cross-verified.")
+            inst_label = ds if seed is None else f"{ds} (seed={seed})"
+            opt = proven_optima_by_inst.get((ds, seed))
+            print(f"[WARNING] Dataset '{inst_label}' has only 1 distinct configuration/solver source: best_ub = {opt} (single_source). Not independently cross-verified.")
 
     if single_source_count > 0 and verified_count == 0:
         print(f"[CROSS-VALIDATION INCOMPLETE] 0 dataset(s) independently verified; {single_source_count} dataset(s) have single_source only.")
@@ -357,7 +378,9 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
         for ds, row in df_raw.iterrows():
             rec = row.get(baseline_col)
             if rec and rec.get("status") == "OPTIMAL":
-                baseline_times[ds] = rec.get("solve_time", timeout)
+                t_base = rec.get("solve_time", timeout)
+                if t_base >= 0.1:
+                    baseline_times[ds] = t_base
 
     for col in column_names:
         solved = 0
@@ -518,13 +541,16 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         sum_par2[col] = f"{par2_val[col]:.3f}" if not math.isnan(par2_val[col]) else "-"
         sum_spdup[col] = f"{spdups[col]:.2f}x" if not math.isnan(spdups[col]) else "-"
 
+    has_timeout = any(solved_cnt[col] + sl_cnt[col] < len(ds_sorted) for col in columns)
+    par2_label = "PAR2 (s)" if has_timeout else "mean time (s)"
+
     summary = [
         ("Solved", sum_solved),
     ]
     if any(v > 0 for v in sl_cnt.values()):
         summary.append(("SL", sum_sl))
     summary.extend([
-        ("PAR2 (s)", sum_par2),
+        (par2_label, sum_par2),
         ("Speedup (geom)", sum_spdup),
     ])
 
@@ -578,13 +604,16 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
         sum_par2[sol] = f"{par2_val[sol]:.3f}" if not math.isnan(par2_val[sol]) else "-"
         sum_spdup[sol] = f"{spdups[sol]:.2f}x" if not math.isnan(spdups[sol]) else "-"
 
+    has_timeout = any(solved_cnt[sol] + sl_cnt[sol] < len(ds_sorted) for sol in solvers)
+    par2_label = "PAR2 (s)" if has_timeout else "mean time (s)"
+
     summary = [
         ("Solved", sum_solved),
     ]
     if any(v > 0 for v in sl_cnt.values()):
         summary.append(("SL", sum_sl))
     summary.extend([
-        ("PAR2 (s)", sum_par2),
+        (par2_label, sum_par2),
         ("Speedup (geom)", sum_spdup),
     ])
 
@@ -641,15 +670,195 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
         sum_par2[m] = f"{par2_val[m]:.3f}" if not math.isnan(par2_val[m]) else "-"
         sum_spdup[m] = f"{spdups[m]:.2f}x" if not math.isnan(spdups[m]) else "-"
 
+    has_timeout = any(solved_cnt[m] + sl_cnt[m] < len(ds_sorted) for m in methods)
+    par2_label = "PAR2 (s)" if has_timeout else "mean time (s)"
+
     summary = [
         ("Solved", sum_solved),
         ("SL", sum_sl),
-        ("PAR2 (s)", sum_par2),
+        (par2_label, sum_par2),
         ("Speedup (geom)", sum_spdup),
     ]
 
     note = "Note: SL = Size Limit (exceeded CPLEX Community Edition limits, excluded from PAR2)."
     export_table(df_display, summary, "Comparison of Methods: SAT vs CP-SAT vs CPLEX", "table_methods", output_dirs=output_dirs, note=note)
+
+def make_table_ablation_family(records, base_filename="table_ablation_family", output_dirs=("results_v2/tables",)):
+    """
+    Generate table_ablation_family.csv:
+    Each row: (comparison_group, variant): median time ratio, IQR (25-75%), min-max, faster_pairs / total_pairs.
+    Comparison groups:
+      - variant vs none (for rotation, rot_ref, heur_ub, all)
+      - rotation_reflection vs rotation
+      - all vs rotation_reflection
+      - heuristic_ub vs none
+    Pairs: matching (dataset, relabel_seed).
+    """
+    if isinstance(output_dirs, str):
+        output_dirs = (output_dirs,)
+
+    def get_var(rec):
+        cfg = rec.get("config", {})
+        rot = cfg.get("sb_rotation", False)
+        ref = cfg.get("sb_reflection", False)
+        heur = cfg.get("heuristic_ub", False)
+        if not rot and not ref and not heur:
+            return "none"
+        elif rot and not ref and not heur:
+            return "rotation"
+        elif rot and ref and not heur:
+            return "rotation_reflection"
+        elif not rot and not ref and heur:
+            return "heuristic_ub"
+        elif rot and ref and heur:
+            return "all"
+        return "other"
+
+    family_recs = [r for r in records if r.get("relabel_seed") is not None]
+    if not family_recs:
+        return
+
+    pairs_map = {}
+    for r in family_recs:
+        ds = r.get("dataset")
+        seed = r.get("relabel_seed")
+        var = get_var(r)
+        pairs_map.setdefault((ds, seed), {})[var] = r
+
+    comparisons = [
+        ("variant vs none", "rotation", "rotation", "none"),
+        ("variant vs none", "rotation_reflection", "rotation_reflection", "none"),
+        ("variant vs none", "heuristic_ub", "heuristic_ub", "none"),
+        ("variant vs none", "all", "all", "none"),
+        ("rotation_reflection vs rotation", "rotation_reflection", "rotation_reflection", "rotation"),
+        ("all vs rotation_reflection", "all", "all", "rotation_reflection"),
+        ("heuristic_ub vs none", "heuristic_ub", "heuristic_ub", "none"),
+    ]
+
+    rows = []
+    for comp_group, var_label, var_target, var_ref in comparisons:
+        ratios = []
+        faster_count = 0
+        total_count = 0
+        for (ds, seed), vmap in pairs_map.items():
+            if var_target in vmap and var_ref in vmap:
+                rec_t = vmap[var_target]
+                rec_r = vmap[var_ref]
+                if rec_t.get("status") == "OPTIMAL" and rec_r.get("status") == "OPTIMAL":
+                    t_target = rec_t.get("solve_time", 0.0)
+                    t_ref = rec_r.get("solve_time", 0.0)
+                    if t_ref > 0:
+                        ratio = t_target / t_ref
+                        ratios.append(ratio)
+                        total_count += 1
+                        if t_target < t_ref:
+                            faster_count += 1
+
+        if ratios:
+            med = float(np.median(ratios))
+            q25 = float(np.percentile(ratios, 25))
+            q75 = float(np.percentile(ratios, 75))
+            min_r = float(np.min(ratios))
+            max_r = float(np.max(ratios))
+            iqr_str = f"[{q25:.4f}, {q75:.4f}]"
+            min_max_str = f"[{min_r:.4f}, {max_r:.4f}]"
+            faster_str = f"{faster_count}/{total_count}"
+        else:
+            med = float("nan")
+            iqr_str = "-"
+            min_max_str = "-"
+            faster_str = "0/0"
+
+        rows.append({
+            "comparison_group": comp_group,
+            "variant": var_label,
+            "median_time_ratio": f"{med:.4f}" if not math.isnan(med) else "-",
+            "iqr_25_75": iqr_str,
+            "min_max": min_max_str,
+            "faster_pairs": faster_str,
+        })
+
+    df = pd.DataFrame(rows)
+    for out_dir in output_dirs:
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path = os.path.join(out_dir, f"{base_filename}.csv")
+        df.to_csv(csv_path, index=False)
+    print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
+    return df
+
+def make_table_ablation_phases(records, base_filename="table_ablation_phases", output_dirs=("results_v2/tables",)):
+    """
+    Generate table_ablation_phases.csv:
+    Median last_iter_time, median prev_iters_time, ratio of last_iter/solve_time by variant, split by N (40 and 50).
+    """
+    if isinstance(output_dirs, str):
+        output_dirs = (output_dirs,)
+
+    def get_var(rec):
+        cfg = rec.get("config", {})
+        rot = cfg.get("sb_rotation", False)
+        ref = cfg.get("sb_reflection", False)
+        heur = cfg.get("heuristic_ub", False)
+        if not rot and not ref and not heur:
+            return "none"
+        elif rot and not ref and not heur:
+            return "rotation"
+        elif rot and ref and not heur:
+            return "rotation_reflection"
+        elif not rot and not ref and heur:
+            return "heuristic_ub"
+        elif rot and ref and heur:
+            return "all"
+        return "other"
+
+    family_recs = [r for r in records if r.get("relabel_seed") is not None]
+    if not family_recs:
+        return
+
+    variants = ["none", "rotation", "rotation_reflection", "heuristic_ub", "all"]
+    sizes = sorted(list(set(r.get("N", 0) for r in family_recs if r.get("N"))))
+
+    rows = []
+    for n in sizes:
+        for var in variants:
+            last_times = []
+            prev_times = []
+            ratios = []
+
+            for r in family_recs:
+                if r.get("N") == n and get_var(r) == var and r.get("status") == "OPTIMAL":
+                    per_iter = r.get("per_iter_times", [])
+                    st = r.get("solve_time", 0.0)
+                    if per_iter:
+                        last_t = per_iter[-1]
+                        prev_t = sum(per_iter[:-1])
+                    else:
+                        last_t = 0.0
+                        prev_t = 0.0
+                    last_times.append(last_t)
+                    prev_times.append(prev_t)
+                    if st > 0:
+                        ratios.append(last_t / st)
+
+            med_last = float(np.median(last_times)) if last_times else float("nan")
+            med_prev = float(np.median(prev_times)) if prev_times else float("nan")
+            med_ratio = float(np.median(ratios)) if ratios else float("nan")
+
+            rows.append({
+                "N": n,
+                "variant": var,
+                "median_last_iter_time": f"{med_last:.4f}" if not math.isnan(med_last) else "-",
+                "median_prev_iters_time": f"{med_prev:.4f}" if not math.isnan(med_prev) else "-",
+                "last_iter_ratio": f"{med_ratio:.4f}" if not math.isnan(med_ratio) else "-",
+            })
+
+    df = pd.DataFrame(rows)
+    for out_dir in output_dirs:
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path = os.path.join(out_dir, f"{base_filename}.csv")
+        df.to_csv(csv_path, index=False)
+    print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
+    return df
 
 def main():
     print("=" * 70)
@@ -689,6 +898,8 @@ def main():
     output_dirs = (output_dir,)
     make_table_ablation(records, group_name="ablation_small", base_filename="table_ablation_small", title="Ablation Study: Small Graphs", output_dirs=output_dirs)
     make_table_ablation(records, group_name="ablation_medium", base_filename="table_ablation_medium", title="Ablation Study: Medium Graph (662_bus_n60)", output_dirs=output_dirs)
+    make_table_ablation_family(records, base_filename="table_ablation_family", output_dirs=output_dirs)
+    make_table_ablation_phases(records, base_filename="table_ablation_phases", output_dirs=output_dirs)
     make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=output_dirs)
     make_table_solvers(records, group_name="solvers_medium", base_filename="table_solvers_medium", title="SAT Solver Performance Comparison (Medium Graphs)", output_dirs=output_dirs)
     make_table_methods(records, output_dirs=output_dirs)

@@ -138,3 +138,39 @@ groups:
         sb_rotation: true
         sb_reflection: true
         heuristic_ub: true
+
+  ablation_family:
+    description: "Ablation study on graph families under random vertex relabelings"
+    datasets:
+      - name: "494_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      - name: "662_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      - name: "494_bus_n50"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "662_bus_n50"
+        relabel_seeds: [0, 1, 2, 3, 4]
+    repetitions: 1
+    solver: "cadical195"
+    timeout: 600
+    variants:
+      - name: "none"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation"
+        sb_rotation: true
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation_reflection"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: false
+      - name: "heuristic_ub"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: true
+      - name: "all"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true

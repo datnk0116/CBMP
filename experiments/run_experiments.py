@@ -149,11 +149,14 @@ def collect_environment_info(output_path="results_v2/env.json", timeout=None, co
 
 def get_canonical_key(record):
     """
-    Extracts canonical (dataset, method, solver, flags) tuple from a result dictionary.
+    Extracts canonical (dataset, method, solver, flags, relabel_seed) tuple from a result dictionary.
     """
     dataset = record.get("dataset")
     solver = str(record.get("solver", "")).lower()
     cfg = record.get("config", {})
+    relabel_seed = record.get("relabel_seed")
+    if relabel_seed is None and isinstance(cfg, dict):
+        relabel_seed = cfg.get("relabel_seed", None)
     if solver in ("cp_sat", "cpsat"):
         method = "cpsat"
         flags = (cfg.get("num_workers", 1),)
@@ -166,7 +169,7 @@ def get_canonical_key(record):
         ref = bool(cfg.get("sb_reflection", False))
         heur = bool(cfg.get("heuristic_ub", False))
         flags = (rot, ref, heur)
-    return (dataset, method, solver, flags)
+    return (dataset, method, solver, flags, relabel_seed)
 
 def load_existing_runs(runs_jsonl_path, retry_failed=False):
     """
@@ -209,7 +212,8 @@ def filter_datasets_for_group(all_datasets, group_cfg, defaults, cli_datasets=No
     """
     default_filters = defaults.get("filters", {})
 
-    # 1. Dataset name filter
+    # 1. Dataset name filter & relabel_seeds map
+    seeds_map = {}
     if cli_datasets is not None:
         allowed = set(s.strip() for s in cli_datasets.split(","))
     else:
@@ -225,11 +229,45 @@ def filter_datasets_for_group(all_datasets, group_cfg, defaults, cli_datasets=No
         elif grp_ds == "all":
             allowed = None
         elif isinstance(grp_ds, (list, tuple, set)):
-            allowed = set(grp_ds)
+            allowed = set()
+            for item in grp_ds:
+                if isinstance(item, str):
+                    allowed.add(item)
+                elif isinstance(item, dict) and "name" in item:
+                    name = item["name"]
+                    allowed.add(name)
+                    if "relabel_seeds" in item:
+                        seeds_map[name] = item["relabel_seeds"]
+                elif isinstance(item, dict):
+                    for k, v in item.items():
+                        allowed.add(k)
+                        if isinstance(v, list):
+                            seeds_map[k] = v
+        elif isinstance(grp_ds, dict):
+            allowed = set(grp_ds.keys())
+            for k, v in grp_ds.items():
+                if isinstance(v, list):
+                    seeds_map[k] = v
         elif isinstance(grp_ds, str):
             allowed = set([s.strip() for s in grp_ds.split(",")])
         else:
             allowed = None
+
+    # Populate seeds_map also if grp_ds has seeds configured and cli_datasets filtered it
+    if cli_datasets is not None and isinstance(group_cfg.get("datasets"), (list, tuple, set, dict)):
+        raw_ds = group_cfg.get("datasets")
+        if isinstance(raw_ds, (list, tuple, set)):
+            for item in raw_ds:
+                if isinstance(item, dict) and "name" in item and "relabel_seeds" in item:
+                    seeds_map[item["name"]] = item["relabel_seeds"]
+                elif isinstance(item, dict):
+                    for k, v in item.items():
+                        if isinstance(v, list):
+                            seeds_map[k] = v
+        elif isinstance(raw_ds, dict):
+            for k, v in raw_ds.items():
+                if isinstance(v, list):
+                    seeds_map[k] = v
 
     # 2. Min N
     if cli_min_n is not None:
@@ -255,7 +293,10 @@ def filter_datasets_for_group(all_datasets, group_cfg, defaults, cli_datasets=No
             continue
         if eff_max_n is not None and d["N"] > eff_max_n:
             continue
-        filtered.append(d)
+        d_out = dict(d)
+        if d["name"] in seeds_map:
+            d_out["relabel_seeds"] = seeds_map[d["name"]]
+        filtered.append(d_out)
 
     return filtered
 
@@ -312,7 +353,7 @@ def build_experiment_plan(
 
             for d in grp_datasets:
                 grp_tasks_count += 1
-                key = (d["name"], method, solver.lower(), flags)
+                key = (d["name"], method, solver.lower(), flags, None)
                 if key not in tasks_map:
                     tasks_map[key] = {
                         "canonical_key": key,
@@ -322,11 +363,13 @@ def build_experiment_plan(
                         "method": method,
                         "solver": solver,
                         "flags": flags,
+                        "relabel_seed": None,
                         "config_dict": {
                             "sb_rotation": rot,
                             "sb_reflection": ref,
                             "heuristic_ub": heur,
                             "time_limit": grp_timeout,
+                            "relabel_seed": None,
                         },
                         "timeout": grp_timeout,
                         "group_reps": {grp: grp_reps},
@@ -349,7 +392,7 @@ def build_experiment_plan(
             for d in grp_datasets:
                 for s in solvers:
                     grp_tasks_count += 1
-                    key = (d["name"], method, s.lower(), flags)
+                    key = (d["name"], method, s.lower(), flags, None)
                     if key not in tasks_map:
                         tasks_map[key] = {
                             "canonical_key": key,
@@ -359,11 +402,13 @@ def build_experiment_plan(
                             "method": method,
                             "solver": s,
                             "flags": flags,
+                            "relabel_seed": None,
                             "config_dict": {
                                 "sb_rotation": rot,
                                 "sb_reflection": ref,
                                 "heuristic_ub": heur,
                                 "time_limit": grp_timeout,
+                                "relabel_seed": None,
                             },
                             "timeout": grp_timeout,
                             "group_reps": {grp: grp_reps},
@@ -388,30 +433,33 @@ def build_experiment_plan(
                         heur = bool(m.get("heuristic_ub", True))
                         method = "sat"
                         flags = (rot, ref, heur)
-                        key = (d["name"], method, solver.lower(), flags)
+                        key = (d["name"], method, solver.lower(), flags, None)
                         cfg_dict = {
                             "sb_rotation": rot,
                             "sb_reflection": ref,
                             "heuristic_ub": heur,
                             "time_limit": grp_timeout,
+                            "relabel_seed": None,
                         }
                     elif m_type == "cpsat":
                         num_w = m.get("num_workers", 1)
                         method = "cpsat"
                         solver = "cp_sat"
                         flags = (num_w,)
-                        key = (d["name"], method, solver, flags)
+                        key = (d["name"], method, solver, flags, None)
                         cfg_dict = {
                             "num_workers": num_w,
                             "time_limit": grp_timeout,
+                            "relabel_seed": None,
                         }
                     elif m_type == "cplex":
                         method = "cplex"
                         solver = "cplex"
                         flags = ()
-                        key = (d["name"], method, solver, flags)
+                        key = (d["name"], method, solver, flags, None)
                         cfg_dict = {
                             "time_limit": grp_timeout,
+                            "relabel_seed": None,
                         }
                     else:
                         continue
@@ -425,6 +473,7 @@ def build_experiment_plan(
                             "method": method,
                             "solver": solver,
                             "flags": flags,
+                            "relabel_seed": None,
                             "config_dict": cfg_dict,
                             "timeout": grp_timeout,
                             "group_reps": {grp: grp_reps},
@@ -441,38 +490,42 @@ def build_experiment_plan(
             variants = grp_cfg.get("variants", [])
             method = "sat"
             for d in grp_datasets:
-                for var in variants:
-                    grp_tasks_count += 1
-                    rot = bool(var.get("sb_rotation", False))
-                    ref = bool(var.get("sb_reflection", False))
-                    heur = bool(var.get("heuristic_ub", False))
-                    flags = (rot, ref, heur)
-                    key = (d["name"], method, solver.lower(), flags)
-                    cfg_dict = {
-                        "sb_rotation": rot,
-                        "sb_reflection": ref,
-                        "heuristic_ub": heur,
-                        "time_limit": grp_timeout,
-                    }
-                    if key not in tasks_map:
-                        tasks_map[key] = {
-                            "canonical_key": key,
-                            "dataset": d["name"],
-                            "N": d["N"],
-                            "M": d["M"],
-                            "method": method,
-                            "solver": solver,
-                            "flags": flags,
-                            "config_dict": cfg_dict,
-                            "timeout": grp_timeout,
-                            "group_reps": {grp: grp_reps},
-                            "groups": [grp],
+                seeds = d.get("relabel_seeds", [None])
+                for seed in seeds:
+                    for var in variants:
+                        grp_tasks_count += 1
+                        rot = bool(var.get("sb_rotation", False))
+                        ref = bool(var.get("sb_reflection", False))
+                        heur = bool(var.get("heuristic_ub", False))
+                        flags = (rot, ref, heur)
+                        key = (d["name"], method, solver.lower(), flags, seed)
+                        cfg_dict = {
+                            "sb_rotation": rot,
+                            "sb_reflection": ref,
+                            "heuristic_ub": heur,
+                            "time_limit": grp_timeout,
+                            "relabel_seed": seed,
                         }
-                    else:
-                        tasks_map[key]["group_reps"][grp] = grp_reps
-                        if grp not in tasks_map[key]["groups"]:
-                            tasks_map[key]["groups"].append(grp)
-                        tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
+                        if key not in tasks_map:
+                            tasks_map[key] = {
+                                "canonical_key": key,
+                                "dataset": d["name"],
+                                "N": d["N"],
+                                "M": d["M"],
+                                "method": method,
+                                "solver": solver,
+                                "flags": flags,
+                                "relabel_seed": seed,
+                                "config_dict": cfg_dict,
+                                "timeout": grp_timeout,
+                                "group_reps": {grp: grp_reps},
+                                "groups": [grp],
+                            }
+                        else:
+                            tasks_map[key]["group_reps"][grp] = grp_reps
+                            if grp not in tasks_map[key]["groups"]:
+                                tasks_map[key]["groups"].append(grp)
+                            tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
         group_stats[grp] = {
             "datasets_count": len(grp_datasets),
@@ -505,6 +558,8 @@ def build_task_cmd(task, json_out_path):
         if rot: cmd.append("--sb-rotation")
         if ref: cmd.append("--sb-reflection")
         if heur: cmd.append("--heuristic-ub")
+        if task.get("relabel_seed") is not None:
+            cmd.extend(["--relabel-seed", str(task["relabel_seed"])])
         return cmd
     elif method == "cpsat":
         num_w = task["flags"][0] if task["flags"] else 1
@@ -531,7 +586,10 @@ def format_task_flags(task):
         if rot: parts.append("rot")
         if ref: parts.append("ref")
         if heur: parts.append("heur_ub")
-        return "+".join(parts) if parts else "none"
+        res = "+".join(parts) if parts else "none"
+        if task.get("relabel_seed") is not None:
+            res += f"+seed={task['relabel_seed']}"
+        return res
     elif task["method"] == "cpsat":
         return f"workers={task['flags'][0]}"
     elif task["method"] == "cplex":
@@ -791,6 +849,7 @@ def run_experiments(
                 "dataset": task["dataset"],
                 "N": task["N"],
                 "num_edges": task["M"],
+                "relabel_seed": task.get("relabel_seed"),
                 "config": task["config_dict"],
                 "solver": task["solver"],
                 "status": status,
@@ -803,12 +862,15 @@ def run_experiments(
                 "num_clauses": 0,
             }
 
-        # Attach parent-measured wall_time, rep, groups, git_commit, git_dirty
+        # Attach parent-measured wall_time, rep, groups, git_commit, git_dirty, relabel_seed
         record["groups"] = rep_groups
         record["rep"] = rep
         record["wall_time"] = wall_time
         record["git_commit"] = commit_hash
         record["git_dirty"] = is_dirty
+        if "relabel_seed" not in record or record["relabel_seed"] is None:
+            if task.get("relabel_seed") is not None:
+                record["relabel_seed"] = task["relabel_seed"]
 
         # Append record
         with open(runs_file, "a", encoding="utf-8") as f:
@@ -838,6 +900,7 @@ if __name__ == "__main__":
             "methods",
             "ablation_small",
             "ablation_medium",
+            "ablation_family",
         ],
         help="experiment group to run",
     )
