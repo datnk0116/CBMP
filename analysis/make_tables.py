@@ -1067,7 +1067,10 @@ def get_lb_degree(dataset_name):
         return 0
 
 def make_table_per_dataset(records, base_filename="table_per_dataset", output_dirs=("results_v2/tables",)):
-    """Generate summary table for per_dataset group (cadical195 on all datasets)."""
+    """Generate summary table for per_dataset group (cadical195 on all datasets).
+    SAT does not produce a solver lower bound (lb_solver is '-').
+    ub_minus_lb is best_ub - lb, representing a weak bound gap rather than distance to optimality.
+    """
     if isinstance(output_dirs, str):
         output_dirs = (output_dirs,)
     ds_recs = [
@@ -1100,13 +1103,14 @@ def make_table_per_dataset(records, base_filename="table_per_dataset", output_di
 
         lb_deg = get_lb_degree(ds)
         best_lb = r.get("best_lb")
+        lb_solver = best_lb if best_lb is not None else "-"
         lb = max(lb_deg, best_lb) if best_lb is not None else lb_deg
         if st == "TIMEOUT":
-            gap_str = str(ub - lb) if (ub is not None and ub >= 0) else "-"
+            ub_minus_lb_str = str(ub - lb) if (ub is not None and ub >= 0) else "-"
         elif st == "OPTIMAL":
-            gap_str = "0"
+            ub_minus_lb_str = "0"
         else:
-            gap_str = "-"
+            ub_minus_lb_str = "-"
 
         rows.append({
             "dataset": ds,
@@ -1114,8 +1118,10 @@ def make_table_per_dataset(records, base_filename="table_per_dataset", output_di
             "|E|": r.get("num_edges", 0),
             "status": st,
             "best_ub": ub if ub is not None else "-",
+            "lb_degree": lb_deg,
+            "lb_solver": lb_solver,
             "lb": lb,
-            "gap": gap_str,
+            "ub_minus_lb": ub_minus_lb_str,
             "solve_time": f"{solve_t:.4f}",
             "wall_time": f"{wall_t:.4f}",
             "n_sat_iterations": n_iters,
@@ -1210,8 +1216,11 @@ def make_table_methods_large(records, base_filename="table_methods_large", outpu
     """
     Generate table_methods_large.csv:
     Compare cpsat vs sat_best on large datasets (N >= 80, original labels).
-    Columns: dataset, N, |E|, sat_status, sat_best_ub, sat_best_lb, sat_time,
-             cpsat_status, cpsat_best_ub, cpsat_best_lb, cpsat_time.
+    Columns: dataset, N, |E|, sat_status, sat_best_ub, sat_time,
+             cpsat_status, cpsat_best_ub, lb_degree, cpsat_solver_lb, lb_combined, cpsat_time.
+    Note: SAT does not generate lower bounds; lb_degree is graph-theoretic.
+          cpsat_solver_lb is raw BestObjectiveBound from CP-SAT (can be 1).
+          lb_combined = max(lb_degree, cpsat_solver_lb).
     """
     if isinstance(output_dirs, str):
         output_dirs = (output_dirs,)
@@ -1253,14 +1262,17 @@ def make_table_methods_large(records, base_filename="table_methods_large", outpu
         rec_sat = sat_recs.get(ds, {})
         sat_st = rec_sat.get("status", "-")
         sat_ub = rec_sat.get("best_ub", "-")
-        sat_lb = lb_deg if sat_st in ("OPTIMAL", "TIMEOUT") else "-"
         sat_time = f"{rec_sat.get('solve_time', 0.0):.4f}" if "solve_time" in rec_sat else "-"
 
         rec_cp = cpsat_recs.get(ds, {})
         cp_st = rec_cp.get("status", "-")
         cp_ub = rec_cp.get("best_ub", "-")
         raw_cp_lb = rec_cp.get("best_lb")
-        cp_lb = max(lb_deg, raw_cp_lb) if raw_cp_lb is not None else lb_deg if cp_st in ("OPTIMAL", "TIMEOUT") else "-"
+        cpsat_solver_lb = raw_cp_lb if raw_cp_lb is not None else "-"
+        if raw_cp_lb is not None:
+            lb_combined = max(lb_deg, raw_cp_lb)
+        else:
+            lb_combined = lb_deg if (cp_st != "-" or sat_st != "-") else "-"
         cp_time = f"{rec_cp.get('solve_time', 0.0):.4f}" if "solve_time" in rec_cp else "-"
 
         rows.append({
@@ -1269,11 +1281,12 @@ def make_table_methods_large(records, base_filename="table_methods_large", outpu
             "|E|": e,
             "sat_status": sat_st,
             "sat_best_ub": sat_ub,
-            "sat_best_lb": sat_lb,
             "sat_time": sat_time,
             "cpsat_status": cp_st,
             "cpsat_best_ub": cp_ub,
-            "cpsat_best_lb": cp_lb,
+            "lb_degree": lb_deg,
+            "cpsat_solver_lb": cpsat_solver_lb,
+            "lb_combined": lb_combined,
             "cpsat_time": cp_time,
         })
 

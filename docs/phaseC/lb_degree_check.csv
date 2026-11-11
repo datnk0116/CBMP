@@ -1,0 +1,17 @@
+dataset,old_max_deg,old_lb_degree,new_max_deg,new_lb_degree,has_diagonal_loops
+14_bus,6,3,5,3,True
+30_bus,4,2,3,2,True
+494_bus,10,5,9,5,True
+494_bus_n100,10,5,9,5,True
+494_bus_n150,10,5,9,5,True
+494_bus_n40,10,5,9,5,True
+494_bus_n50,10,5,9,5,True
+494_bus_n60,10,5,9,5,True
+494_bus_n80,10,5,9,5,True
+662_bus,10,5,9,5,True
+662_bus_n100,10,5,9,5,True
+662_bus_n150,10,5,9,5,True
+662_bus_n40,10,5,9,5,True
+662_bus_n50,10,5,9,5,True
+662_bus_n60,10,5,9,5,True
+662_bus_n80,10,5,9,5,True
