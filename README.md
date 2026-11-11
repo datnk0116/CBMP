@@ -11,6 +11,8 @@ A research and evaluation repository for solving the **Cyclic Bandwidth Minimiza
 - Bộ giải SAT: `pysat` (tích hợp CaDiCaL 195, Glucose 4, MapleChrono, MiniSat 2.2, Lingeling).
 - CP-SAT: `ortools`.
 - MIP: `docplex` và `cplex` (Community Edition giới hạn <= 1000 biến & ràng buộc hoặc bản thương mại/học thuật đầy đủ).
+- CP Optimizer (tùy chọn): `docplex.cp` (IBM CPLEX CP Optimizer).
+- Gurobi (tùy chọn): `gurobipy` (yêu cầu bản quyền thương mại/học thuật).
 
 ### Khởi tạo môi trường ảo và cài đặt thư viện
 ```bash
@@ -43,38 +45,32 @@ Các phiên bản đã ghim tương thích với `results/env.json`:
 CBMP/
 ├── cbmp.py                 # Core SAT encoding & giải thuật lặp thu hẹp Cyclic Bandwidth
 ├── main.py                 # CLI giải 1 instance với timeout & multiprocessing isolation
-├── sat_encodings.py        # Các mệnh đề CNF (bậc thang, injectivity, phá đối xứng, cyclic edge)
+├── sat_encodings.py        # Các mệnh đề CNF (Order và Pairwise encodings, phá đối xứng, cyclic edge)
+├── alo_amo_eo_encodings.py # Các chiến lược ALO/AMO/EO (commander, pairwise, binary, sequential, product)
+├── graph_utils.py          # Chuẩn hóa đồ thị, load MTX, độc lập kiểm định nghiệm & băng thông vòng
 ├── baselines/
 │   ├── cpsat_cbmp.py       # Baseline OR-Tools CP-SAT
-│   └── cplex_cbmp.py       # Baseline IBM CPLEX MIP
+│   ├── cplex_cbmp.py       # Baseline IBM CPLEX MIP
+│   ├── cplex_cp_cbmp.py    # Baseline IBM CPLEX CP Optimizer
+│   └── gurobi_cbmp.py      # Baseline Gurobi MIP
 ├── experiments/
-│   ├── configs.yaml        # Cấu hình các nhóm thực nghiệm (per_dataset, solvers, methods, ablation)
-│   └── run_experiments.py # Trình điều khiển thực nghiệm (deduplication, resuming, runner)
+│   ├── configs.yaml        # Cấu hình các nhóm thực nghiệm (per_dataset, solvers, methods, ablation, encodings, exact_solvers)
+│   └── run_experiments.py # Trình điều khiển thực nghiệm (deduplication, resuming, canonical keys, runner)
 ├── analysis/
 │   ├── make_tables.py      # Sinh bảng LaTeX và CSV (ablation, solvers, methods)
-│   └── make_plots.py       # Vẽ biểu đồ cactus, scatter, ablation
+│   ├── make_plots.py       # Vẽ biểu đồ cactus, scatter, ablation
+│   ├── reference_tables.py # Trình thẩm định và xuất bảng đối chiếu công bố (Table 2 & Table 3)
+│   └── reference_data/
+│       └── published_tables.json # Dữ liệu chuẩn Table 2 & Table 3 từ tài liệu công bố
 ├── datasets/               # Thư mục chứa ma trận đồ thị MatrixMarket (.mtx)
-│   ├── 14_bus.mtx
-│   ├── 30_bus.mtx
-│   ├── 494_bus.mtx
-│   └── 662_bus.mtx
 ├── scripts/
-│   └── check_datasets.py   # Kiểm tra và cảnh báo nếu dataset trong config bị thiếu
-├── tests/                  # Bộ test tự động (brute force, baselines, graph atlas, correctness)
-│   ├── brute_force.py
-│   ├── test_baselines.py
-│   ├── test_correctness.py
-│   ├── test_experiments.py
-│   └── test_graph_atlas.py
-├── results/                # Kết quả chạy thực nghiệm (runs.jsonl, tables/, figures/, env.json)
-├── legacy/                 # Các mã nguồn cũ không còn được import
-│   └── bmp.py              # Phiên bản cũ của bộ giải (đã thay thế bởi cbmp.py)
-├── report/                 # Báo cáo khoa học LaTeX (Elsevier CAS-sc format) & hình ảnh
-│   ├── report.tex          # Mã nguồn LaTeX bài báo
-│   ├── report.pdf          # File PDF bài báo đã biên dịch hoàn chỉnh
-│   ├── cas-sc.cls          # Template định dạng Elsevier single-column
-│   ├── cas-common.sty      # Macro định dạng CAS
-│   └── figures/            # Các biểu đồ hiệu năng chèn vào báo cáo
+│   ├── check_datasets.py   # Kiểm tra và cảnh báo nếu dataset trong config bị thiếu
+│   ├── calibrate.py        # Thử nghiệm hiệu chuẩn thời gian và tài nguyên
+│   └── make_subgraphs.py   # Tạo các đồ thị con cảm ứng liên thông
+├── tests/                  # Bộ test tự động (669 tests, brute force, baselines, mocked CP/Gurobi, encodings)
+├── results/                # Kết quả chạy thực nghiệm gốc
+├── results_v2/             # Kết quả chạy thực nghiệm phiên bản v2 (runs.jsonl, tables/, figures/)
+├── report/                 # Báo cáo khoa học LaTeX & hình ảnh
 ├── requirements.txt
 ├── pytest.ini
 └── README.md
@@ -103,6 +99,9 @@ python main.py 30_bus --symmetry-break --heuristic-ub --timeout 60 --json-out re
 ### Các cờ chính của `main.py`:
 - `dataset`: Tên file (ví dụ `30_bus` hoặc `datasets/30_bus.mtx`).
 - `--timeout`: Thời gian tối đa (giây), mặc định: 600.
+- `--encoding`: Lựa chọn mã hóa SAT (`order` hoặc `pairwise`, mặc định: `order`).
+- `--solving-mode`: Chế độ tìm kiếm SAT (`incremental` hoặc `iterative`, mặc định: `incremental`).
+- `--eo-strategy`: Chiến lược mã hóa Exactly-One (`commander`, `pairwise`, `binary`, `sequential`, `product`, mặc định: `commander`).
 - `--symmetry-break`: Bật cả phá đối xứng quay (`--sb-rotation`) và đối xứng gương (`--sb-reflection`).
 - `--heuristic-ub`: Sử dụng nhãn xuất phát từ thuật toán Cuthill-McKee để khởi tạo cận trên.
 - `--solver`: Trình giải SAT (mặc định: `cadical195`).
@@ -154,6 +153,12 @@ python experiments/run_experiments.py --group ablation_medium --timeout 600
 
 # 7. Nhóm ablation_family (Đánh giá ablation trên các họ hoán vị nhãn ngẫu nhiên: n40 với 10 seeds, n50 với 5 seeds, 1 rep)
 python experiments/run_experiments.py --group ablation_family --timeout 600
+
+# 8. Nhóm encodings (So sánh Order Encoding vs Pairwise Encoding trên đồ thị nhỏ)
+python experiments/run_experiments.py --group encodings --timeout 600
+
+# 9. Nhóm exact_solvers (So sánh tổng thể 6 công thức giải chính xác: SAT Order, SAT Pairwise, CP-SAT, CPLEX MIP, CPLEX CP, Gurobi)
+python experiments/run_experiments.py --group exact_solvers --timeout 600
 
 # Chỉ định thư mục lưu kết quả tùy chỉnh qua --output-dir
 python experiments/run_experiments.py --group solvers_small --output-dir results_v2

@@ -238,6 +238,7 @@ def solve(
             print(0)
         stats["best_ub"] = 0
         stats["status"] = "OPTIMAL"
+        stats["assignment"] = list(range(N))
         if shared_stats is not None:
             shared_stats.update(stats)
         return SolveResult(0, stats)
@@ -321,6 +322,7 @@ def solve(
         return clauses
 
     per_iter_times = []
+    best_assignment = None
 
     # ============ 3. SAT SOLVING LOOP
     if mode == "incremental":
@@ -356,6 +358,7 @@ def solve(
                         assert bandwidth < UB
                         UB = bandwidth
                         verified_best_ub = bandwidth
+                        best_assignment = assignment
                         if verbose:
                             print(UB)
 
@@ -377,16 +380,22 @@ def solve(
 
             if verified_best_ub != -1:
                 stats["status"] = "OPTIMAL"
+                stats["assignment"] = best_assignment
                 if shared_stats is not None:
                     shared_stats["status"] = "OPTIMAL"
+                    shared_stats["assignment"] = best_assignment
             else:
                 stats["status"] = "UNSAT"
+                stats["assignment"] = None
                 if shared_stats is not None:
                     shared_stats["status"] = "UNSAT"
+                    shared_stats["assignment"] = None
         except Exception as e:
             stats["status"] = "ERROR"
+            stats["assignment"] = None
             if shared_stats is not None:
                 shared_stats["status"] = "ERROR"
+                shared_stats["assignment"] = None
             raise e
         finally:
             sat_solver.delete()
@@ -426,6 +435,7 @@ def solve(
                             assert bandwidth < UB
                             UB = bandwidth
                             verified_best_ub = bandwidth
+                            best_assignment = assignment
                             if verbose:
                                 print(UB)
 
@@ -449,16 +459,22 @@ def solve(
 
             if verified_best_ub != -1:
                 stats["status"] = "OPTIMAL"
+                stats["assignment"] = best_assignment
                 if shared_stats is not None:
                     shared_stats["status"] = "OPTIMAL"
+                    shared_stats["assignment"] = best_assignment
             else:
                 stats["status"] = "UNSAT"
+                stats["assignment"] = None
                 if shared_stats is not None:
                     shared_stats["status"] = "UNSAT"
+                    shared_stats["assignment"] = None
         except Exception as e:
             stats["status"] = "ERROR"
+            stats["assignment"] = None
             if shared_stats is not None:
                 shared_stats["status"] = "ERROR"
+                shared_stats["assignment"] = None
             raise e
 
     return SolveResult(verified_best_ub, stats)

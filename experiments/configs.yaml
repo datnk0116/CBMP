@@ -270,3 +270,71 @@ groups:
         sb_rotation: true
         sb_reflection: true
         heuristic_ub: true
+
+  exact_solvers:
+    description: "Comprehensive comparison across all 6 exact solver formulations"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "sat_order"
+        type: "sat"
+        solver: "cadical195"
+        encoding: "order"
+        solving_mode: "incremental"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+      - name: "sat_pairwise"
+        type: "sat"
+        solver: "cadical195"
+        encoding: "pairwise"
+        solving_mode: "incremental"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+      - name: "cpsat"
+        type: "cpsat"
+        num_workers: 1
+        sb_rotation: true
+      - name: "cplex_mip"
+        type: "cplex"
+        sb_rotation: true
+      - name: "cplex_cp"
+        type: "cplex_cp"
+        sb_rotation: true
+      - name: "gurobi"
+        type: "gurobi"
+        sb_rotation: true
+
+  cplex_cp:
+    description: "CPLEX CP Optimizer baseline on small graphs"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "cplex_cp"
+        type: "cplex_cp"
+        sb_rotation: true
+
+  gurobi:
+    description: "Gurobi MIP baseline on small graphs"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "gurobi"
+        type: "gurobi"
+        sb_rotation: true

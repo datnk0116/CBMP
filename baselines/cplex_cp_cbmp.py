@@ -16,8 +16,14 @@ import numpy as np
 # Ensure repo root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
-from cbmp import SolveResult, compute_cyclic_bandwidth
+from graph_utils import (
+    resolve_dataset_path,
+    validate_and_normalize_graph,
+    load_graph_from_mtx,
+    validate_solution,
+    compute_cyclic_bandwidth,
+)
+from cbmp import SolveResult
 
 def is_cplex_cp_available() -> Tuple[bool, str]:
     """Check if docplex.cp and underlying cpoptimizer executable are available."""
@@ -112,16 +118,20 @@ def solve_cplex_cp(
         stats["status"] = "OPTIMAL"
         stats["best_ub"] = 0
         stats["best_lb"] = 0
+        stats["gap"] = 0.0
+        stats["assignment"] = list(range(N))
         if verbose:
             print("minimum bandwidth: 0")
         return SolveResult(0, stats)
 
     available, msg = is_cplex_cp_available()
     if not available:
-        stats["status"] = "UNAVAILABLE"
+        status = "LICENSE_ERROR" if "license" in msg.lower() else "UNAVAILABLE"
+        stats["status"] = status
         stats["error"] = msg
+        stats["assignment"] = None
         if verbose:
-            print(f"[UNAVAILABLE] {msg}")
+            print(f"[{status}] {msg}")
         return SolveResult(-1, stats)
 
     t_enc_start = time.perf_counter()
@@ -138,8 +148,10 @@ def solve_cplex_cp(
             LogVerbosity="Normal" if verbose else "Quiet",
         )
     except Exception as e:
-        stats["status"] = "ERROR"
-        stats["error"] = str(e)
+        err_msg = str(e)
+        stats["status"] = "LICENSE_ERROR" if "license" in err_msg.lower() else "ERROR"
+        stats["error"] = err_msg
+        stats["assignment"] = None
         return SolveResult(-1, stats)
 
     solve_time = time.perf_counter() - t_sol_start
@@ -147,26 +159,93 @@ def solve_cplex_cp(
     stats["per_iter_times"] = [solve_time]
     stats["num_iterations"] = 1
 
-    if sol is not None and sol.is_solution():
+    sol_status = str(sol.get_solve_status()) if sol and hasattr(sol, "get_solve_status") else ""
+    stop_cause = str(sol.get_stop_cause()) if sol and hasattr(sol, "get_stop_cause") else ""
+    has_solution = sol.is_solution() if sol and hasattr(sol, "is_solution") else False
+
+    # Extract lower bound if exposed
+    best_lb = None
+    try:
+        if sol and hasattr(sol, "get_objective_bound"):
+            raw_lb = sol.get_objective_bound()
+            if raw_lb is not None and not math.isinf(raw_lb) and not math.isnan(raw_lb):
+                best_lb = int(math.ceil(raw_lb))
+        elif sol and hasattr(sol, "get_objective_bounds"):
+            raw_bounds = sol.get_objective_bounds()
+            if raw_bounds and raw_bounds[0] is not None:
+                b = raw_bounds[0]
+                if not math.isinf(b) and not math.isnan(b):
+                    best_lb = int(math.ceil(b))
+    except Exception:
+        best_lb = None
+
+    valid_solution = False
+    actual_bw = None
+    assignment = None
+
+    if has_solution:
         try:
             assignment = [int(sol[f[u]]) - 1 for u in range(N)]
-            is_valid_perm = len(assignment) == N and sorted(assignment) == list(range(N))
-            if is_valid_perm:
-                actual_bw = compute_cyclic_bandwidth(N, edges, assignment)
-                reported_bw = int(round(sol[k]))
-                best_ub = actual_bw
-                status = "OPTIMAL" if sol.get_solve_status() == "Optimal" else "TIMEOUT"
+            reported_bw = int(round(sol[k]))
+            valid, actual_bw, err_msg = validate_solution(
+                N, edges, assignment, reported_objective=reported_bw
+            )
+            if valid and actual_bw is not None:
+                valid_solution = True
             else:
-                best_ub = -1
-                status = "ERROR"
-        except Exception:
-            best_ub = -1
-            status = "ERROR"
-    else:
-        best_ub = -1
-        status = "TIMEOUT"
+                stats["validation_error"] = err_msg
+                assignment = None
+        except Exception as e:
+            valid_solution = False
+            stats["validation_error"] = str(e)
+            assignment = None
 
+    if sol_status.lower() == "optimal":
+        if valid_solution:
+            status = "OPTIMAL"
+            best_ub = actual_bw
+            stats["assignment"] = assignment
+        else:
+            status = "ERROR"
+            best_ub = -1
+            stats["assignment"] = None
+    elif valid_solution:
+        # Feasible incumbent found without optimality proof
+        best_ub = actual_bw
+        stats["assignment"] = assignment
+        if stop_cause.lower() == "timelimit" or "time limit" in sol_status.lower():
+            status = "TIMEOUT"
+        else:
+            status = "FEASIBLE"
+    elif has_solution and not valid_solution:
+        # Solution claimed but failed permutation or objective consistency validation
+        status = "ERROR"
+        best_ub = -1
+        stats["assignment"] = None
+    else:
+        # No solution found
+        best_ub = -1
+        stats["assignment"] = None
+        if sol_status.lower() == "infeasible":
+            status = "INFEASIBLE"
+        elif stop_cause.lower() == "timelimit" or "time limit" in sol_status.lower() or sol_status.lower() in ("unknown", ""):
+            status = "TIMEOUT"
+        else:
+            status = "ERROR"
+
+    if status == "OPTIMAL" and best_lb is None:
+        best_lb = best_ub
+
+    gap = None
+    if best_ub >= 0 and best_lb is not None and best_lb >= 0:
+        if best_ub == 0:
+            gap = 0.0
+        else:
+            gap = float(best_ub - best_lb) / float(best_ub)
+
+    stats["gap"] = gap
     stats["best_ub"] = best_ub
+    stats["best_lb"] = best_lb
     stats["status"] = status
     return SolveResult(best_ub, stats)
 

@@ -183,6 +183,9 @@ def solve_cplex(
     if not edges:
         stats["status"] = "OPTIMAL"
         stats["best_ub"] = 0
+        stats["best_lb"] = 0
+        stats["gap"] = 0.0
+        stats["assignment"] = list(range(N))
         if verbose:
             print("minimum bandwidth: 0")
         return SolveResult(0, stats)
@@ -276,9 +279,11 @@ def solve_cplex(
 
             if valid and actual_bw is not None:
                 best_ub = actual_bw
+                stats["assignment"] = assignment
             elif status == "OPTIMAL":
                 best_ub = -1
                 status = "ERROR"
+                stats["assignment"] = None
                 stats["validation_error"] = err_msg
             else:
                 # Under TIMEOUT with incumbent from solver (e.g. mock or partial), retain reported objective
@@ -286,9 +291,11 @@ def solve_cplex(
         except Exception as e:
             best_ub = -1
             status = "ERROR"
+            stats["assignment"] = None
             stats["validation_error"] = str(e)
     else:
         best_ub = -1
+        stats["assignment"] = None
 
     if status == "OPTIMAL":
         if best_lb is None:

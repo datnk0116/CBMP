@@ -512,30 +512,39 @@ def build_experiment_plan(
                         elif m_type == "cplex":
                             method = "cplex"
                             solver = "cplex"
-                            flags = ()
+                            sb_rot = bool(m["sb_rotation"]) if "sb_rotation" in m else None
+                            flags = (sb_rot,) if sb_rot is not None else ()
                             key = (d["name"], method, solver, flags, seed)
                             cfg_dict = {
                                 "time_limit": grp_timeout,
                                 "relabel_seed": seed,
                             }
+                            if sb_rot is not None:
+                                cfg_dict["sb_rotation"] = sb_rot
                         elif m_type == "cplex_cp":
                             method = "cplex_cp"
                             solver = "cplex_cp"
-                            flags = ()
+                            sb_rot = bool(m["sb_rotation"]) if "sb_rotation" in m else None
+                            flags = (sb_rot,) if sb_rot is not None else ()
                             key = (d["name"], method, solver, flags, seed)
                             cfg_dict = {
                                 "time_limit": grp_timeout,
                                 "relabel_seed": seed,
                             }
+                            if sb_rot is not None:
+                                cfg_dict["sb_rotation"] = sb_rot
                         elif m_type == "gurobi":
                             method = "gurobi"
                             solver = "gurobi"
-                            flags = ()
+                            sb_rot = bool(m["sb_rotation"]) if "sb_rotation" in m else None
+                            flags = (sb_rot,) if sb_rot is not None else ()
                             key = (d["name"], method, solver, flags, seed)
                             cfg_dict = {
                                 "time_limit": grp_timeout,
                                 "relabel_seed": seed,
                             }
+                            if sb_rot is not None:
+                                cfg_dict["sb_rotation"] = sb_rot
                         else:
                             continue
 
@@ -656,24 +665,23 @@ def build_task_cmd(task, json_out_path):
         if task.get("relabel_seed") is not None:
             cmd.extend(["--relabel-seed", str(task["relabel_seed"])])
         return cmd
-    elif method == "cplex":
-        return [
-            sys.executable, "-m", "baselines.cplex_cbmp", dataset,
+    elif method in ("cplex", "cplex_cp", "gurobi"):
+        mod_map = {
+            "cplex": "baselines.cplex_cbmp",
+            "cplex_cp": "baselines.cplex_cp_cbmp",
+            "gurobi": "baselines.gurobi_cbmp",
+        }
+        cmd = [
+            sys.executable, "-m", mod_map[method], dataset,
             "--timeout", str(timeout),
             "--json-out", json_out_path,
         ]
-    elif method == "cplex_cp":
-        return [
-            sys.executable, "-m", "baselines.cplex_cp_cbmp", dataset,
-            "--timeout", str(timeout),
-            "--json-out", json_out_path,
-        ]
-    elif method == "gurobi":
-        return [
-            sys.executable, "-m", "baselines.gurobi_cbmp", dataset,
-            "--timeout", str(timeout),
-            "--json-out", json_out_path,
-        ]
+        if "sb_rotation" in task["config_dict"]:
+            sb_rot = bool(task["config_dict"]["sb_rotation"])
+            cmd.append("--sb-rotation" if sb_rot else "--no-sb-rotation")
+        if task.get("relabel_seed") is not None and method in ("cpsat", "cplex_cp", "gurobi"):
+            cmd.extend(["--relabel-seed", str(task["relabel_seed"])])
+        return cmd
     else:
         raise ValueError(f"Unknown method: {method}")
 
@@ -700,7 +708,14 @@ def format_task_flags(task):
             res += f"+seed={task['relabel_seed']}"
         return res
     elif task["method"] in ("cplex", "cplex_cp", "gurobi"):
-        return "default"
+        parts = []
+        if task.get("flags") and len(task["flags"]) > 0:
+            parts.append(f"rot={task['flags'][0]}")
+        else:
+            parts.append("default")
+        if task.get("relabel_seed") is not None:
+            parts.append(f"seed={task['relabel_seed']}")
+        return "+".join(parts)
     return "-"
 
 def run_experiments(
@@ -1033,6 +1048,9 @@ if __name__ == "__main__":
             "cpsat_large",
             "methods_large_seeds",
             "encodings",
+            "exact_solvers",
+            "cplex_cp",
+            "gurobi",
         ],
         help="experiment group to run",
     )

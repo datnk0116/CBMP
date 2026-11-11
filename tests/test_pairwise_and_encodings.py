@@ -28,6 +28,7 @@ from alo_amo_eo_encodings import (
 )
 from baselines.cplex_cp_cbmp import solve_cplex_cp, is_cplex_cp_available, build_cplex_cp_model
 from baselines.gurobi_cbmp import solve_gurobi, is_gurobi_available, build_gurobi_model
+from experiments.run_experiments import get_canonical_key
 
 
 # ============================================================================
@@ -242,3 +243,110 @@ def test_gurobi_model_construction():
     from baselines.gurobi_cbmp import build_gurobi_model
     model, x, f, k = build_gurobi_model(4, [(0, 1)], sb_rotation=True)
     assert model is not None
+
+
+# ============================================================================
+# 8. EXHAUSTIVE EDGE CASES & GRAPH FAMILIES (N=1, N=2, N>=3, DISCONNECTED, COMPLETE)
+# ============================================================================
+
+EXHAUSTIVE_EDGE_CASES = [
+    ("empty_1", 1, []),
+    ("empty_2", 2, []),
+    ("single_edge_2", 2, [(0, 1)]),
+    ("empty_3", 3, []),
+    ("path_3", 3, [(0, 1), (1, 2)]),
+    ("triangle_3", 3, [(0, 1), (1, 2), (0, 2)]),
+    ("empty_4", 4, []),
+    ("disconnected_2k2_4", 4, [(0, 1), (2, 3)]),
+    ("star_4", 4, [(0, 1), (0, 2), (0, 3)]),
+    ("clique_4", 4, [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]),
+    ("disconnected_k3_k2_5", 5, [(0, 1), (1, 2), (0, 2), (3, 4)]),
+    ("clique_5", 5, [(u, v) for u in range(5) for v in range(u + 1, 5)]),
+]
+
+
+@pytest.mark.parametrize("name, N, edges", EXHAUSTIVE_EDGE_CASES)
+def test_exhaustive_order_and_pairwise_vs_bruteforce(name, N, edges):
+    """Exhaustively verify both encodings against brute force on edge cases."""
+    expected = cyclic_bandwidth_bruteforce(N, edges)
+
+    res_ord, stats_ord = solve(N=N, edges=edges, encoding="order", verbose=False)
+    res_pw, stats_pw = solve(N=N, edges=edges, encoding="pairwise", verbose=False)
+
+    assert res_ord == expected, f"Order encoding failed on {name}: expected {expected}, got {res_ord}"
+    assert res_pw == expected, f"Pairwise encoding failed on {name}: expected {expected}, got {res_pw}"
+    assert stats_ord["status"] == "OPTIMAL"
+    assert stats_pw["status"] == "OPTIMAL"
+    assert stats_ord["best_ub"] == expected
+    assert stats_pw["best_ub"] == expected
+
+
+@pytest.mark.parametrize("name, N, edges", [
+    ("path_3", 3, [(0, 1), (1, 2)]),
+    ("triangle_3", 3, [(0, 1), (1, 2), (0, 2)]),
+    ("disconnected_2k2_4", 4, [(0, 1), (2, 3)]),
+    ("star_4", 4, [(0, 1), (0, 2), (0, 3)]),
+    ("clique_4", 4, [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]),
+])
+@pytest.mark.parametrize("encoding", ["order", "pairwise"])
+@pytest.mark.parametrize("sb_rot, sb_ref", [
+    (False, False),
+    (True, False),
+    (True, True),
+])
+def test_exhaustive_symmetry_breaking_combinations(name, N, edges, encoding, sb_rot, sb_ref):
+    """Verify that all symmetry-breaking combinations preserve exact optimal cyclic bandwidth."""
+    expected = cyclic_bandwidth_bruteforce(N, edges)
+    res, stats = solve(
+        N=N,
+        edges=edges,
+        encoding=encoding,
+        sb_rotation=sb_rot,
+        sb_reflection=sb_ref,
+        verbose=False,
+    )
+    assert res == expected
+    assert stats["status"] == "OPTIMAL"
+
+
+@pytest.mark.parametrize("name, N, edges", [
+    ("empty_4", 4, []),
+    ("star_4", 4, [(0, 1), (0, 2), (0, 3)]),
+    ("path_5", 5, [(0, 1), (1, 2), (2, 3), (3, 4)]),
+    ("clique_4", 4, [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]),
+])
+@pytest.mark.parametrize("encoding", ["order", "pairwise"])
+@pytest.mark.parametrize("heuristic_ub", [True, False])
+def test_exhaustive_heuristic_ub_enabled_disabled(name, N, edges, encoding, heuristic_ub):
+    """Verify solver correctness with heuristic initial UB enabled vs disabled."""
+    expected = cyclic_bandwidth_bruteforce(N, edges)
+    res, stats = solve(
+        N=N,
+        edges=edges,
+        encoding=encoding,
+        use_heuristic_initial_ub=heuristic_ub,
+        verbose=False,
+    )
+    assert res == expected
+    assert stats["status"] == "OPTIMAL"
+
+
+def test_canonical_key_distinguishes_solver_and_encoding_records():
+    """Verify experiment canonical keys never collide between distinct formulations."""
+    base_task = {
+        "dataset": "30_bus",
+        "method": "sat",
+        "solver": "cadical195",
+        "sb_rotation": True,
+        "sb_reflection": True,
+        "heuristic_ub": True,
+        "relabel_seed": None,
+    }
+    key_order = get_canonical_key(dict(base_task, encoding="order"))
+    key_pairwise = get_canonical_key(dict(base_task, encoding="pairwise"))
+    key_iterative = get_canonical_key(dict(base_task, encoding="order", solving_mode="iterative"))
+    key_product_eo = get_canonical_key(dict(base_task, encoding="order", eo_strategy="product"))
+
+    all_keys = [key_order, key_pairwise, key_iterative, key_product_eo]
+    assert len(set(all_keys)) == 4, "Every distinct encoding/mode/eo configuration must produce a unique canonical key"
+

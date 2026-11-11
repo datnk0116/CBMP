@@ -151,6 +151,8 @@ def solve_cpsat(
         stats["status"] = "OPTIMAL"
         stats["best_ub"] = 0
         stats["best_lb"] = 0
+        stats["gap"] = 0.0
+        stats["assignment"] = list(range(N))
         if verbose:
             print("minimum bandwidth: 0")
         return SolveResult(0, stats)
@@ -203,6 +205,7 @@ def solve_cpsat(
 
         if valid and actual_bw is not None:
             best_ub = actual_bw
+            stats["assignment"] = assignment
             if cp_status == cp_model.OPTIMAL:
                 status = "OPTIMAL"
                 if best_lb is None:
@@ -211,6 +214,7 @@ def solve_cpsat(
                 status = "FEASIBLE"
         else:
             best_ub = -1
+            stats["assignment"] = None
             status = "ERROR"
             stats["validation_error"] = err_msg
 
@@ -220,16 +224,19 @@ def solve_cpsat(
             print("feasible solution found, bandwidth:", best_ub)
     elif cp_status == cp_model.UNKNOWN:
         best_ub = -1
+        stats["assignment"] = None
         status = "TIMEOUT"
         if verbose:
             print("timeout, no valid assignment was found")
     elif cp_status == cp_model.INFEASIBLE:
         best_ub = -1
+        stats["assignment"] = None
         status = "INFEASIBLE"
         if verbose:
             print("model proved infeasible")
     else:
         best_ub = -1
+        stats["assignment"] = None
         status = "ERROR"
         if verbose:
             print(f"CP-SAT finished with status: {solver.StatusName(cp_status)}")

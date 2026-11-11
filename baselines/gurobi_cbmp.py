@@ -16,8 +16,14 @@ import numpy as np
 # Ensure repo root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
-from cbmp import SolveResult, compute_cyclic_bandwidth
+from graph_utils import (
+    resolve_dataset_path,
+    validate_and_normalize_graph,
+    load_graph_from_mtx,
+    validate_solution,
+    compute_cyclic_bandwidth,
+)
+from cbmp import SolveResult
 
 def is_gurobi_available() -> Tuple[bool, str]:
     """Check if gurobipy is installed and licensed."""
@@ -38,8 +44,14 @@ def build_gurobi_model(N: int, edges: list, sb_rotation: bool = True):
     Build Gurobi MIP model for CBMP.
     Returns: (model, x, f, k)
     """
-    import gurobipy as gp
-    from gurobipy import GRB
+    try:
+        import gurobipy as gp
+        from gurobipy import GRB
+    except ImportError as e:
+        stats["status"] = "UNAVAILABLE"
+        stats["error"] = str(e)
+        stats["assignment"] = None
+        return SolveResult(-1, stats)
 
     model = gp.Model("cbmp_gurobi")
 
@@ -135,20 +147,30 @@ def solve_gurobi(
         stats["status"] = "OPTIMAL"
         stats["best_ub"] = 0
         stats["best_lb"] = 0
+        stats["gap"] = 0.0
+        stats["assignment"] = list(range(N))
         if verbose:
             print("minimum bandwidth: 0")
         return SolveResult(0, stats)
 
     available, msg = is_gurobi_available()
     if not available:
-        stats["status"] = "UNAVAILABLE"
+        status = "LICENSE_ERROR" if "license" in msg.lower() else "UNAVAILABLE"
+        stats["status"] = status
         stats["error"] = msg
+        stats["assignment"] = None
         if verbose:
-            print(f"[UNAVAILABLE] {msg}")
+            print(f"[{status}] {msg}")
         return SolveResult(-1, stats)
 
-    import gurobipy as gp
-    from gurobipy import GRB
+    try:
+        import gurobipy as gp
+        from gurobipy import GRB
+    except ImportError as e:
+        stats["status"] = "UNAVAILABLE"
+        stats["error"] = str(e)
+        stats["assignment"] = None
+        return SolveResult(-1, stats)
 
     t_enc_start = time.perf_counter()
     model, x, f, k = build_gurobi_model(N, edges, sb_rotation=sb_rotation)
@@ -163,9 +185,16 @@ def solve_gurobi(
     if not verbose:
         model.setParam("OutputFlag", 0)
 
-    t_sol_start = time.perf_counter()
-    model.optimize()
-    solve_time = time.perf_counter() - t_sol_start
+    try:
+        t_sol_start = time.perf_counter()
+        model.optimize()
+        solve_time = time.perf_counter() - t_sol_start
+    except Exception as e:
+        err_msg = str(e)
+        stats["status"] = "LICENSE_ERROR" if "license" in err_msg.lower() else "ERROR"
+        stats["error"] = err_msg
+        stats["assignment"] = None
+        return SolveResult(-1, stats)
 
     stats["solve_time"] = solve_time
     stats["per_iter_times"] = [solve_time]
@@ -180,41 +209,83 @@ def solve_gurobi(
         best_lb = None
 
     sol_count = getattr(model, "SolCount", 0)
-    grb_status = model.Status
+    grb_status = getattr(model, "Status", -1)
 
-    if grb_status == GRB.OPTIMAL and sol_count > 0:
-        status = "OPTIMAL"
-    elif sol_count > 0:
-        status = "TIMEOUT"
-    elif grb_status == GRB.TIME_LIMIT:
-        status = "TIMEOUT"
-    elif grb_status == GRB.INFEASIBLE:
-        status = "UNSAT"
-    else:
-        status = "ERROR"
+    valid_solution = False
+    actual_bw = None
+    assignment = None
 
     if sol_count > 0:
         try:
             assignment = [int(round(f[u].X)) - 1 for u in range(N)]
-            is_valid = len(assignment) == N and sorted(assignment) == list(range(N))
-            if is_valid:
-                actual_bw = compute_cyclic_bandwidth(N, edges, assignment)
-                reported_bw = int(round(k.X))
-                best_ub = actual_bw
-                if actual_bw != reported_bw:
-                    status = "ERROR"
+            reported_bw = int(round(k.X))
+            valid, actual_bw, err_msg = validate_solution(
+                N, edges, assignment, reported_objective=reported_bw
+            )
+            if valid and actual_bw is not None:
+                valid_solution = True
             else:
-                best_ub = -1
-                status = "ERROR"
-        except Exception:
-            best_ub = -1
+                stats["validation_error"] = err_msg
+                assignment = None
+        except Exception as e:
+            valid_solution = False
+            stats["validation_error"] = str(e)
+            assignment = None
+
+    if grb_status == GRB.OPTIMAL:
+        if valid_solution:
+            status = "OPTIMAL"
+            best_ub = actual_bw
+            stats["assignment"] = assignment
+        else:
             status = "ERROR"
-    else:
+            best_ub = -1
+            stats["assignment"] = None
+    elif valid_solution:
+        # Feasible incumbent found, but optimality not proven
+        best_ub = actual_bw
+        stats["assignment"] = assignment
+        if grb_status == GRB.TIME_LIMIT:
+            status = "TIMEOUT"
+        elif grb_status == GRB.INTERRUPTED:
+            status = "INTERRUPTED"
+        elif grb_status in (GRB.NODE_LIMIT, GRB.ITERATION_LIMIT, GRB.SOLUTION_LIMIT, GRB.SUBOPTIMAL):
+            status = "FEASIBLE"
+        else:
+            status = "FEASIBLE"
+    elif sol_count > 0 and not valid_solution:
+        # Candidate solution rejected by independent validation or objective mismatch
+        status = "ERROR"
         best_ub = -1
+        stats["assignment"] = None
+    else:
+        # No solution (sol_count == 0)
+        best_ub = -1
+        stats["assignment"] = None
+        if grb_status == GRB.TIME_LIMIT:
+            status = "TIMEOUT"
+        elif grb_status in (GRB.INFEASIBLE, GRB.INF_OR_UNBD):
+            status = "INFEASIBLE"
+        elif grb_status == GRB.INTERRUPTED:
+            status = "INTERRUPTED"
+        elif grb_status == GRB.NUMERIC:
+            status = "NUMERIC_ERROR"
+        elif grb_status in (GRB.NODE_LIMIT, GRB.ITERATION_LIMIT):
+            status = "TIMEOUT"
+        else:
+            status = "ERROR"
 
     if status == "OPTIMAL" and best_lb is None:
         best_lb = best_ub
 
+    gap = None
+    if best_ub >= 0 and best_lb is not None and best_lb >= 0:
+        if best_ub == 0:
+            gap = 0.0
+        else:
+            gap = float(best_ub - best_lb) / float(best_ub)
+
+    stats["gap"] = gap
     stats["best_ub"] = best_ub
     stats["best_lb"] = best_lb
     stats["status"] = status

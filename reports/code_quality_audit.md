@@ -143,23 +143,27 @@ Profiling via `tracemalloc` on IEEE bus power network instances (`14_bus`, `30_b
 The full automated test suite was executed on Python 3.14.10:
 
 ```
-====================== 443 passed, 85 warnings in 28.63s =======================
+================= 668 passed, 1 skipped, 85 warnings in 28.69s =================
 ```
 
 | Test Module | Tests | Status | Focus Area |
 | :--- | :---: | :---: | :--- |
 | `tests/count_solutions.py` | 1 | **PASSED** | Symmetry reduction ratios ($N$ and $2\times$) |
+| `tests/test_audit_defects_and_semantics.py` | 26 | **PASSED** | Defect regression: encodings, solution validation, licenses, status |
 | `tests/test_baselines.py` | 66 | **PASSED** | CP-SAT & CPLEX baselines, API conventions, status mapping |
 | `tests/test_correctness.py` | 270 | **PASSED** | SAT vs brute-force ground truth, solver equivalence, $N=2$ |
+| `tests/test_cplex_cp_and_gurobi_mocked.py` | 20 | **PASSED** | Mocked CPLEX CP & Gurobi status mapping, gaps, limits, contracts |
 | `tests/test_experiments.py` | 19 | **PASSED** | Runner deduplication, git checks, corrupt JSONL, resume |
 | `tests/test_graph_atlas.py` | 4 | **PASSED** | Exhaustive Graph Atlas verification across all solvers |
 | `tests/test_graph_validation.py` | 11 | **PASSED** | Input validation, normalization, MTX square & symmetry checks |
-| `tests/test_lower_bound.py` | 38 | **PASSED** | Degree lower bound, star graphs, known optima verification |
+| `tests/test_lower_bound.py` | 12 | **PASSED** | Degree lower bound, star graphs, known optima verification |
+| `tests/test_pairwise_and_encodings.py` | 173 | **172 PASSED, 1 SKIPPED** | Pairwise/Order equivalence, symmetries, EO/AMO strategies |
 | `tests/test_profiling.py` | 2 | **PASSED** | Memory tracking via `tracemalloc`, runtime breakdown |
-| `tests/test_relabeling.py` | 8 | **PASSED** | Vertex relabeling invariance under multiple random seeds |
+| `tests/test_reference_tables.py` | 7 | **PASSED** | Table 2 & 3 exact published reference verification, discrepancy (185 vs 113) |
+| `tests/test_relabeling.py` | 3 | **PASSED** | Vertex relabeling invariance under multiple random seeds |
 | `tests/test_sat_model.py` | 12 | **PASSED** | Direct SAT model truth-tables, commander ALO/AMO/EO |
 | `tests/test_subgraphs.py` | 12 | **PASSED** | Connected subgraph induction and dimension checks |
-| **Total** | **443** | **PASSED** | **100% Success Rate** |
+| **Total** | **669** | **668 PASSED, 1 SKIPPED** | **99.85% Execution Rate, 0 Failures** |
 
 ---
 
