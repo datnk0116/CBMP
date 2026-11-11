@@ -69,6 +69,12 @@ CBMP/
 ├── results/                # Kết quả chạy thực nghiệm (runs.jsonl, tables/, figures/, env.json)
 ├── legacy/                 # Các mã nguồn cũ không còn được import
 │   └── bmp.py              # Phiên bản cũ của bộ giải (đã thay thế bởi cbmp.py)
+├── report/                 # Báo cáo khoa học LaTeX (Elsevier CAS-sc format) & hình ảnh
+│   ├── report.tex          # Mã nguồn LaTeX bài báo
+│   ├── report.pdf          # File PDF bài báo đã biên dịch hoàn chỉnh
+│   ├── cas-sc.cls          # Template định dạng Elsevier single-column
+│   ├── cas-common.sty      # Macro định dạng CAS
+│   └── figures/            # Các biểu đồ hiệu năng chèn vào báo cáo
 ├── requirements.txt
 ├── pytest.ini
 └── README.md
@@ -244,6 +250,7 @@ pytest -q
 
 # Chạy riêng từng file test:
 pytest tests/test_correctness.py -v   # Tính đúng đắn của SAT encoding & phá đối xứng
+pytest tests/count_solutions.py -v     # Kiểm chứng số lượng nghiệm và phá đối xứng lý thuyết
 pytest tests/test_baselines.py -v     # Kiểm thử CP-SAT & CPLEX baselines
 pytest tests/test_experiments.py -v   # Kiểm thử lập kế hoạch, tổng hợp số liệu
 pytest tests/test_graph_atlas.py -v   # Đối chiếu toàn diện 1.252 đồ thị với Brute Force
@@ -251,7 +258,23 @@ pytest tests/test_graph_atlas.py -v   # Đối chiếu toàn diện 1.252 đồ 
 
 ---
 
-## 9. Ghi chú mã nguồn cũ (Legacy)
+## 9. Biên dịch báo cáo khoa học (Compiling the Scientific Report)
+
+Báo cáo khoa học hoàn chỉnh được viết theo định dạng Elsevier CAS Single Column (`cas-sc.cls`) tại thư mục `report/`.
+
+Để biên dịch báo cáo sang định dạng PDF:
+
+```bash
+cd report
+pdflatex -interaction=nonstopmode report.tex
+pdflatex -interaction=nonstopmode report.tex
+```
+
+Kết quả xuất ra file `report/report.pdf` (13 trang, bao gồm đầy đủ tóm tắt, mô hình toán học Order Encoding & Commander Encoding, phá đối xứng quay & phản xạ, bảng số liệu thực nghiệm, phân tích pha và biểu đồ hiệu năng).
+
+---
+
+## 10. Ghi chú mã nguồn cũ (Legacy)
 
 - `legacy/bmp.py`: Là phiên bản triển khai CBMP đời đầu, không còn module nào trong dự án phụ thuộc hoặc import file này. Đã được chuyển vào thư mục `legacy/` để bảo tồn lịch sử phát triển.
 
