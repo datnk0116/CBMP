@@ -27,5 +27,6 @@ results/final/
 results/smoke/
 /results_v2/
 /calibration/
+/pilot_ablation/
 analysis/tables/
 analysis/figures/
