@@ -1298,6 +1298,77 @@ def make_table_methods_large(records, base_filename="table_methods_large", outpu
     print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
     return df
 
+def make_table_methods_large_seeds(records, base_filename="table_methods_large_seeds", output_dirs=("results_v2/tables",)):
+    """
+    Generate table_methods_large_seeds.csv:
+    For datasets 494_bus_n80, 494_bus_n100, 662_bus_n80, 662_bus_n100:
+    Rows: each dataset with original label (relabel_seed=None) and seeds 0, 1.
+    Columns: dataset, seed, sat_status, sat_best_ub, sat_time, cpsat_status, cpsat_best_ub, cpsat_time.
+    """
+    if isinstance(output_dirs, str):
+        output_dirs = (output_dirs,)
+
+    target_datasets = ["494_bus_n80", "662_bus_n80", "494_bus_n100", "662_bus_n100"]
+    seeds = [None, 0, 1]
+
+    sat_map = {}
+    cpsat_map = {}
+
+    for r in records:
+        ds = r.get("dataset")
+        if ds not in target_datasets:
+            continue
+        seed = r.get("relabel_seed")
+        if seed not in seeds:
+            continue
+
+        sol = str(r.get("solver") or "").lower()
+        m = str(r.get("method") or "").lower()
+
+        if m == "cpsat" or sol in ("cp_sat", "cpsat"):
+            cpsat_map[(ds, seed)] = r
+        elif m == "sat" or sol == "cadical195":
+            cfg = r.get("config", {})
+            if cfg.get("sb_rotation") and cfg.get("sb_reflection") and cfg.get("heuristic_ub"):
+                sat_map[(ds, seed)] = r
+
+    if not sat_map and not cpsat_map:
+        print("[WARNING] Skipping table_methods_large_seeds: no records found.")
+        return None
+
+    rows = []
+    for ds in target_datasets:
+        for seed in seeds:
+            rec_sat = sat_map.get((ds, seed), {})
+            sat_st = rec_sat.get("status", "-")
+            sat_ub = rec_sat.get("best_ub", "-")
+            sat_time = f"{rec_sat.get('solve_time', 0.0):.4f}" if "solve_time" in rec_sat else "-"
+
+            rec_cp = cpsat_map.get((ds, seed), {})
+            cp_st = rec_cp.get("status", "-")
+            cp_ub = rec_cp.get("best_ub", "-")
+            cp_time = f"{rec_cp.get('solve_time', 0.0):.4f}" if "solve_time" in rec_cp else "-"
+
+            seed_str = str(seed) if seed is not None else "original"
+            rows.append({
+                "dataset": ds,
+                "seed": seed_str,
+                "sat_status": sat_st,
+                "sat_best_ub": sat_ub,
+                "sat_time": sat_time,
+                "cpsat_status": cp_st,
+                "cpsat_best_ub": cp_ub,
+                "cpsat_time": cp_time,
+            })
+
+    df = pd.DataFrame(rows)
+    for out_dir in output_dirs:
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path = os.path.join(out_dir, f"{base_filename}.csv")
+        df.to_csv(csv_path, index=False)
+    print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
+    return df
+
 def main():
     print("=" * 70)
     print("ANALYSIS: GENERATING LATEX AND CSV TABLES")
@@ -1344,6 +1415,7 @@ def main():
     make_table_per_dataset(records, output_dirs=output_dirs)
     make_table_methods_family(records, output_dirs=output_dirs)
     make_table_methods_large(records, output_dirs=output_dirs)
+    make_table_methods_large_seeds(records, output_dirs=output_dirs)
 
     print(f"\nAll tables generated successfully in {output_dir}/!")
 

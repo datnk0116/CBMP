@@ -167,3 +167,17 @@ dataset,relabel_seed,solver_or_method,canonical_config,best_ub,num_distinct_sour
 662_bus_n60,1,cpsat,"('cpsat', 1)",9,2,verified
 662_bus_n60,2,cadical195,"(True, True, True)",9,2,verified
 662_bus_n60,2,cpsat,"('cpsat', 1)",9,2,verified
+494_bus_n80,0,cadical195,"(True, True, True)",8,2,verified
+494_bus_n80,0,cpsat,"('cpsat', 1)",8,2,verified
+494_bus_n80,1,cadical195,"(True, True, True)",8,2,verified
+494_bus_n80,1,cpsat,"('cpsat', 1)",8,2,verified
+662_bus_n80,0,cadical195,"(True, True, True)",10,2,verified
+662_bus_n80,0,cpsat,"('cpsat', 1)",10,2,verified
+662_bus_n80,1,cadical195,"(True, True, True)",10,2,verified
+662_bus_n80,1,cpsat,"('cpsat', 1)",10,2,verified
+494_bus_n100,0,cadical195,"(True, True, True)",9,2,verified
+494_bus_n100,0,cpsat,"('cpsat', 1)",9,2,verified
+494_bus_n100,1,cadical195,"(True, True, True)",9,2,verified
+494_bus_n100,1,cpsat,"('cpsat', 1)",9,2,verified
+662_bus_n100,0,cadical195,"(True, True, True)",11,1,single_source
+662_bus_n100,1,cadical195,"(True, True, True)",11,1,single_source

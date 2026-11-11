@@ -913,6 +913,7 @@ if __name__ == "__main__":
             "ablation_family",
             "methods_family",
             "cpsat_large",
+            "methods_large_seeds",
         ],
         help="experiment group to run",
     )

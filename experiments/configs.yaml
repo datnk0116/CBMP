@@ -219,7 +219,27 @@ groups:
       - "662_bus"
     repetitions: 1
     timeout: 600
+
+  methods_large_seeds:
+    description: "Comparison of Best SAT vs CP-SAT across random vertex relabelings on large graphs (N=80, 100)"
+    datasets:
+      - name: "494_bus_n80"
+        relabel_seeds: [0, 1]
+      - name: "494_bus_n100"
+        relabel_seeds: [0, 1]
+      - name: "662_bus_n80"
+        relabel_seeds: [0, 1]
+      - name: "662_bus_n100"
+        relabel_seeds: [0, 1]
+    repetitions: 1
+    timeout: 600
     methods:
+      - name: "sat_best"
+        type: "sat"
+        solver: "cadical195"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
       - name: "cpsat"
         type: "cpsat"
         num_workers: 1
