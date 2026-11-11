@@ -422,70 +422,72 @@ def build_experiment_plan(
                                 tasks_map[key]["groups"].append(grp)
                             tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
-        elif grp == "methods":
+        elif grp == "methods" or grp.startswith("methods_") or grp.startswith("cpsat_"):
             methods = grp_cfg.get("methods", [])
             for d in grp_datasets:
-                for m in methods:
-                    grp_tasks_count += 1
-                    m_type = m.get("type", "sat")
-                    if m_type == "sat":
-                        solver = m.get("solver", "cadical195")
-                        rot = bool(m.get("sb_rotation", True))
-                        ref = bool(m.get("sb_reflection", True))
-                        heur = bool(m.get("heuristic_ub", True))
-                        method = "sat"
-                        flags = (rot, ref, heur)
-                        key = (d["name"], method, solver.lower(), flags, None)
-                        cfg_dict = {
-                            "sb_rotation": rot,
-                            "sb_reflection": ref,
-                            "heuristic_ub": heur,
-                            "time_limit": grp_timeout,
-                            "relabel_seed": None,
-                        }
-                    elif m_type == "cpsat":
-                        num_w = m.get("num_workers", 1)
-                        method = "cpsat"
-                        solver = "cp_sat"
-                        flags = (num_w,)
-                        key = (d["name"], method, solver, flags, None)
-                        cfg_dict = {
-                            "num_workers": num_w,
-                            "time_limit": grp_timeout,
-                            "relabel_seed": None,
-                        }
-                    elif m_type == "cplex":
-                        method = "cplex"
-                        solver = "cplex"
-                        flags = ()
-                        key = (d["name"], method, solver, flags, None)
-                        cfg_dict = {
-                            "time_limit": grp_timeout,
-                            "relabel_seed": None,
-                        }
-                    else:
-                        continue
+                seeds = d.get("relabel_seeds", [None])
+                for seed in seeds:
+                    for m in methods:
+                        grp_tasks_count += 1
+                        m_type = m.get("type", "sat")
+                        if m_type == "sat":
+                            solver = m.get("solver", "cadical195")
+                            rot = bool(m.get("sb_rotation", True))
+                            ref = bool(m.get("sb_reflection", True))
+                            heur = bool(m.get("heuristic_ub", True))
+                            method = "sat"
+                            flags = (rot, ref, heur)
+                            key = (d["name"], method, solver.lower(), flags, seed)
+                            cfg_dict = {
+                                "sb_rotation": rot,
+                                "sb_reflection": ref,
+                                "heuristic_ub": heur,
+                                "time_limit": grp_timeout,
+                                "relabel_seed": seed,
+                            }
+                        elif m_type == "cpsat":
+                            num_w = m.get("num_workers", 1)
+                            method = "cpsat"
+                            solver = "cp_sat"
+                            flags = (num_w,)
+                            key = (d["name"], method, solver, flags, seed)
+                            cfg_dict = {
+                                "num_workers": num_w,
+                                "time_limit": grp_timeout,
+                                "relabel_seed": seed,
+                            }
+                        elif m_type == "cplex":
+                            method = "cplex"
+                            solver = "cplex"
+                            flags = ()
+                            key = (d["name"], method, solver, flags, seed)
+                            cfg_dict = {
+                                "time_limit": grp_timeout,
+                                "relabel_seed": seed,
+                            }
+                        else:
+                            continue
 
-                    if key not in tasks_map:
-                        tasks_map[key] = {
-                            "canonical_key": key,
-                            "dataset": d["name"],
-                            "N": d["N"],
-                            "M": d["M"],
-                            "method": method,
-                            "solver": solver,
-                            "flags": flags,
-                            "relabel_seed": None,
-                            "config_dict": cfg_dict,
-                            "timeout": grp_timeout,
-                            "group_reps": {grp: grp_reps},
-                            "groups": [grp],
-                        }
-                    else:
-                        tasks_map[key]["group_reps"][grp] = grp_reps
-                        if grp not in tasks_map[key]["groups"]:
-                            tasks_map[key]["groups"].append(grp)
-                        tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
+                        if key not in tasks_map:
+                            tasks_map[key] = {
+                                "canonical_key": key,
+                                "dataset": d["name"],
+                                "N": d["N"],
+                                "M": d["M"],
+                                "method": method,
+                                "solver": solver,
+                                "flags": flags,
+                                "relabel_seed": seed,
+                                "config_dict": cfg_dict,
+                                "timeout": grp_timeout,
+                                "group_reps": {grp: grp_reps},
+                                "groups": [grp],
+                            }
+                        else:
+                            tasks_map[key]["group_reps"][grp] = grp_reps
+                            if grp not in tasks_map[key]["groups"]:
+                                tasks_map[key]["groups"].append(grp)
+                            tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
         elif grp == "ablation" or grp.startswith("ablation_"):
             solver = grp_cfg.get("solver", "cadical195")
@@ -565,12 +567,15 @@ def build_task_cmd(task, json_out_path):
         return cmd
     elif method == "cpsat":
         num_w = task["flags"][0] if task["flags"] else 1
-        return [
+        cmd = [
             sys.executable, "-m", "baselines.cpsat_cbmp", dataset,
             "--timeout", str(timeout),
             "--num-workers", str(num_w),
             "--json-out", json_out_path,
         ]
+        if task.get("relabel_seed") is not None:
+            cmd.extend(["--relabel-seed", str(task["relabel_seed"])])
+        return cmd
     elif method == "cplex":
         return [
             sys.executable, "-m", "baselines.cplex_cbmp", dataset,
@@ -593,7 +598,10 @@ def format_task_flags(task):
             res += f"+seed={task['relabel_seed']}"
         return res
     elif task["method"] == "cpsat":
-        return f"workers={task['flags'][0]}"
+        res = f"workers={task['flags'][0]}"
+        if task.get("relabel_seed") is not None:
+            res += f"+seed={task['relabel_seed']}"
+        return res
     elif task["method"] == "cplex":
         return "default"
     return "-"
@@ -903,6 +911,8 @@ if __name__ == "__main__":
             "ablation_small",
             "ablation_medium",
             "ablation_family",
+            "methods_family",
+            "cpsat_large",
         ],
         help="experiment group to run",
     )

@@ -292,6 +292,8 @@ def cross_validate_optima(records, output_dir=None):
         compared_rows,
         columns=cols
     )
+    if "relabel_seed" in df_cv.columns:
+        df_cv["relabel_seed"] = pd.Series([r.get("relabel_seed") for r in compared_rows], dtype="Int64")
 
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -421,9 +423,12 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
         sl_counts[col] = sl_count
         par2_scores[col] = float(np.mean(par2_vals)) if par2_vals else float("nan")
 
-        if col == baseline_col:
+        n_eligible = len(baseline_times)
+        if n_eligible == 0:
+            speedups[col] = float("nan")
+        elif col == baseline_col:
             speedups[col] = 1.00
-        elif ratios:
+        elif len(ratios) == n_eligible:
             speedups[col] = float(np.exp(np.mean(np.log(ratios))))
         else:
             speedups[col] = float("nan")
@@ -531,19 +536,27 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         df_display[col] = col_vals
 
     solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, columns, baseline_col="none")
+    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("none") and row.get("none").get("status") == "OPTIMAL" and (row.get("none").get("solve_time") or 0.0) >= 0.1)
+    n_total = len(df_raw)
 
     sum_solved = {"N": "-", "|E|": "-"}
     sum_sl = {"N": "-", "|E|": "-"}
     sum_par2 = {"N": "-", "|E|": "-"}
     sum_spdup = {"N": "-", "|E|": "-"}
-    for col in columns:
-        sum_solved[col] = str(solved_cnt[col])
-        sum_sl[col] = str(sl_cnt[col])
-        sum_par2[col] = f"{par2_val[col]:.3f}" if not math.isnan(par2_val[col]) else "-"
-        sum_spdup[col] = f"{spdups[col]:.2f}x" if not math.isnan(spdups[col]) else "-"
 
     has_timeout = any(solved_cnt[col] + sl_cnt[col] < len(ds_sorted) for col in columns)
     par2_label = "PAR2 (s)" if has_timeout else "mean time (s)"
+
+    for col in columns:
+        sum_solved[col] = str(solved_cnt[col])
+        sum_sl[col] = str(sl_cnt[col])
+        if par2_label == "mean time (s)" and solved_cnt[col] < len(ds_sorted):
+            sum_par2[col] = "-"
+        else:
+            sum_par2[col] = f"{par2_val[col]:.3f}" if not math.isnan(par2_val[col]) else "-"
+        sum_spdup[col] = f"{spdups[col]:.2f}x" if not math.isnan(spdups[col]) else "-"
+
+    spdup_label = f"Speedup (geom) [{n_used}/{n_total}]" if n_used > 0 else "Speedup (geom)"
 
     summary = [
         ("Solved", sum_solved),
@@ -552,10 +565,11 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         summary.append(("SL", sum_sl))
     summary.extend([
         (par2_label, sum_par2),
-        ("Speedup (geom)", sum_spdup),
+        (spdup_label, sum_spdup),
     ])
 
-    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs)
+    note = f"Speedup chỉ tính trên instance mà baseline >= 0.1s ({n_used}/{n_total}). Các variant chưa giải hết các instance này ghi '-'."
+    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs, note=note)
 
 def make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=("results_v2/tables",)):
     """Generate Solvers comparison table for a specific solvers group."""
@@ -634,19 +648,27 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
         df_display[sol] = col_vals
 
     solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, solvers, baseline_col="cadical195")
+    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("cadical195") and row.get("cadical195").get("status") == "OPTIMAL" and (row.get("cadical195").get("solve_time") or 0.0) >= 0.1)
+    n_total = len(df_raw)
 
     sum_solved = {"N": "-", "|E|": "-"}
     sum_sl = {"N": "-", "|E|": "-"}
     sum_par2 = {"N": "-", "|E|": "-"}
     sum_spdup = {"N": "-", "|E|": "-"}
-    for sol in solvers:
-        sum_solved[sol] = str(solved_cnt[sol])
-        sum_sl[sol] = str(sl_cnt[sol])
-        sum_par2[sol] = f"{par2_val[sol]:.3f}" if not math.isnan(par2_val[sol]) else "-"
-        sum_spdup[sol] = f"{spdups[sol]:.2f}x" if not math.isnan(spdups[sol]) else "-"
 
     has_timeout = any(solved_cnt[sol] + sl_cnt[sol] < len(ds_sorted) for sol in solvers)
     par2_label = "PAR2 (s)" if has_timeout else "mean time (s)"
+
+    for sol in solvers:
+        sum_solved[sol] = str(solved_cnt[sol])
+        sum_sl[sol] = str(sl_cnt[sol])
+        if par2_label == "mean time (s)" and solved_cnt[sol] < len(ds_sorted):
+            sum_par2[sol] = "-"
+        else:
+            sum_par2[sol] = f"{par2_val[sol]:.3f}" if not math.isnan(par2_val[sol]) else "-"
+        sum_spdup[sol] = f"{spdups[sol]:.2f}x" if not math.isnan(spdups[sol]) else "-"
+
+    spdup_label = f"Speedup (geom) [{n_used}/{n_total}]" if n_used > 0 else "Speedup (geom)"
 
     summary = [
         ("Solved", sum_solved),
@@ -655,10 +677,16 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
         summary.append(("SL", sum_sl))
     summary.extend([
         (par2_label, sum_par2),
-        ("Speedup (geom)", sum_spdup),
+        (spdup_label, sum_spdup),
     ])
 
-    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs)
+    speedup_note = f"Speedup chỉ tính trên instance mà baseline >= 0.1s ({n_used}/{n_total}). Các solver chưa giải hết các instance này ghi '-'."
+    if group_name == "solvers_small":
+        note = f"Thời gian giải là trung vị (median) trên 5 hoán vị nhãn (seeds 0..4). PAR2 tính trung bình (mean) trên 5 seed. {speedup_note}"
+    else:
+        note = speedup_note
+
+    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs, note=note)
 
 def make_table_methods(records, output_dirs=("results_v2/tables",)):
     """Generate Methods comparison table (SAT vs CP-SAT vs CPLEX)."""
@@ -700,28 +728,36 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
         df_display[m] = col_vals
 
     solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, methods, baseline_col="sat_best")
+    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("sat_best") and row.get("sat_best").get("status") == "OPTIMAL" and (row.get("sat_best").get("solve_time") or 0.0) >= 0.1)
+    n_total = len(df_raw)
 
     sum_solved = {"N": "-", "|E|": "-"}
     sum_sl = {"N": "-", "|E|": "-"}
     sum_par2 = {"N": "-", "|E|": "-"}
     sum_spdup = {"N": "-", "|E|": "-"}
-    for m in methods:
-        sum_solved[m] = str(solved_cnt[m])
-        sum_sl[m] = str(sl_cnt[m])
-        sum_par2[m] = f"{par2_val[m]:.3f}" if not math.isnan(par2_val[m]) else "-"
-        sum_spdup[m] = f"{spdups[m]:.2f}x" if not math.isnan(spdups[m]) else "-"
 
     has_timeout = any(solved_cnt[m] + sl_cnt[m] < len(ds_sorted) for m in methods)
     par2_label = "PAR2 (s)" if has_timeout else "mean time (s)"
+
+    for m in methods:
+        sum_solved[m] = str(solved_cnt[m])
+        sum_sl[m] = str(sl_cnt[m])
+        if par2_label == "mean time (s)" and solved_cnt[m] < len(ds_sorted):
+            sum_par2[m] = "-"
+        else:
+            sum_par2[m] = f"{par2_val[m]:.3f}" if not math.isnan(par2_val[m]) else "-"
+        sum_spdup[m] = f"{spdups[m]:.2f}x" if not math.isnan(spdups[m]) else "-"
+
+    spdup_label = f"Speedup (geom) [{n_used}/{n_total}]" if n_used > 0 else "Speedup (geom)"
 
     summary = [
         ("Solved", sum_solved),
         ("SL", sum_sl),
         (par2_label, sum_par2),
-        ("Speedup (geom)", sum_spdup),
+        (spdup_label, sum_spdup),
     ]
 
-    note = "Note: SL = Size Limit (exceeded CPLEX Community Edition limits, excluded from PAR2)."
+    note = f"SL = Size Limit (vượt giới hạn CPLEX Community Edition, loại khỏi PAR2). Speedup chỉ tính trên instance mà baseline >= 0.1s ({n_used}/{n_total}). Các method chưa giải hết các instance này ghi '-'."
     export_table(df_display, summary, "Comparison of Methods: SAT vs CP-SAT vs CPLEX", "table_methods", output_dirs=output_dirs, note=note)
 
 def make_table_ablation_family(records, base_filename="table_ablation_family", output_dirs=("results_v2/tables",)):
@@ -954,6 +990,20 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
     return df
 
+def get_lb_degree(dataset_name):
+    """Compute lb_degree = ceil(Delta / 2) from datasets/<dataset_name>.mtx."""
+    filepath = f"datasets/{dataset_name}.mtx" if not dataset_name.endswith(".mtx") else dataset_name
+    if not os.path.exists(filepath):
+        return 0
+    try:
+        from scipy.io import mmread
+        mat = mmread(filepath)
+        degrees = np.diff(mat.tocsr().indptr)
+        max_deg = int(degrees.max()) if len(degrees) > 0 else 0
+        return int(math.ceil(max_deg / 2))
+    except Exception:
+        return 0
+
 def make_table_per_dataset(records, base_filename="table_per_dataset", output_dirs=("results_v2/tables",)):
     """Generate summary table for per_dataset group (cadical195 on all datasets)."""
     if isinstance(output_dirs, str):
@@ -985,15 +1035,184 @@ def make_table_per_dataset(records, base_filename="table_per_dataset", output_di
         solve_t = r.get("solve_time", 0.0)
         wall_t = r.get("wall_time", 0.0)
         n_iters = r.get("num_iterations", len(r.get("per_iter_times", [])))
+
+        lb_deg = get_lb_degree(ds)
+        best_lb = r.get("best_lb")
+        lb = max(lb_deg, best_lb) if best_lb is not None else lb_deg
+        if st == "TIMEOUT":
+            gap_str = str(ub - lb) if (ub is not None and ub >= 0) else "-"
+        elif st == "OPTIMAL":
+            gap_str = "0"
+        else:
+            gap_str = "-"
+
         rows.append({
             "dataset": ds,
             "N": r.get("N", 0),
             "|E|": r.get("num_edges", 0),
             "status": st,
             "best_ub": ub if ub is not None else "-",
+            "lb": lb,
+            "gap": gap_str,
             "solve_time": f"{solve_t:.4f}",
             "wall_time": f"{wall_t:.4f}",
             "n_sat_iterations": n_iters,
+        })
+
+    df = pd.DataFrame(rows)
+    for out_dir in output_dirs:
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path = os.path.join(out_dir, f"{base_filename}.csv")
+        df.to_csv(csv_path, index=False)
+    print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
+    return df
+
+def make_table_methods_family(records, base_filename="table_methods_family", output_dirs=("results_v2/tables",)):
+    """
+    Generate table_methods_family.csv:
+    Compare cpsat vs sat_best across random vertex relabelings.
+    Each row (dataset): median ratio (cpsat/sat), min, max, faster pairs / total pairs.
+    Pairs: matching (dataset, relabel_seed).
+    """
+    if isinstance(output_dirs, str):
+        output_dirs = (output_dirs,)
+
+    pairs_map = {}
+    for r in records:
+        seed = r.get("relabel_seed")
+        if seed is None:
+            continue
+        ds = r.get("dataset")
+        sol = str(r.get("solver") or "").lower()
+        m = str(r.get("method") or "").lower()
+        if m == "cpsat" or sol in ("cp_sat", "cpsat"):
+            pairs_map.setdefault((ds, seed), {})["cpsat"] = r
+        elif m == "sat" or sol == "cadical195":
+            cfg = r.get("config", {})
+            if cfg.get("sb_rotation") and cfg.get("sb_reflection") and cfg.get("heuristic_ub"):
+                pairs_map.setdefault((ds, seed), {})["sat"] = r
+
+    if not pairs_map:
+        return
+
+    datasets = sorted(list(set(ds for (ds, seed) in pairs_map.keys())))
+    rows = []
+    for ds in datasets:
+        ratios = []
+        faster_count = 0
+        total_count = 0
+        for (d, seed), mmap in pairs_map.items():
+            if d == ds and "cpsat" in mmap and "sat" in mmap:
+                rec_cp = mmap["cpsat"]
+                rec_sat = mmap["sat"]
+                if rec_cp.get("status") == "OPTIMAL" and rec_sat.get("status") == "OPTIMAL":
+                    t_cp = rec_cp.get("solve_time", 0.0)
+                    t_sat = rec_sat.get("solve_time", 0.0)
+                    if t_sat > 0:
+                        ratio = t_cp / t_sat
+                        ratios.append(ratio)
+                        total_count += 1
+                        if t_cp < t_sat:
+                            faster_count += 1
+        if ratios:
+            med = float(np.median(ratios))
+            min_r = float(np.min(ratios))
+            max_r = float(np.max(ratios))
+            med_str = f"{med:.4f}"
+            min_str = f"{min_r:.4f}"
+            max_str = f"{max_r:.4f}"
+            faster_str = f"{faster_count}/{total_count}"
+        else:
+            med_str = "-"
+            min_str = "-"
+            max_str = "-"
+            faster_str = "0/0"
+
+        rows.append({
+            "dataset": ds,
+            "median_cpsat_to_sat_ratio": med_str,
+            "min": min_str,
+            "max": max_str,
+            "faster_pairs": faster_str,
+        })
+
+    df = pd.DataFrame(rows)
+    for out_dir in output_dirs:
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path = os.path.join(out_dir, f"{base_filename}.csv")
+        df.to_csv(csv_path, index=False)
+    print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
+    return df
+
+def make_table_methods_large(records, base_filename="table_methods_large", output_dirs=("results_v2/tables",)):
+    """
+    Generate table_methods_large.csv:
+    Compare cpsat vs sat_best on large datasets (N >= 80, original labels).
+    Columns: dataset, N, |E|, sat_status, sat_best_ub, sat_best_lb, sat_time,
+             cpsat_status, cpsat_best_ub, cpsat_best_lb, cpsat_time.
+    """
+    if isinstance(output_dirs, str):
+        output_dirs = (output_dirs,)
+
+    target_datasets = [
+        "494_bus_n80", "494_bus_n100", "662_bus_n100",
+        "494_bus_n150", "662_bus_n150", "494_bus", "662_bus"
+    ]
+
+    sat_recs = {}
+    cpsat_recs = {}
+    meta = {}
+
+    for r in records:
+        if r.get("relabel_seed") is not None:
+            continue
+        ds = r.get("dataset")
+        if ds not in target_datasets:
+            continue
+        meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
+        sol = str(r.get("solver") or "").lower()
+        m = str(r.get("method") or "").lower()
+
+        if m == "cpsat" or sol in ("cp_sat", "cpsat"):
+            cpsat_recs[ds] = r
+        elif m == "sat" or sol == "cadical195":
+            cfg = r.get("config", {})
+            if cfg.get("sb_rotation") and cfg.get("sb_reflection") and cfg.get("heuristic_ub"):
+                sat_recs[ds] = r
+
+    if not cpsat_recs and not sat_recs:
+        return
+
+    rows = []
+    for ds in target_datasets:
+        n, e = meta.get(ds, (0, 0))
+        lb_deg = get_lb_degree(ds)
+
+        rec_sat = sat_recs.get(ds, {})
+        sat_st = rec_sat.get("status", "-")
+        sat_ub = rec_sat.get("best_ub", "-")
+        sat_lb = lb_deg if sat_st in ("OPTIMAL", "TIMEOUT") else "-"
+        sat_time = f"{rec_sat.get('solve_time', 0.0):.4f}" if "solve_time" in rec_sat else "-"
+
+        rec_cp = cpsat_recs.get(ds, {})
+        cp_st = rec_cp.get("status", "-")
+        cp_ub = rec_cp.get("best_ub", "-")
+        raw_cp_lb = rec_cp.get("best_lb")
+        cp_lb = max(lb_deg, raw_cp_lb) if raw_cp_lb is not None else lb_deg if cp_st in ("OPTIMAL", "TIMEOUT") else "-"
+        cp_time = f"{rec_cp.get('solve_time', 0.0):.4f}" if "solve_time" in rec_cp else "-"
+
+        rows.append({
+            "dataset": ds,
+            "N": n,
+            "|E|": e,
+            "sat_status": sat_st,
+            "sat_best_ub": sat_ub,
+            "sat_best_lb": sat_lb,
+            "sat_time": sat_time,
+            "cpsat_status": cp_st,
+            "cpsat_best_ub": cp_ub,
+            "cpsat_best_lb": cp_lb,
+            "cpsat_time": cp_time,
         })
 
     df = pd.DataFrame(rows)
@@ -1048,6 +1267,8 @@ def main():
     make_table_solvers(records, group_name="solvers_medium", base_filename="table_solvers_medium", title="SAT Solver Performance Comparison (Medium Graphs)", output_dirs=output_dirs)
     make_table_methods(records, output_dirs=output_dirs)
     make_table_per_dataset(records, output_dirs=output_dirs)
+    make_table_methods_family(records, output_dirs=output_dirs)
+    make_table_methods_large(records, output_dirs=output_dirs)
 
     print(f"\nAll tables generated successfully in {output_dir}/!")
 

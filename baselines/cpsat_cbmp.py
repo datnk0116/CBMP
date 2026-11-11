@@ -2,8 +2,10 @@ import os
 import sys
 import time
 import json
+import math
 import argparse
 from pathlib import Path
+import numpy as np
 
 # Ensure repo root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -18,6 +20,7 @@ def solve_cpsat(
     edges=None,
     timeout=600.0,
     num_workers=1,
+    relabel_seed=None,
     verbose=True,
 ):
     t_start = time.perf_counter()
@@ -37,17 +40,25 @@ def solve_cpsat(
         rows, cols = GRAPH.nonzero()
         edges = [(u, v) for u, v in zip(rows, cols) if u < v]
 
+    if relabel_seed is not None:
+        rng = np.random.default_rng(relabel_seed)
+        perm = rng.permutation(N)
+        edges = sorted(list(set((min(int(perm[u]), int(perm[v])), max(int(perm[u]), int(perm[v]))) for u, v in edges if u != v)))
+
     stats = {
         "dataset": dataset_name,
         "N": N,
         "num_edges": len(edges),
+        "relabel_seed": relabel_seed,
         "config": {
             "time_limit": timeout,
             "num_workers": num_workers,
+            "relabel_seed": relabel_seed,
         },
         "solver": "cp_sat",
         "status": "RUNNING",
         "best_ub": -1,
+        "best_lb": None,
         "encode_time": 0.0,
         "solve_time": 0.0,
         "per_iter_times": [],
@@ -59,6 +70,7 @@ def solve_cpsat(
     if not edges:
         stats["status"] = "OPTIMAL"
         stats["best_ub"] = 0
+        stats["best_lb"] = 0
         if verbose:
             print("minimum bandwidth: 0")
         return SolveResult(0, stats)
@@ -109,9 +121,19 @@ def solve_cpsat(
     stats["per_iter_times"] = [solve_time]
     stats["num_iterations"] = 1
 
+    best_lb = None
+    try:
+        raw_lb = solver.BestObjectiveBound()
+        if raw_lb is not None and not math.isinf(raw_lb) and not math.isnan(raw_lb):
+            best_lb = int(math.ceil(raw_lb))
+    except Exception:
+        best_lb = None
+
     if cp_status == cp_model.OPTIMAL:
         best_ub = int(solver.ObjectiveValue())
         status = "OPTIMAL"
+        if best_lb is None:
+            best_lb = best_ub
         if verbose:
             print("minimum bandwidth:", best_ub)
     elif cp_status == cp_model.FEASIBLE:
@@ -131,6 +153,7 @@ def solve_cpsat(
             print(f"CP-SAT finished with status: {solver.StatusName(cp_status)}")
 
     stats["best_ub"] = best_ub
+    stats["best_lb"] = best_lb
     stats["status"] = status
 
     return SolveResult(best_ub, stats)
@@ -140,6 +163,7 @@ if __name__ == "__main__":
     parser.add_argument("dataset", help="name of .mtx file in datasets/ or direct path")
     parser.add_argument("--timeout", type=float, default=600.0, help="time limit in seconds")
     parser.add_argument("--num-workers", type=int, default=1, help="number of worker threads (default: 1)")
+    parser.add_argument("--relabel-seed", type=int, default=None, help="seed for random vertex relabeling")
     parser.add_argument("--json-out", type=str, default=None, help="path to append statistics as JSON line")
     args = parser.parse_args()
 
@@ -147,6 +171,7 @@ if __name__ == "__main__":
         dataset=args.dataset,
         timeout=args.timeout,
         num_workers=args.num_workers,
+        relabel_seed=args.relabel_seed,
         verbose=True,
     )
 
