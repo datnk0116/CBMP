@@ -612,3 +612,46 @@ def test_metadata_records_relative_config_path(tmp_path):
     assert "config_path" in first_line
     assert not os.path.isabs(first_line["config_path"])
     assert first_line["config_path"] == "experiments/configs.yaml"
+
+
+def test_ablation_tables_not_generated_when_unqualified(tmp_path):
+    """Verify [1]: When records consist only of solvers_small, no ablation tables or figures are created."""
+    from analysis.make_tables import (
+        make_table_ablation,
+        make_table_ablation_family,
+        make_table_ablation_phases,
+    )
+    from analysis.make_plots import plot_ablation_family_boxplots
+
+    # Synthetic or actual solvers_small records: only variant 'all', solver cadical195, relabel_seed 0..4
+    solvers_small_recs = []
+    for seed in range(5):
+        solvers_small_recs.append({
+            "dataset": "14_bus",
+            "N": 14,
+            "num_edges": 20,
+            "relabel_seed": seed,
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "solver": "cadical195",
+            "status": "OPTIMAL",
+            "best_ub": 3,
+            "solve_time": 0.001,
+            "groups": ["solvers_small"],
+        })
+
+    out_tables = tmp_path / "tables"
+    out_figures = tmp_path / "figures"
+    out_tables.mkdir(parents=True, exist_ok=True)
+    out_figures.mkdir(parents=True, exist_ok=True)
+
+    make_table_ablation(solvers_small_recs, group_name="ablation_small", output_dirs=(str(out_tables),))
+    make_table_ablation(solvers_small_recs, group_name="ablation_medium", output_dirs=(str(out_tables),))
+    make_table_ablation_family(solvers_small_recs, output_dirs=(str(out_tables),))
+    make_table_ablation_phases(solvers_small_recs, output_dirs=(str(out_tables),))
+    plot_ablation_family_boxplots(solvers_small_recs, output_dirs=(str(out_figures),))
+
+    table_files = [f.name for f in out_tables.iterdir() if "ablation" in f.name]
+    figure_files = [f.name for f in out_figures.iterdir() if "ablation" in f.name]
+    assert len(table_files) == 0, f"Expected no ablation table files, got {table_files}"
+    assert len(figure_files) == 0, f"Expected no ablation figure files, got {figure_files}"
+

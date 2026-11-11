@@ -1,8 +1,0 @@
-comparison_group,variant,median_time_ratio,iqr_25_75,min_max,faster_pairs
-variant vs none,rotation,-,-,-,0/0
-variant vs none,rotation_reflection,-,-,-,0/0
-variant vs none,heuristic_ub,-,-,-,0/0
-variant vs none,all,1.5683,"[0.9811, 2.9777]","[0.3142, 11.5398]",7/26
-rotation_reflection vs rotation,rotation_reflection,-,-,-,0/0
-all vs rotation_reflection,all,-,-,-,0/0
-all vs rotation,all,-,-,-,0/0

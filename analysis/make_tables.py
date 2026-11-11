@@ -490,7 +490,8 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         if group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", []))
     ]
     if not ablation_recs:
-        return
+        print(f"[WARNING] Skipping {base_filename}: no records found for group '{group_name}'.")
+        return None
 
     def get_var_name(cfg):
         rot = cfg.get("sb_rotation", False)
@@ -509,6 +510,10 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         return "other"
 
     columns = ["none", "rotation", "rot_ref", "heur_ub", "all"]
+    variants_present = set(get_var_name(r.get("config", {})) for r in ablation_recs)
+    if not all(col in variants_present for col in columns):
+        print(f"[WARNING] Skipping {base_filename}: not all variants present in records (need {columns}).")
+        return None
 
     data_by_ds = {}
     meta = {}
@@ -793,7 +798,8 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
 
     family_recs = [r for r in records if r.get("relabel_seed") is not None]
     if not family_recs:
-        return
+        print("[WARNING] Skipping table_ablation_family: no records with relabel_seed found.")
+        return None
 
     pairs_map = {}
     for r in family_recs:
@@ -811,6 +817,19 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
         ("all vs rotation_reflection", "all", "all", "rotation_reflection"),
         ("all vs rotation", "all", "all", "rotation"),
     ]
+
+    # Condition: >= 1 valid pair for EACH comparison
+    for comp_group, var_label, var_target, var_ref in comparisons:
+        n_pairs = sum(
+            1 for (ds, seed), vmap in pairs_map.items()
+            if var_target in vmap and var_ref in vmap
+            and vmap[var_target].get("status") == "OPTIMAL"
+            and vmap[var_ref].get("status") == "OPTIMAL"
+            and vmap[var_ref].get("solve_time", 0.0) > 0
+        )
+        if n_pairs < 1:
+            print(f"[WARNING] Skipping table_ablation_family: comparison '{var_target} vs {var_ref}' has 0 valid pairs (>=1 required).")
+            return None
 
     rows = []
     for comp_group, var_label, var_target, var_ref in comparisons:
@@ -863,56 +882,78 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
     print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
 
     # Generate table_ablation_family_per_graph.csv
-    datasets = sorted(list(set(ds for (ds, seed), mmap in pairs_map.items() if "cpsat" in mmap and "sat" in mmap)))
-    per_graph_rows = []
-    for ds in datasets:
-        for comp_group, var_label, var_target, var_ref in comparisons:
-            comp_name = f"{var_target} vs {var_ref}"
-            ratios = []
-            faster_count = 0
-            total_count = 0
-            for (d, seed), vmap in pairs_map.items():
-                if d == ds and var_target in vmap and var_ref in vmap:
-                    rec_t = vmap[var_target]
-                    rec_r = vmap[var_ref]
-                    if rec_t.get("status") == "OPTIMAL" and rec_r.get("status") == "OPTIMAL":
-                        t_target = rec_t.get("solve_time", 0.0)
-                        t_ref = rec_r.get("solve_time", 0.0)
-                        if t_ref > 0:
-                            ratio = t_target / t_ref
-                            ratios.append(ratio)
-                            total_count += 1
-                            if t_target < t_ref:
-                                faster_count += 1
-            if ratios:
-                med = float(np.median(ratios))
-                min_r = float(np.min(ratios))
-                max_r = float(np.max(ratios))
-                med_str = f"{med:.4f}"
-                min_str = f"{min_r:.4f}"
-                max_str = f"{max_r:.4f}"
-                faster_str = f"{faster_count}/{total_count}"
-            else:
-                med_str = "-"
-                min_str = "-"
-                max_str = "-"
-                faster_str = "0/0"
+    datasets = sorted(list(set(ds for (ds, seed) in pairs_map.keys())))
+    can_generate_pg = True
+    if not datasets:
+        can_generate_pg = False
+    else:
+        for ds in datasets:
+            for comp_group, var_label, var_target, var_ref in comparisons:
+                count = sum(
+                    1 for (d, seed), vmap in pairs_map.items()
+                    if d == ds and var_target in vmap and var_ref in vmap
+                    and vmap[var_target].get("status") == "OPTIMAL"
+                    and vmap[var_ref].get("status") == "OPTIMAL"
+                    and vmap[var_ref].get("solve_time", 0.0) > 0
+                )
+                if count < 1:
+                    can_generate_pg = False
+                    break
+            if not can_generate_pg:
+                break
 
-            per_graph_rows.append({
-                "dataset": ds,
-                "comparison": comp_name,
-                "median_time_ratio": med_str,
-                "min": min_str,
-                "max": max_str,
-                "faster_pairs": faster_str,
-            })
+    if not can_generate_pg:
+        print("[WARNING] Skipping table_ablation_family_per_graph: not enough valid pairs for each comparison per graph (>=1 required).")
+    else:
+        per_graph_rows = []
+        for ds in datasets:
+            for comp_group, var_label, var_target, var_ref in comparisons:
+                comp_name = f"{var_target} vs {var_ref}"
+                ratios = []
+                faster_count = 0
+                total_count = 0
+                for (d, seed), vmap in pairs_map.items():
+                    if d == ds and var_target in vmap and var_ref in vmap:
+                        rec_t = vmap[var_target]
+                        rec_r = vmap[var_ref]
+                        if rec_t.get("status") == "OPTIMAL" and rec_r.get("status") == "OPTIMAL":
+                            t_target = rec_t.get("solve_time", 0.0)
+                            t_ref = rec_r.get("solve_time", 0.0)
+                            if t_ref > 0:
+                                ratio = t_target / t_ref
+                                ratios.append(ratio)
+                                total_count += 1
+                                if t_target < t_ref:
+                                    faster_count += 1
+                if ratios:
+                    med = float(np.median(ratios))
+                    min_r = float(np.min(ratios))
+                    max_r = float(np.max(ratios))
+                    med_str = f"{med:.4f}"
+                    min_str = f"{min_r:.4f}"
+                    max_str = f"{max_r:.4f}"
+                    faster_str = f"{faster_count}/{total_count}"
+                else:
+                    med_str = "-"
+                    min_str = "-"
+                    max_str = "-"
+                    faster_str = "0/0"
 
-    df_per_graph = pd.DataFrame(per_graph_rows)
-    for out_dir in output_dirs:
-        os.makedirs(out_dir, exist_ok=True)
-        csv_path_pg = os.path.join(out_dir, "table_ablation_family_per_graph.csv")
-        df_per_graph.to_csv(csv_path_pg, index=False)
-    print(f"Table saved: table_ablation_family_per_graph.csv in {output_dirs[0]}/")
+                per_graph_rows.append({
+                    "dataset": ds,
+                    "comparison": comp_name,
+                    "median_time_ratio": med_str,
+                    "min": min_str,
+                    "max": max_str,
+                    "faster_pairs": faster_str,
+                })
+
+        df_per_graph = pd.DataFrame(per_graph_rows)
+        for out_dir in output_dirs:
+            os.makedirs(out_dir, exist_ok=True)
+            csv_path_pg = os.path.join(out_dir, "table_ablation_family_per_graph.csv")
+            df_per_graph.to_csv(csv_path_pg, index=False)
+        print(f"Table saved: table_ablation_family_per_graph.csv in {output_dirs[0]}/")
 
     return df
 
@@ -943,10 +984,29 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
 
     family_recs = [r for r in records if r.get("relabel_seed") is not None]
     if not family_recs:
-        return
+        print("[WARNING] Skipping table_ablation_phases: no records with relabel_seed found.")
+        return None
 
     variants = ["none", "rotation", "rotation_reflection", "heuristic_ub", "all"]
     sizes = sorted(list(set(r.get("N", 0) for r in family_recs if r.get("N"))))
+    if not sizes:
+        print("[WARNING] Skipping table_ablation_phases: no sizes found.")
+        return None
+
+    # Condition: each (size, variant) must have >= 1 valid OPTIMAL record
+    can_generate_phases = True
+    for n in sizes:
+        for var in variants:
+            count = sum(1 for r in family_recs if r.get("N") == n and get_var(r) == var and r.get("status") == "OPTIMAL")
+            if count < 1:
+                can_generate_phases = False
+                break
+        if not can_generate_phases:
+            break
+
+    if not can_generate_phases:
+        print("[WARNING] Skipping table_ablation_phases: not all (size, variant) pairs have >= 1 valid OPTIMAL record.")
+        return None
 
     rows = []
     for n in sizes:

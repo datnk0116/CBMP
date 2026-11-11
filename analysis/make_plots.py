@@ -293,6 +293,10 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
                 elif n_val == 50:
                     data_n50[i].append(ratio)
 
+    if not (all(len(d) >= 1 for d in data_n40) and all(len(d) >= 1 for d in data_n50)):
+        print("[WARNING] Skipping boxplot_ablation_family: not all variants have >= 1 valid ratio relative to 'none'.")
+        return
+
     setup_matplotlib()
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
 
