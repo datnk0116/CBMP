@@ -4,7 +4,19 @@ import multiprocessing as mp
 import json
 import os
 
-def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout, solver="cadical195", json_out=None, relabel_seed=None):
+def main(
+    dataset,
+    sb_rotation,
+    sb_reflection,
+    use_heuristic_initial_ub,
+    timeout,
+    solver="cadical195",
+    json_out=None,
+    relabel_seed=None,
+    encoding="order",
+    solving_mode="incremental",
+    eo_strategy="commander",
+):
     manager = mp.Manager()
     shared_stats = manager.dict()
     best_ub = mp.Value('i', -1)
@@ -17,6 +29,9 @@ def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout,
             "shared_stats": shared_stats,
             "verbose": True,
             "relabel_seed": relabel_seed,
+            "encoding": encoding,
+            "solving_mode": solving_mode,
+            "eo_strategy": eo_strategy,
         },
     )
     
@@ -69,7 +84,7 @@ def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout,
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="CBMP SAT Solver Entry Point")
     parser.add_argument("dataset", 
                         help="name of .mtx file in datasets/")
     parser.add_argument("--timeout", 
@@ -92,6 +107,21 @@ if __name__ == "__main__":
                         type=str,
                         default="cadical195",
                         help=f"SAT solver to use (available: {', '.join(sorted(AVAILABLE_SOLVERS.keys()))}; default: cadical195)")
+    parser.add_argument("--encoding",
+                        type=str,
+                        choices=["order", "pairwise"],
+                        default="order",
+                        help="SAT encoding to use (order or pairwise, default: order)")
+    parser.add_argument("--solving-mode",
+                        type=str,
+                        choices=["incremental", "iterative"],
+                        default="incremental",
+                        help="Solving strategy (incremental or iterative, default: incremental)")
+    parser.add_argument("--eo-strategy",
+                        type=str,
+                        choices=["commander", "pairwise", "binary", "sequential", "product"],
+                        default="commander",
+                        help="Exactly-one encoding strategy (default: commander)")
     parser.add_argument("--json-out",
                         type=str,
                         default=None,
@@ -124,4 +154,7 @@ if __name__ == "__main__":
         solver=args.solver.lower(),
         json_out=args.json_out,
         relabel_seed=args.relabel_seed,
+        encoding=args.encoding,
+        solving_mode=args.solving_mode,
+        eo_strategy=args.eo_strategy,
     )

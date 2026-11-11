@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import json
+import math
 import argparse
 from pathlib import Path
 from typing import Optional, Union, List, Tuple, Any, Dict
@@ -12,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
 from docplex.mp.model import Model
 import docplex.mp.utils
-from cbmp import SolveResult
+from cbmp import SolveResult, compute_cyclic_bandwidth
 
 def map_cplex_status(status_str, status_code, has_hit_limit, sol_available):
     """
@@ -213,12 +214,42 @@ def solve_cplex(
         cpx_status_str, cpx_status_code, has_hit_limit, sol_available
     )
 
+    best_lb = None
+    try:
+        raw_lb = getattr(details, "best_bound", None)
+        if raw_lb is not None and not math.isinf(raw_lb) and not math.isnan(raw_lb):
+            best_lb = int(math.ceil(raw_lb))
+    except Exception:
+        best_lb = None
+
     if use_incumbent and sol is not None:
-        best_ub = int(round(sol.get_value(k)))
+        try:
+            reported_bw = int(round(sol.get_value(k)))
+            best_ub = reported_bw
+            try:
+                assignment = [int(round(sol.get_value(f[u]))) - 1 for u in range(N)]
+                is_valid_perm = len(assignment) == N and sorted(assignment) == list(range(N))
+                if is_valid_perm:
+                    actual_bw = compute_cyclic_bandwidth(N, edges, assignment)
+                    best_ub = actual_bw
+                    if status == "OPTIMAL" and actual_bw != reported_bw:
+                        status = "ERROR"
+                elif status == "OPTIMAL":
+                    best_ub = -1
+                    status = "ERROR"
+            except Exception:
+                if status == "OPTIMAL":
+                    best_ub = -1
+                    status = "ERROR"
+        except Exception:
+            best_ub = -1
+            status = "ERROR"
     else:
         best_ub = -1
 
     if status == "OPTIMAL":
+        if best_lb is None:
+            best_lb = best_ub
         if verbose:
             print("minimum bandwidth:", best_ub)
     elif status == "TIMEOUT":
@@ -232,6 +263,7 @@ def solve_cplex(
             print(f"CPLEX finished with status: {cpx_status_str or cpx_status_code}")
 
     stats["best_ub"] = best_ub
+    stats["best_lb"] = best_lb
     stats["status"] = status
 
     return SolveResult(best_ub, stats)

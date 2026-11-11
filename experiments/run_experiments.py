@@ -175,12 +175,30 @@ def get_canonical_key(record):
             flags = (bool(cfg["sb_rotation"]),)
         else:
             flags = ()
+    elif solver in ("cplex_cp", "cpoptimizer"):
+        method = "cplex_cp"
+        if "sb_rotation" in cfg:
+            flags = (bool(cfg["sb_rotation"]),)
+        else:
+            flags = ()
+    elif solver in ("gurobi", "grb"):
+        method = "gurobi"
+        if "sb_rotation" in cfg:
+            flags = (bool(cfg["sb_rotation"]),)
+        else:
+            flags = ()
     else:
         method = "sat"
         rot = bool(cfg.get("sb_rotation", False))
         ref = bool(cfg.get("sb_reflection", False))
         heur = bool(cfg.get("heuristic_ub", False))
-        flags = (rot, ref, heur)
+        enc = str(cfg.get("encoding", "order")).lower()
+        mode = str(cfg.get("solving_mode", "incremental")).lower()
+        eo = str(cfg.get("eo_strategy", "commander")).lower()
+        if enc != "order" or mode != "incremental" or eo != "commander":
+            flags = (rot, ref, heur, enc, mode, eo)
+        else:
+            flags = (rot, ref, heur)
     return (dataset, method, solver, flags, relabel_seed)
 
 def load_existing_runs(runs_jsonl_path, retry_failed=False):
@@ -448,7 +466,7 @@ def build_experiment_plan(
                                 tasks_map[key]["groups"].append(grp)
                             tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
-        elif grp == "methods" or grp.startswith("methods_") or grp.startswith("cpsat_"):
+        elif "methods" in grp_cfg or grp == "methods" or grp.startswith("methods_") or grp.startswith("cpsat_") or grp == "encodings":
             methods = grp_cfg.get("methods", [])
             for d in grp_datasets:
                 seeds = d.get("relabel_seeds", [None])
@@ -461,13 +479,22 @@ def build_experiment_plan(
                             rot = bool(m.get("sb_rotation", True))
                             ref = bool(m.get("sb_reflection", True))
                             heur = bool(m.get("heuristic_ub", True))
+                            enc = str(m.get("encoding", "order")).lower()
+                            mode = str(m.get("solving_mode", "incremental")).lower()
+                            eo = str(m.get("eo_strategy", "commander")).lower()
                             method = "sat"
-                            flags = (rot, ref, heur)
+                            if enc != "order" or mode != "incremental" or eo != "commander":
+                                flags = (rot, ref, heur, enc, mode, eo)
+                            else:
+                                flags = (rot, ref, heur)
                             key = (d["name"], method, solver.lower(), flags, seed)
                             cfg_dict = {
                                 "sb_rotation": rot,
                                 "sb_reflection": ref,
                                 "heuristic_ub": heur,
+                                "encoding": enc,
+                                "solving_mode": mode,
+                                "eo_strategy": eo,
                                 "time_limit": grp_timeout,
                                 "relabel_seed": seed,
                             }
@@ -485,6 +512,24 @@ def build_experiment_plan(
                         elif m_type == "cplex":
                             method = "cplex"
                             solver = "cplex"
+                            flags = ()
+                            key = (d["name"], method, solver, flags, seed)
+                            cfg_dict = {
+                                "time_limit": grp_timeout,
+                                "relabel_seed": seed,
+                            }
+                        elif m_type == "cplex_cp":
+                            method = "cplex_cp"
+                            solver = "cplex_cp"
+                            flags = ()
+                            key = (d["name"], method, solver, flags, seed)
+                            cfg_dict = {
+                                "time_limit": grp_timeout,
+                                "relabel_seed": seed,
+                            }
+                        elif m_type == "gurobi":
+                            method = "gurobi"
+                            solver = "gurobi"
                             flags = ()
                             key = (d["name"], method, solver, flags, seed)
                             cfg_dict = {
@@ -577,12 +622,21 @@ def build_task_cmd(task, json_out_path):
     method = task["method"]
     timeout = task["timeout"]
     dataset = task["dataset"]
+    cfg = task.get("config_dict", {})
     if method == "sat":
-        rot, ref, heur = task["flags"]
+        rot = bool(cfg.get("sb_rotation", False))
+        ref = bool(cfg.get("sb_reflection", False))
+        heur = bool(cfg.get("heuristic_ub", False))
+        enc = cfg.get("encoding", "order")
+        mode = cfg.get("solving_mode", "incremental")
+        eo = cfg.get("eo_strategy", "commander")
         cmd = [
             sys.executable, "main.py", dataset,
             "--timeout", str(timeout),
             "--solver", task["solver"],
+            "--encoding", enc,
+            "--solving-mode", mode,
+            "--eo-strategy", eo,
             "--json-out", json_out_path,
         ]
         if rot: cmd.append("--sb-rotation")
@@ -608,14 +662,31 @@ def build_task_cmd(task, json_out_path):
             "--timeout", str(timeout),
             "--json-out", json_out_path,
         ]
+    elif method == "cplex_cp":
+        return [
+            sys.executable, "-m", "baselines.cplex_cp_cbmp", dataset,
+            "--timeout", str(timeout),
+            "--json-out", json_out_path,
+        ]
+    elif method == "gurobi":
+        return [
+            sys.executable, "-m", "baselines.gurobi_cbmp", dataset,
+            "--timeout", str(timeout),
+            "--json-out", json_out_path,
+        ]
     else:
         raise ValueError(f"Unknown method: {method}")
 
 def format_task_flags(task):
     """Human-readable representation of configuration flags."""
     if task["method"] == "sat":
-        rot, ref, heur = task["flags"]
+        rot, ref, heur = task["flags"][:3]
         parts = []
+        if len(task["flags"]) > 3:
+            enc, mode, eo = task["flags"][3:6]
+            if enc != "order": parts.append(enc)
+            if mode != "incremental": parts.append(mode)
+            if eo != "commander": parts.append(eo)
         if rot: parts.append("rot")
         if ref: parts.append("ref")
         if heur: parts.append("heur_ub")
@@ -628,7 +699,7 @@ def format_task_flags(task):
         if task.get("relabel_seed") is not None:
             res += f"+seed={task['relabel_seed']}"
         return res
-    elif task["method"] == "cplex":
+    elif task["method"] in ("cplex", "cplex_cp", "gurobi"):
         return "default"
     return "-"
 
@@ -961,6 +1032,7 @@ if __name__ == "__main__":
             "methods_family",
             "cpsat_large",
             "methods_large_seeds",
+            "encodings",
         ],
         help="experiment group to run",
     )

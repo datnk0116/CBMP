@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
 from ortools.sat.python import cp_model
-from cbmp import SolveResult
+from cbmp import SolveResult, compute_cyclic_bandwidth
 
 def build_cpsat_model(N: int, edges: list, sb_rotation: bool = True):
     """
@@ -169,17 +169,37 @@ def solve_cpsat(
     except Exception:
         best_lb = None
 
-    if cp_status == cp_model.OPTIMAL:
-        best_ub = int(solver.ObjectiveValue())
-        status = "OPTIMAL"
-        if best_lb is None:
-            best_lb = best_ub
-        if verbose:
-            print("minimum bandwidth:", best_ub)
-    elif cp_status == cp_model.FEASIBLE:
-        best_ub = int(solver.ObjectiveValue())
-        status = "TIMEOUT"
-        if verbose:
+    if cp_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        # Extract and validate solution
+        try:
+            reported_bw = int(round(solver.ObjectiveValue()))
+            best_ub = reported_bw
+            status = "OPTIMAL" if cp_status == cp_model.OPTIMAL else "TIMEOUT"
+            try:
+                assignment = [int(solver.Value(f[u])) - 1 for u in range(N)]
+                is_valid_perm = len(assignment) == N and sorted(assignment) == list(range(N))
+                if is_valid_perm:
+                    actual_bw = compute_cyclic_bandwidth(N, edges, assignment)
+                    best_ub = actual_bw
+                    if cp_status == cp_model.OPTIMAL and actual_bw != reported_bw:
+                        status = "ERROR"
+                elif cp_status == cp_model.OPTIMAL:
+                    best_ub = -1
+                    status = "ERROR"
+            except Exception:
+                if cp_status == cp_model.OPTIMAL:
+                    best_ub = -1
+                    status = "ERROR"
+        except Exception:
+            best_ub = -1
+            status = "ERROR"
+
+        if status == "OPTIMAL":
+            if best_lb is None:
+                best_lb = best_ub
+            if verbose:
+                print("minimum bandwidth:", best_ub)
+        elif status == "TIMEOUT" and verbose:
             print("timeout, lowest bandwidth found:", best_ub)
     elif cp_status == cp_model.UNKNOWN:
         best_ub = -1

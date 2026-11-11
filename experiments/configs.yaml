@@ -243,3 +243,30 @@ groups:
       - name: "cpsat"
         type: "cpsat"
         num_workers: 1
+
+  encodings:
+    description: "Comparison of Order Encoding vs Pairwise Encoding on small graphs"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "sat_order"
+        type: "sat"
+        solver: "cadical195"
+        encoding: "order"
+        solving_mode: "incremental"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+      - name: "sat_pairwise"
+        type: "sat"
+        solver: "cadical195"
+        encoding: "pairwise"
+        solving_mode: "incremental"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
