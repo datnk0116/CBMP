@@ -1,0 +1,5 @@
+dataset,variant,status,best_ub,solve_time,wall_time,num_iterations
+494_bus_n40,none,OPTIMAL,5,2.1727,2.7800,12
+494_bus_n40,heuristic_ub,OPTIMAL,5,4.7696,5.3292,11
+662_bus_n40,none,OPTIMAL,7,5.4930,6.0433,15
+662_bus_n40,heuristic_ub,OPTIMAL,7,9.6670,10.4390,8
