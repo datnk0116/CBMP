@@ -200,3 +200,4 @@ def test_aggregate_repetitions_mixed_statuses():
     assert len(agg) == 3
     statuses = {r["status"] for r in agg}
     assert statuses == {"SIZE_LIMIT", "TIMEOUT", "ERROR"}
+
