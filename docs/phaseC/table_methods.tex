@@ -1,0 +1,25 @@
+% Table: Comparison of Methods: SAT vs CP-SAT vs CPLEX
+\begin{table}[htbp]
+\centering
+\caption{Comparison of Methods: SAT vs CP-SAT vs CPLEX}
+\label{tab:table_methods}
+\begin{tabular}{lrrrrr}
+\toprule
+Dataset & N & |E| & sat\_best & cpsat & cplex \\
+\midrule
+14\_bus & 14 & 20 & 0.0004 & 0.0328 & 0.4610 \\
+30\_bus & 30 & 39 & 0.0547 & 0.2842 & SL \\
+494\_bus\_n40 & 40 & 52 & 0.7132 & 1.3461 & SL \\
+662\_bus\_n40 & 40 & 50 & 1.7629 & 0.5772 & SL \\
+494\_bus\_n60 & 60 & 76 & 34.1434 & 5.2765 & SL \\
+662\_bus\_n60 & 60 & 77 & 26.8385 & 5.5421 & SL \\
+662\_bus\_n80 & 80 & 105 & 45.7719 & 101.2120 & SL \\
+\midrule
+\textbf{Solved} & - & - & 7 & 7 & 1 \\
+\textbf{SL} & - & - & 0 & 0 & 6 \\
+\textbf{mean time (s)} & - & - & 15.612 & 16.324 & - \\
+\textbf{Speedup (geom) [5/7]} & - & - & 1.00x & 1.87x & - \\
+\bottomrule
+\multicolumn{6}{l}{\footnotesize SL = Size Limit (vượt giới hạn CPLEX Community Edition, loại khỏi PAR2). Speedup chỉ tính trên instance mà baseline >= 0.1s (5/7). Các method chưa giải hết các instance này ghi '-'.} \\
+\end{tabular}
+\end{table}

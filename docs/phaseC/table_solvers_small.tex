@@ -1,0 +1,21 @@
+% Table: SAT Solver Performance Comparison (Small Graphs)
+\begin{table}[htbp]
+\centering
+\caption{SAT Solver Performance Comparison (Small Graphs)}
+\label{tab:table_solvers_small}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Dataset & N & |E| & cadical195 & glucose4 & maplechrono & minisat22 & lingeling \\
+\midrule
+14\_bus & 14 & 20 & 0.0004 & 0.0003 & 0.0003 & 0.0002 & 0.0009 \\
+30\_bus & 30 & 39 & 0.0707 & 0.0350 & 0.7853 & 0.0377 & 0.2161 \\
+494\_bus\_n40 & 40 & 52 & 1.1233 & 1.0278 & 4.4392 & 1.8317 & 4.5404 \\
+662\_bus\_n40 & 40 & 50 & 0.9216 & 0.6827 & 4.5383 & 0.5179 & 3.5294 \\
+\midrule
+\textbf{Solved} & - & - & 4 & 4 & 4 & 4 & 4 \\
+\textbf{mean time (s)} & - & - & 0.580 & 0.798 & 2.960 & 1.034 & 2.045 \\
+\textbf{Speedup (geom) [2/4]} & - & - & 1.00x & 1.21x & 0.23x & 1.04x & 0.25x \\
+\bottomrule
+\multicolumn{8}{l}{\footnotesize Thời gian giải là trung vị (median) trên 5 hoán vị nhãn (seeds 0..4). PAR2 tính trung bình (mean) trên 5 seed. Speedup chỉ tính trên instance mà baseline >= 0.1s (2/4). Các solver chưa giải hết các instance này ghi '-'.} \\
+\end{tabular}
+\end{table}
