@@ -991,14 +991,16 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     return df
 
 def get_lb_degree(dataset_name):
-    """Compute lb_degree = ceil(Delta / 2) from datasets/<dataset_name>.mtx."""
+    """Compute lb_degree = ceil(Delta / 2) from datasets/<dataset_name>.mtx, excluding self-loops."""
     filepath = f"datasets/{dataset_name}.mtx" if not dataset_name.endswith(".mtx") else dataset_name
     if not os.path.exists(filepath):
         return 0
     try:
         from scipy.io import mmread
-        mat = mmread(filepath)
-        degrees = np.diff(mat.tocsr().indptr)
+        mat = mmread(filepath).tocsr()
+        mat.setdiag(0)
+        mat.eliminate_zeros()
+        degrees = np.diff(mat.indptr)
         max_deg = int(degrees.max()) if len(degrees) > 0 else 0
         return int(math.ceil(max_deg / 2))
     except Exception:
