@@ -19,11 +19,15 @@ groups:
   solvers_small:
     description: "SAT solvers comparison on small graphs (N <= 40)"
     datasets:
-      - "14_bus"
-      - "30_bus"
-      - "494_bus_n40"
-      - "662_bus_n40"
-    repetitions: 5
+      - name: "14_bus"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "30_bus"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "494_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "662_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4]
+    repetitions: 1
     timeout: 600
     sb_rotation: true
     sb_reflection: true

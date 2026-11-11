@@ -390,35 +390,37 @@ def build_experiment_plan(
             flags = (rot, ref, heur)
 
             for d in grp_datasets:
-                for s in solvers:
-                    grp_tasks_count += 1
-                    key = (d["name"], method, s.lower(), flags, None)
-                    if key not in tasks_map:
-                        tasks_map[key] = {
-                            "canonical_key": key,
-                            "dataset": d["name"],
-                            "N": d["N"],
-                            "M": d["M"],
-                            "method": method,
-                            "solver": s,
-                            "flags": flags,
-                            "relabel_seed": None,
-                            "config_dict": {
-                                "sb_rotation": rot,
-                                "sb_reflection": ref,
-                                "heuristic_ub": heur,
-                                "time_limit": grp_timeout,
-                                "relabel_seed": None,
-                            },
-                            "timeout": grp_timeout,
-                            "group_reps": {grp: grp_reps},
-                            "groups": [grp],
-                        }
-                    else:
-                        tasks_map[key]["group_reps"][grp] = grp_reps
-                        if grp not in tasks_map[key]["groups"]:
-                            tasks_map[key]["groups"].append(grp)
-                        tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
+                seeds = d.get("relabel_seeds", [None])
+                for seed in seeds:
+                    for s in solvers:
+                        grp_tasks_count += 1
+                        key = (d["name"], method, s.lower(), flags, seed)
+                        if key not in tasks_map:
+                            tasks_map[key] = {
+                                "canonical_key": key,
+                                "dataset": d["name"],
+                                "N": d["N"],
+                                "M": d["M"],
+                                "method": method,
+                                "solver": s,
+                                "flags": flags,
+                                "relabel_seed": seed,
+                                "config_dict": {
+                                    "sb_rotation": rot,
+                                    "sb_reflection": ref,
+                                    "heuristic_ub": heur,
+                                    "time_limit": grp_timeout,
+                                    "relabel_seed": seed,
+                                },
+                                "timeout": grp_timeout,
+                                "group_reps": {grp: grp_reps},
+                                "groups": [grp],
+                            }
+                        else:
+                            tasks_map[key]["group_reps"][grp] = grp_reps
+                            if grp not in tasks_map[key]["groups"]:
+                                tasks_map[key]["groups"].append(grp)
+                            tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
         elif grp == "methods":
             methods = grp_cfg.get("methods", [])

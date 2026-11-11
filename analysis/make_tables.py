@@ -568,13 +568,53 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
 
     solvers = ["cadical195", "glucose4", "maplechrono", "minisat22", "lingeling"]
 
-    data_by_ds = {}
+    recs_by_ds_sol = {}
     meta = {}
     for r in solver_recs:
         ds = r["dataset"]
         meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
         sol = r["solver"].lower()
-        data_by_ds.setdefault(ds, {})[sol] = r
+        recs_by_ds_sol.setdefault((ds, sol), []).append(r)
+
+    data_by_ds = {}
+    for (ds, sol), rec_list in recs_by_ds_sol.items():
+        if len(rec_list) == 1:
+            data_by_ds.setdefault(ds, {})[sol] = rec_list[0]
+        else:
+            n_optimal = sum(1 for x in rec_list if x.get("status") == "OPTIMAL")
+            n_total = len(rec_list)
+            solve_times = [x.get("solve_time", 0.0) for x in rec_list if x.get("solve_time") is not None]
+            wall_times = [x.get("wall_time", 0.0) for x in rec_list if x.get("wall_time") is not None]
+            par2_vals = [x.get("par2", (x.get("solve_time") if x.get("status") == "OPTIMAL" else 2.0 * float(x.get("config", {}).get("time_limit", 600.0)))) for x in rec_list]
+
+            if n_optimal == n_total:
+                chosen = sorted(rec_list, key=lambda x: x.get("solve_time", 0.0))[len(rec_list) // 2]
+                agg = dict(chosen)
+                agg["status"] = "OPTIMAL"
+                agg["n_optimal"] = n_optimal
+                agg["n_total"] = n_total
+                agg["solve_time"] = float(np.median(solve_times)) if solve_times else 0.0
+                agg["wall_time"] = float(np.median(wall_times)) if wall_times else 0.0
+                agg["par2"] = float(np.mean(par2_vals)) if par2_vals else float("nan")
+            elif n_optimal > 0:
+                opt_recs = [x for x in rec_list if x.get("status") == "OPTIMAL"]
+                chosen = sorted(opt_recs, key=lambda x: x.get("solve_time", 0.0))[len(opt_recs) // 2]
+                agg = dict(chosen)
+                agg["status"] = "PARTIAL"
+                agg["n_optimal"] = n_optimal
+                agg["n_total"] = n_total
+                agg["solve_time"] = float(np.median([x.get("solve_time", 0.0) for x in opt_recs]))
+                agg["wall_time"] = float(np.median([x.get("wall_time", 0.0) for x in opt_recs]))
+                agg["par2"] = float(np.mean(par2_vals)) if par2_vals else float("nan")
+            else:
+                chosen = sorted(rec_list, key=lambda x: x.get("solve_time", 0.0))[len(rec_list) // 2]
+                agg = dict(chosen)
+                agg["n_optimal"] = 0
+                agg["n_total"] = n_total
+                agg["solve_time"] = float(np.median(solve_times)) if solve_times else 0.0
+                agg["wall_time"] = float(np.median(wall_times)) if wall_times else 0.0
+                agg["par2"] = float(np.mean(par2_vals)) if par2_vals else float("nan")
+            data_by_ds.setdefault(ds, {})[sol] = agg
 
     ds_sorted = sorted(data_by_ds.keys(), key=lambda d: (meta[d][0], d))
 
