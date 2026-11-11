@@ -1064,7 +1064,10 @@ def get_lb_degree(dataset_name):
         return 0
     try:
         from scipy.io import mmread
-        mat = mmread(filepath).tocsr()
+        try:
+            mat = mmread(filepath, spmatrix=True).tocsr()
+        except TypeError:
+            mat = mmread(filepath).tocsr()
         mat.setdiag(0)
         mat.eliminate_zeros()
         degrees = np.diff(mat.indptr)

@@ -188,10 +188,94 @@ def test_cplex_cp_unavailable_reporting(monkeypatch):
         "baselines.cplex_cp_cbmp.is_cplex_cp_available",
         lambda: (False, "CPLEX CP Optimizer engine not found in system PATH"),
     )
-    res, stats = solve_cplex_cp(N=3, edges=[(0, 1)], verbose=False)
+    res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
     assert stats["status"] == "UNAVAILABLE"
     assert stats["best_ub"] == -1
-    assert "error" in stats
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_docplex_limit_constant(monkeypatch, mock_cpo_environment):
+    """CPLEX CP stops with official docplex constant SearchStoppedByLimit -> TIMEOUT."""
+    fake_sol = FakeCpoSolution(
+        solve_status="Feasible",
+        stop_cause="SearchStoppedByLimit",
+        has_solution=True,
+        assignment=[1, 2, 3],
+        obj_val=1,
+    )
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "TIMEOUT"
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] == [0, 1, 2]
+
+
+def test_cplex_cp_aborted_stop_preserves_incumbent(monkeypatch, mock_cpo_environment):
+    """CPLEX CP stopped by abort with incumbent -> INTERRUPTED."""
+    fake_sol = FakeCpoSolution(
+        solve_status="JobAborted",
+        stop_cause="SearchStoppedByAbort",
+        has_solution=True,
+        assignment=[1, 2, 3],
+        obj_val=1,
+    )
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "INTERRUPTED"
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] == [0, 1, 2]
+
+
+def test_cplex_cp_aborted_stop_without_solution(monkeypatch, mock_cpo_environment):
+    """CPLEX CP stopped by abort without incumbent -> INTERRUPTED."""
+    fake_sol = FakeCpoSolution(
+        solve_status="JobAborted",
+        stop_cause="SearchStoppedByAbort",
+        has_solution=False,
+    )
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "INTERRUPTED"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_job_failed_status(monkeypatch, mock_cpo_environment):
+    """CPLEX CP job failed -> ERROR."""
+    fake_sol = FakeCpoSolution(
+        solve_status="JobFailed",
+        stop_cause="SearchStoppedByUnknownCause",
+        has_solution=False,
+    )
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_unknown_stop_without_limit_evidence_is_error(monkeypatch, mock_cpo_environment):
+    """Unknown termination reasons without limit evidence must NOT be classified as TIMEOUT."""
+    fake_sol = FakeCpoSolution(
+        solve_status="Unknown",
+        stop_cause="SearchStoppedByUnknownCause",
+        has_solution=False,
+    )
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
 
 
 # ============================================================================

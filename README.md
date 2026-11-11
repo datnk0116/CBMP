@@ -67,7 +67,7 @@ CBMP/
 │   ├── check_datasets.py   # Kiểm tra và cảnh báo nếu dataset trong config bị thiếu
 │   ├── calibrate.py        # Thử nghiệm hiệu chuẩn thời gian và tài nguyên
 │   └── make_subgraphs.py   # Tạo các đồ thị con cảm ứng liên thông
-├── tests/                  # Bộ test tự động (669 tests, brute force, baselines, mocked CP/Gurobi, encodings)
+├── tests/                  # Bộ test tự động (brute force, baselines, mocked CP/Gurobi, encodings)
 ├── results/                # Kết quả chạy thực nghiệm gốc
 ├── results_v2/             # Kết quả chạy thực nghiệm phiên bản v2 (runs.jsonl, tables/, figures/)
 ├── report/                 # Báo cáo khoa học LaTeX & hình ảnh
@@ -181,7 +181,7 @@ python experiments/run_experiments.py --group all --record-metadata
 > - Mỗi bản ghi trong `runs.jsonl` được tự động gắn git commit hash và cờ repo dirty (`git_commit`, `git_dirty`).
 > - `--resume`: Kiểm tra commit hash của các kết quả cũ. Nếu commit hash khác với commit hiện tại của repo, runner sẽ từ chối chạy để tránh trộn lẫn kết quả của các phiên bản mã nguồn khác nhau.
 > - `--force-resume`: Cho phép bỏ qua kiểm tra commit hash và tiếp tục chạy resume.
-> - `--retry-failed`: Mặc định `--resume` bỏ qua tất cả kết quả đã ghi. Khi thêm `--retry-failed`, runner sẽ chỉ bỏ qua các record `OPTIMAL` (hoặc `SIZE_LIMIT`), và tự động chạy lại các cấu hình trước đó bị `TIMEOUT` hoặc `ERROR`.
+> - `--retry-failed`: Mặc định `--resume` bỏ qua tất cả kết quả đã ghi. Khi thêm `--retry-failed`, runner bảo toàn các kết quả hoàn chỉnh (`OPTIMAL`, `INFEASIBLE`, `SIZE_LIMIT`), các trường hợp môi trường chưa cài đặt solver (`UNAVAILABLE`, `LICENSE_ERROR`), và nghiệm khả thi hợp lệ (`FEASIBLE` với `best_ub >= 0`), đồng thời tự động chạy lại các cấu hình thất bại tạm thời (`TIMEOUT`, `ERROR`, `INTERRUPTED`).
 
 > [!NOTE]
 > Mặc định runner ghi dữ liệu vào `results_v2/` và không can thiệp vào `results/`.

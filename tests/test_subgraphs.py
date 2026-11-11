@@ -30,7 +30,10 @@ def test_subgraph_loader_connected_and_dimensions(name):
     expected_n = int(match.group(1))
 
     # Read using existing project loader
-    mat = mmread(filepath)
+    try:
+        mat = mmread(filepath, spmatrix=True)
+    except TypeError:
+        mat = mmread(filepath)
     cx = mat.tocoo()
     assert cx.shape[0] == expected_n
     assert cx.shape[1] == expected_n

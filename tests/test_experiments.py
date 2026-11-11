@@ -682,3 +682,70 @@ def test_ablation_tables_not_generated_when_unqualified(tmp_path):
     assert len(table_files) == 0, f"Expected no ablation table files, got {table_files}"
     assert len(figure_files) == 0, f"Expected no ablation figure files, got {figure_files}"
 
+
+def test_resume_and_retry_failed_status_semantics(tmp_path):
+    """
+    Test resume/retry semantics for every solver result status in run_experiments.
+    Verifies:
+    1. retry_failed=False preserves all valid records (normal resume).
+    2. retry_failed=True preserves OPTIMAL, INFEASIBLE, SIZE_LIMIT.
+    3. retry_failed=True preserves UNAVAILABLE and LICENSE_ERROR (do not repeatedly retry missing environment).
+    4. retry_failed=True preserves valid FEASIBLE incumbents (best_ub >= 0).
+    5. retry_failed=True retries TIMEOUT, ERROR, INTERRUPTED, and FEASIBLE with best_ub < 0.
+    """
+    from experiments.run_experiments import is_run_completed, load_existing_runs
+
+    records = [
+        {"dataset": "g1", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "OPTIMAL", "best_ub": 2, "rep": 1},
+        {"dataset": "g2", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "INFEASIBLE", "best_ub": -1, "rep": 1},
+        {"dataset": "g3", "N": 1000, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "SIZE_LIMIT", "best_ub": -1, "rep": 1},
+        {"dataset": "g4", "N": 10, "num_edges": 12, "config": {}, "solver": "gurobi", "status": "UNAVAILABLE", "best_ub": -1, "rep": 1},
+        {"dataset": "g5", "N": 10, "num_edges": 12, "config": {}, "solver": "gurobi", "status": "LICENSE_ERROR", "best_ub": -1, "rep": 1},
+        {"dataset": "g6", "N": 10, "num_edges": 12, "config": {}, "solver": "cpsat", "status": "FEASIBLE", "best_ub": 4, "rep": 1},
+        {"dataset": "g7", "N": 10, "num_edges": 12, "config": {}, "solver": "cpsat", "status": "FEASIBLE", "best_ub": -1, "rep": 1},
+        {"dataset": "g8", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "TIMEOUT", "best_ub": -1, "rep": 1},
+        {"dataset": "g9", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "ERROR", "best_ub": -1, "rep": 1},
+        {"dataset": "g10", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "INTERRUPTED", "best_ub": -1, "rep": 1},
+    ]
+
+    # Check is_run_completed directly
+    # Under retry_failed=False, all records are considered complete
+    for rec in records:
+        assert is_run_completed(rec, retry_failed=False) is True
+
+    # Under retry_failed=True:
+    # Definitive proofs and barriers must be complete
+    assert is_run_completed(records[0], retry_failed=True) is True   # OPTIMAL
+    assert is_run_completed(records[1], retry_failed=True) is True   # INFEASIBLE
+    assert is_run_completed(records[2], retry_failed=True) is True   # SIZE_LIMIT
+    assert is_run_completed(records[3], retry_failed=True) is True   # UNAVAILABLE
+    assert is_run_completed(records[4], retry_failed=True) is True   # LICENSE_ERROR
+    assert is_run_completed(records[5], retry_failed=True) is True   # FEASIBLE (ub >= 0)
+
+    # Transient failures or incomplete incumbents must NOT be complete (must be retried)
+    assert is_run_completed(records[6], retry_failed=True) is False  # FEASIBLE (ub < 0)
+    assert is_run_completed(records[7], retry_failed=True) is False  # TIMEOUT
+    assert is_run_completed(records[8], retry_failed=True) is False  # ERROR
+    assert is_run_completed(records[9], retry_failed=True) is False  # INTERRUPTED
+
+    # Write to a test jsonl file and verify load_existing_runs
+    jsonl_file = tmp_path / "test_runs.jsonl"
+    with open(jsonl_file, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"_type": "metadata", "solver": "test"}) + "\n")
+        for rec in records:
+            f.write(json.dumps(rec) + "\n")
+
+    # Normal resume: all 10 non-metadata runs loaded
+    loaded_resume = load_existing_runs(str(jsonl_file), retry_failed=False)
+    assert len(loaded_resume) == 10
+
+    # Retry failed: only 6 preserved runs loaded; 4 retryable runs omitted
+    loaded_retry = load_existing_runs(str(jsonl_file), retry_failed=True)
+    assert len(loaded_retry) == 6
+    loaded_datasets = {rec["dataset"] for rec in loaded_retry.values()}
+    assert loaded_datasets == {"g1", "g2", "g3", "g4", "g5", "g6"}
+    assert "g7" not in loaded_datasets  # FEASIBLE with ub < 0 retried
+    assert "g8" not in loaded_datasets  # TIMEOUT retried
+    assert "g9" not in loaded_datasets  # ERROR retried
+    assert "g10" not in loaded_datasets # INTERRUPTED retried
+

@@ -159,8 +159,9 @@ def solve_cplex_cp(
     stats["per_iter_times"] = [solve_time]
     stats["num_iterations"] = 1
 
-    sol_status = str(sol.get_solve_status()) if sol and hasattr(sol, "get_solve_status") else ""
-    stop_cause = str(sol.get_stop_cause()) if sol and hasattr(sol, "get_stop_cause") else ""
+    sol_status = str(sol.get_solve_status()) if sol and hasattr(sol, "get_solve_status") and sol.get_solve_status() is not None else ""
+    stop_cause = str(sol.get_stop_cause()) if sol and hasattr(sol, "get_stop_cause") and sol.get_stop_cause() is not None else ""
+    fail_status = str(sol.get_fail_status()) if sol and hasattr(sol, "get_fail_status") and sol.get_fail_status() is not None else ""
     has_solution = sol.is_solution() if sol and hasattr(sol, "is_solution") else False
 
     # Extract lower bound if exposed
@@ -200,7 +201,33 @@ def solve_cplex_cp(
             stats["validation_error"] = str(e)
             assignment = None
 
-    if sol_status.lower() == "optimal":
+    # Determine termination cause categories
+    is_optimal = (sol_status.lower() == "optimal") or (
+        sol is not None and hasattr(sol, "is_solution_optimal") and sol.is_solution_optimal()
+    )
+    is_timelimit = (
+        stop_cause.lower() in ("timelimit", "searchstoppedbylimit")
+        or "time limit" in sol_status.lower()
+        or "timelimit" in sol_status.lower()
+        or fail_status.lower() in ("searchstoppedbylimit",)
+    )
+    is_limit_stop = (
+        is_timelimit
+        or "limit" in stop_cause.lower()
+        or "limit" in fail_status.lower()
+    )
+    is_abort_stop = (
+        "abort" in stop_cause.lower()
+        or "abort" in fail_status.lower()
+        or sol_status.lower() in ("jobaborted", "aborted")
+    )
+    is_fail_stop = (
+        sol_status.lower() in ("jobfailed", "failed")
+        or "exception" in fail_status.lower()
+    )
+    is_infeasible = sol_status.lower() in ("infeasible",)
+
+    if is_optimal:
         if valid_solution:
             status = "OPTIMAL"
             best_ub = actual_bw
@@ -213,8 +240,10 @@ def solve_cplex_cp(
         # Feasible incumbent found without optimality proof
         best_ub = actual_bw
         stats["assignment"] = assignment
-        if stop_cause.lower() == "timelimit" or "time limit" in sol_status.lower():
+        if is_timelimit:
             status = "TIMEOUT"
+        elif is_abort_stop:
+            status = "INTERRUPTED"
         else:
             status = "FEASIBLE"
     elif has_solution and not valid_solution:
@@ -226,12 +255,18 @@ def solve_cplex_cp(
         # No solution found
         best_ub = -1
         stats["assignment"] = None
-        if sol_status.lower() == "infeasible":
+        if is_infeasible:
             status = "INFEASIBLE"
-        elif stop_cause.lower() == "timelimit" or "time limit" in sol_status.lower() or sol_status.lower() in ("unknown", ""):
+        elif is_limit_stop:
             status = "TIMEOUT"
-        else:
+        elif is_abort_stop:
+            status = "INTERRUPTED"
+        elif is_fail_stop:
             status = "ERROR"
+        else:
+            # Do not classify unknown/unexpected termination reasons as TIMEOUT without evidence
+            status = "ERROR"
+            stats["error"] = f"CP Optimizer terminated with status '{sol_status}', stop cause '{stop_cause}' without solution"
 
     if status == "OPTIMAL" and best_lb is None:
         best_lb = best_ub

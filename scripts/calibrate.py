@@ -33,7 +33,10 @@ DATASETS = [
 
 def get_graph_meta(dataset_name, dataset_dir="datasets"):
     filepath = os.path.join(dataset_dir, f"{dataset_name}.mtx")
-    mat = mmread(filepath)
+    try:
+        mat = mmread(filepath, spmatrix=True)
+    except TypeError:
+        mat = mmread(filepath)
     cx = mat.tocoo()
     n = cx.shape[0]
     edges = set()

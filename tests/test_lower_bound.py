@@ -146,7 +146,10 @@ def test_lb_degree_matches_networkx_without_loops():
     assert len(mtx_files) > 0
 
     for fpath in mtx_files:
-        mat = mmread(fpath)
+        try:
+            mat = mmread(fpath, spmatrix=True)
+        except TypeError:
+            mat = mmread(fpath)
         G = nx.Graph(mat)
         G.remove_edges_from(nx.selfloop_edges(G))
         max_deg = max((d for _, d in G.degree()), default=0)

@@ -18,7 +18,10 @@ import networkx as nx
 
 def load_graph_from_mtx(filepath):
     """Load an undirected simple graph from an MTX file."""
-    mat = mmread(filepath)
+    try:
+        mat = mmread(filepath, spmatrix=True)
+    except TypeError:
+        mat = mmread(filepath)
     cx = mat.tocoo()
     G = nx.Graph()
     for u, v in zip(cx.row, cx.col):

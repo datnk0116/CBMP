@@ -99,7 +99,10 @@ def load_graph_from_mtx(filepath_or_name: str, dataset_dir: str = "datasets") ->
       (N, edges, dataset_name)
     """
     filepath, dataset_name = resolve_dataset_path(filepath_or_name, dataset_dir=dataset_dir)
-    mat = mmread(filepath)
+    try:
+        mat = mmread(filepath, spmatrix=True)
+    except TypeError:
+        mat = mmread(filepath)
 
     if not hasattr(mat, "shape") or len(mat.shape) != 2:
         raise ValueError(f"MatrixMarket content must be a 2D matrix, got shape {getattr(mat, 'shape', None)}")

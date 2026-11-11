@@ -16,7 +16,7 @@ A comprehensive code quality and robustness audit was conducted across the Cycli
 3. **Baseline Symmetry Breaking:** Extended CP-SAT and CPLEX models with rotation symmetry breaking ($f[0] = 1$ and $x[0, 1] = 1$), proven by exhaustive testing to preserve exact optimal cyclic bandwidths while shrinking search spaces.
 4. **Direct Model-Level & Truth-Table Inspection:** Replaced flawed dummy model unit tests with direct inspections of live CP-SAT and CPLEX variables/constraints, and added exhaustive truth-table tests for commander ALO/AMO/EO, monotonicity, and cyclic distance encodings.
 5. **Experimental Framework Hardening:** Enhanced `experiments/run_experiments.py` with resilient corrupt JSONL recovery, proper canonical key generation including baseline flags, and process group isolation (`os.killpg`) for clean subprocess timeout handling.
-6. **Resource Profiling & Verification:** Validated bounded memory footprint (< 50 MB for $N \le 30$) and complete test suite execution: **443 tests passed, 0 failed** in 28.6 seconds.
+6. **Resource Profiling & Verification:** Validated bounded memory footprint (< 50 MB for $N \le 30$) and complete test suite execution: **674 tests passed, 1 skipped, 0 failed, 0 warnings** in 31.18 seconds.
 
 ---
 
@@ -140,11 +140,18 @@ Profiling via `tracemalloc` on IEEE bus power network instances (`14_bus`, `30_b
 
 ## 8. Test Suite Summary
 
-The full automated test suite was executed on Python 3.14.10:
+The authoritative automated test suite was executed on Python 3.14.10 (macOS arm64, pytest 9.2.0):
 
 ```
-================= 668 passed, 1 skipped, 85 warnings in 28.69s =================
+======================= 674 passed, 1 skipped in 31.18s ========================
 ```
+
+> [!NOTE]
+> All 85 previous SciPy `spmatrix` deprecation warnings have been completely eliminated across `graph_utils.py`, `analysis/make_tables.py`, `tests/test_lower_bound.py`, `tests/test_subgraphs.py`, `scripts/make_subgraphs.py`, and `scripts/calibrate.py` by safely specifying `spmatrix=True` with backwards-compatible fallback.
+>
+> **Solver Availability Note:**
+> - SAT solvers (CaDiCaL 195, Glucose 4, MapleChrono, MiniSat 2.2, Lingeling), Google OR-Tools CP-SAT, and IBM CPLEX MIP (Community Edition) run live tests against actual installed engines.
+> - CPLEX CP Optimizer and Gurobi baseline behaviors are verified via comprehensive mocked test suites (25 tests in `tests/test_cplex_cp_and_gurobi_mocked.py`) testing termination mapping, incumbent retention, and objective validation. Real integration execution for CPLEX CP and Gurobi was reported as **NOT RUN** due to missing `cpoptimizer` engine and `gurobipy` license in the test environment. 1 test (`test_gurobi_live_installation_or_skip`) is cleanly skipped when no live Gurobi license is detected.
 
 | Test Module | Tests | Status | Focus Area |
 | :--- | :---: | :---: | :--- |
@@ -152,8 +159,8 @@ The full automated test suite was executed on Python 3.14.10:
 | `tests/test_audit_defects_and_semantics.py` | 26 | **PASSED** | Defect regression: encodings, solution validation, licenses, status |
 | `tests/test_baselines.py` | 66 | **PASSED** | CP-SAT & CPLEX baselines, API conventions, status mapping |
 | `tests/test_correctness.py` | 270 | **PASSED** | SAT vs brute-force ground truth, solver equivalence, $N=2$ |
-| `tests/test_cplex_cp_and_gurobi_mocked.py` | 20 | **PASSED** | Mocked CPLEX CP & Gurobi status mapping, gaps, limits, contracts |
-| `tests/test_experiments.py` | 19 | **PASSED** | Runner deduplication, git checks, corrupt JSONL, resume |
+| `tests/test_cplex_cp_and_gurobi_mocked.py` | 25 | **PASSED** | Mocked CPLEX CP & Gurobi status mapping, gaps, limits, contracts |
+| `tests/test_experiments.py` | 20 | **PASSED** | Runner deduplication, git checks, corrupt JSONL, resume/retry semantics |
 | `tests/test_graph_atlas.py` | 4 | **PASSED** | Exhaustive Graph Atlas verification across all solvers |
 | `tests/test_graph_validation.py` | 11 | **PASSED** | Input validation, normalization, MTX square & symmetry checks |
 | `tests/test_lower_bound.py` | 12 | **PASSED** | Degree lower bound, star graphs, known optima verification |
@@ -163,13 +170,13 @@ The full automated test suite was executed on Python 3.14.10:
 | `tests/test_relabeling.py` | 3 | **PASSED** | Vertex relabeling invariance under multiple random seeds |
 | `tests/test_sat_model.py` | 12 | **PASSED** | Direct SAT model truth-tables, commander ALO/AMO/EO |
 | `tests/test_subgraphs.py` | 12 | **PASSED** | Connected subgraph induction and dimension checks |
-| **Total** | **669** | **668 PASSED, 1 SKIPPED** | **99.85% Execution Rate, 0 Failures** |
+| **Total** | **675** | **674 PASSED, 1 SKIPPED** | **99.85% Execution Rate, 0 Failures, 0 Warnings** |
 
 ---
 
 ## 9. Verification & Reproducibility Checklist
 
-- [x] Full test suite passes without errors: `pytest -v` (443/443 passed).
+- [x] Full test suite passes without errors: `pytest -v` (674 passed, 1 skipped, 0 warnings).
 - [x] Solution counting matches theoretical ratios ($N$ for rotation, $2$ for reflection): verified in `results/symmetry_counts.csv`.
 - [x] MatrixMarket loading validates square dimensions and symmetric structure across all 16 datasets.
 - [x] Positional, keyword, and dataset-based API calls function identically across `solve`, `solve_cpsat`, and `solve_cplex`.
@@ -183,6 +190,6 @@ The full automated test suite was executed on Python 3.14.10:
 
 ## 10. Recommendations
 
-1. **MatrixMarket Warning Cleanup:** SciPy 1.20 deprecation warnings regarding `spmatrix` can be addressed by updating helper calls in `make_tables.py` and `test_lower_bound.py` to use `toarray()` or sparse array interfaces when appropriate.
-2. **Subprocess Streaming Logs:** In future long-running benchmark campaigns, stdout/stderr streaming from worker subprocesses can be piped to per-run log files to aid real-time progress monitoring.
+1. **Subprocess Streaming Logs:** In future long-running benchmark campaigns, stdout/stderr streaming from worker subprocesses can be piped to per-run log files to aid real-time progress monitoring.
+2. **Physical Solver Licenses:** When CPLEX CP Optimizer and Gurobi licenses become available on target machines, rerun `--group exact_solvers` to populate empirical benchmarks for the optional baselines.
 

@@ -201,10 +201,60 @@ def get_canonical_key(record):
             flags = (rot, ref, heur)
     return (dataset, method, solver, flags, relabel_seed)
 
+def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool:
+    """
+    Determine whether an existing run record should be considered complete.
+
+    Semantics:
+    - Normal resume (retry_failed=False):
+        All existing records in runs.jsonl are preserved and treated as completed.
+    - Retry failed mode (retry_failed=True):
+        * Complete proofs & hard bounds (NEVER retry):
+            - OPTIMAL: Optimality is proven mathematically.
+            - INFEASIBLE: Problem/bound is proven infeasible.
+            - SIZE_LIMIT: Graph size exceeded configuration limits.
+        * Stable environment/license barriers (DO NOT retry in same environment):
+            - UNAVAILABLE: Solver binary/engine is not installed.
+            - LICENSE_ERROR: Commercial license is missing or invalid.
+        * Incumbent preservation (PRESERVED):
+            - FEASIBLE with valid best_ub >= 0: Valid incumbent is preserved.
+        * Retryable transient failures (RETRIED):
+            - TIMEOUT: Solver exceeded time limit.
+            - ERROR: Solver crashed, raised an unhandled exception, or failed validation.
+            - INTERRUPTED: Process killed or interrupted by external signal.
+            - FEASIBLE with missing or negative best_ub.
+    """
+    if not retry_failed:
+        return True
+
+    status = str(record.get("status", "")).upper()
+
+    # 1. Conclusive proofs and limits
+    if status in ("OPTIMAL", "INFEASIBLE", "SIZE_LIMIT"):
+        return True
+
+    # 2. Solver installation / license unavailability
+    if status in ("UNAVAILABLE", "LICENSE_ERROR"):
+        return True
+
+    # 3. Preserved feasible incumbents
+    if status == "FEASIBLE":
+        best_ub = record.get("best_ub")
+        if best_ub is not None:
+            try:
+                if int(best_ub) >= 0:
+                    return True
+            except (ValueError, TypeError):
+                pass
+        return False
+
+    # 4. Transient failures are retryable
+    return False
+
 def load_existing_runs(runs_jsonl_path, retry_failed=False):
     """
     Load runs already recorded in runs.jsonl mapping (canonical_key, rep) -> record.
-    If retry_failed is True, only OPTIMAL and SIZE_LIMIT runs are retained in completed (so TIMEOUT/ERROR are retried).
+    If retry_failed is True, completed runs are filtered via is_run_completed(..., retry_failed=True).
     """
     if not os.path.exists(runs_jsonl_path):
         return {}
@@ -223,12 +273,7 @@ def load_existing_runs(runs_jsonl_path, retry_failed=False):
                         continue
                     key = get_canonical_key(data)
                     rep = int(data.get("rep", 1))
-                    status = data.get("status")
-                    if retry_failed:
-                        if status in ("OPTIMAL", "SIZE_LIMIT"):
-                            completed[(key, rep)] = data
-                            valid_count += 1
-                    else:
+                    if is_run_completed(data, retry_failed=retry_failed):
                         completed[(key, rep)] = data
                         valid_count += 1
                 except (json.JSONDecodeError, ValueError) as e:
@@ -963,6 +1008,21 @@ def run_experiments(
                     proc.communicate(timeout=2)
                 except Exception:
                     pass
+            except KeyboardInterrupt:
+                wall_time = round(time.perf_counter() - t0, 4)
+                timed_out = False
+                returncode = -signal.SIGINT
+                if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+                else:
+                    proc.kill()
+                try:
+                    proc.communicate(timeout=2)
+                except Exception:
+                    pass
         except Exception:
             wall_time = round(time.perf_counter() - t0, 4)
             timed_out = False
@@ -983,9 +1043,17 @@ def run_experiments(
             except Exception:
                 pass
 
-        # Fallback if child crashed or timed out before writing json
+        # Fallback if child crashed, timed out, or was interrupted before writing json
         if record is None:
-            status = "TIMEOUT" if timed_out else "ERROR"
+            if timed_out:
+                status = "TIMEOUT"
+                diagnostic = f"Process timed out after {task_timeout}s without writing JSON output"
+            elif returncode in (-signal.SIGINT, -signal.SIGTERM, 130, 143):
+                status = "INTERRUPTED"
+                diagnostic = f"Process interrupted by signal (returncode {returncode}) without writing JSON output"
+            else:
+                status = "ERROR"
+                diagnostic = f"Child process exited with code {returncode} without writing JSON output"
             record = {
                 "dataset": task["dataset"],
                 "N": task["N"],
@@ -1001,6 +1069,7 @@ def run_experiments(
                 "num_iterations": 0,
                 "num_vars": 0,
                 "num_clauses": 0,
+                "diagnostic": diagnostic,
             }
         elif record.get("best_ub") is None:
             record["best_ub"] = -1
