@@ -49,3 +49,4 @@ def test_cpsat_optimal_lb_equals_ub(name, N, edges):
     assert res.stats["status"] == "OPTIMAL"
     assert res.stats.get("best_lb") is not None
     assert res.stats["best_lb"] == res.stats["best_ub"]
+
