@@ -22,7 +22,9 @@ def setup_matplotlib():
     plt.rcParams["figure.titlesize"] = 14
     plt.rcParams["figure.autolayout"] = True
 
-def save_fig(fig, base_filename, output_dirs=("analysis/figures", "results/figures")):
+def save_fig(fig, base_filename, output_dirs=("results_v2/figures",)):
+    if isinstance(output_dirs, str):
+        output_dirs = (output_dirs,)
     for out_dir in output_dirs:
         os.makedirs(out_dir, exist_ok=True)
         png_path = os.path.join(out_dir, f"{base_filename}.png")
@@ -48,7 +50,7 @@ def get_ablation_var_name(cfg):
         return "all (SB+Heur)"
     return "other"
 
-def plot_cactus(records, group_name, category_key, title, base_filename):
+def plot_cactus(records, group_name, category_key, title, base_filename, output_dirs=("results_v2/figures",)):
     """
     Plots cumulative solved instances over solve time (Cactus plot).
     """
@@ -82,9 +84,9 @@ def plot_cactus(records, group_name, category_key, title, base_filename):
     ax.grid(True, which="both", linestyle="--", alpha=0.5)
     ax.legend(frameon=True, loc="upper left")
 
-    save_fig(fig, base_filename)
+    save_fig(fig, base_filename, output_dirs=output_dirs)
 
-def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename="scatter_sb_vs_nosb_small", title="Solve Time: No Symmetry Breaking vs With Symmetry Breaking (Small Graphs)"):
+def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename="scatter_sb_vs_nosb_small", title="Solve Time: No Symmetry Breaking vs With Symmetry Breaking (Small Graphs)", output_dirs=("results_v2/figures",)):
     """
     Log-log scatter plot comparing solve time with vs without symmetry breaking.
     """
@@ -145,9 +147,9 @@ def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename=
     ax.grid(True, which="both", linestyle="--", alpha=0.5)
     ax.legend(frameon=True, loc="upper left")
 
-    save_fig(fig, base_filename)
+    save_fig(fig, base_filename, output_dirs=output_dirs)
 
-def plot_ablation_median_time(records, group_name="ablation_small", base_filename="ablation_median_time_small", title="Ablation Study: Median Solve Time Across Configurations (Small Graphs)"):
+def plot_ablation_median_time(records, group_name="ablation_small", base_filename="ablation_median_time_small", title="Ablation Study: Median Solve Time Across Configurations (Small Graphs)", output_dirs=("results_v2/figures",)):
     """
     Bar chart showing median solve time per configuration.
     """
@@ -181,9 +183,9 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
     ax.set_ylim([0, max(medians) * 1.15 if any(medians) else 1.0])
     ax.grid(axis="y", linestyle="--", alpha=0.5)
 
-    save_fig(fig, base_filename)
+    save_fig(fig, base_filename, output_dirs=output_dirs)
 
-def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)"):
+def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)", output_dirs=("results_v2/figures",)):
     """
     Plots number of SAT iterations and time spent on the final UNSAT iteration.
     """
@@ -232,16 +234,32 @@ def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", bas
 
     fig.suptitle(title, fontsize=13, fontweight="bold")
 
-    save_fig(fig, base_filename)
+    save_fig(fig, base_filename, output_dirs=output_dirs)
 
 def main():
     print("=" * 70)
     print("ANALYSIS: GENERATING FIGURES (PNG AND PDF)")
     print("=" * 70)
 
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate performance figures from experiment records")
+    parser.add_argument("input_file", nargs="?", default=None, help="path to runs.jsonl or results directory")
+    parser.add_argument("output_dir_pos", nargs="?", default=None, help="optional positional output directory")
+    parser.add_argument("--output-dir", type=str, default=None, help="directory to store figures (defaults to <run_dir>/figures)")
+    args = parser.parse_args()
+
     setup_matplotlib()
 
-    input_file = sys.argv[1] if len(sys.argv) > 1 else None
+    input_file = args.input_file
+    output_dir = args.output_dir or args.output_dir_pos
+    if not output_dir:
+        if input_file and (os.path.isfile(input_file) or os.path.isdir(input_file)):
+            run_dir = os.path.dirname(input_file) if os.path.isfile(input_file) else input_file
+            run_dir = run_dir or "results_v2"
+        else:
+            run_dir = "results_v2"
+        output_dir = os.path.join(run_dir, "figures")
+
     records = load_records(input_file)
     if not records:
         print("No records found in results. Please run experiments first.")
@@ -249,10 +267,13 @@ def main():
 
     # Cross-validation
     try:
-        cross_validate_optima(records)
+        run_tables_dir = os.path.join(os.path.dirname(output_dir), "tables")
+        cross_validate_optima(records, output_dir=run_tables_dir)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    output_dirs = (output_dir,)
 
     # 1. Cactus plots for groups
     plot_cactus(
@@ -261,6 +282,7 @@ def main():
         category_key=lambda r: r.get("solver", "unknown"),
         title="Cactus Plot: Solvers (Small Graphs)",
         base_filename="cactus_solvers_small",
+        output_dirs=output_dirs,
     )
     plot_cactus(
         records,
@@ -268,6 +290,7 @@ def main():
         category_key=lambda r: r.get("solver", "unknown"),
         title="Cactus Plot: Solvers (Medium Graphs)",
         base_filename="cactus_solvers_medium",
+        output_dirs=output_dirs,
     )
 
     plot_cactus(
@@ -276,6 +299,7 @@ def main():
         category_key=lambda r: "cpsat" if r.get("solver", "").lower() in ("cp_sat", "cpsat") else ("cplex" if r.get("solver", "").lower() == "cplex" else f"sat ({r.get('solver')})"),
         title="Cactus Plot: Methods Comparison",
         base_filename="cactus_methods",
+        output_dirs=output_dirs,
     )
 
     plot_cactus(
@@ -284,6 +308,7 @@ def main():
         category_key=lambda r: get_ablation_var_name(r.get("config", {})),
         title="Cactus Plot: Ablation (Small Graphs)",
         base_filename="cactus_ablation_small",
+        output_dirs=output_dirs,
     )
     plot_cactus(
         records,
@@ -291,20 +316,21 @@ def main():
         category_key=lambda r: get_ablation_var_name(r.get("config", {})),
         title="Cactus Plot: Ablation (Medium Graph)",
         base_filename="cactus_ablation_medium",
+        output_dirs=output_dirs,
     )
 
     # 2. Scatter log-log
-    plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename="scatter_sb_vs_nosb_small", title="Solve Time: No Symmetry Breaking vs With Symmetry Breaking (Small Graphs)")
+    plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename="scatter_sb_vs_nosb_small", title="Solve Time: No Symmetry Breaking vs With Symmetry Breaking (Small Graphs)", output_dirs=output_dirs)
 
     # 3. Ablation median time bar chart
-    plot_ablation_median_time(records, group_name="ablation_small", base_filename="ablation_median_time_small", title="Ablation Study: Median Solve Time Across Configurations (Small Graphs)")
-    plot_ablation_median_time(records, group_name="ablation_medium", base_filename="ablation_median_time_medium", title="Ablation Study: Solve Time Across Configurations (662_bus_n60)")
+    plot_ablation_median_time(records, group_name="ablation_small", base_filename="ablation_median_time_small", title="Ablation Study: Median Solve Time Across Configurations (Small Graphs)", output_dirs=output_dirs)
+    plot_ablation_median_time(records, group_name="ablation_medium", base_filename="ablation_median_time_medium", title="Ablation Study: Solve Time Across Configurations (662_bus_n60)", output_dirs=output_dirs)
 
     # 4. Iterations & UNSAT time
-    plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)")
-    plot_ablation_iterations_and_unsat(records, group_name="ablation_medium", base_filename="ablation_iterations_and_unsat_medium", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (662_bus_n60)")
+    plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)", output_dirs=output_dirs)
+    plot_ablation_iterations_and_unsat(records, group_name="ablation_medium", base_filename="ablation_iterations_and_unsat_medium", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (662_bus_n60)", output_dirs=output_dirs)
 
-    print("\nAll figures generated successfully in analysis/figures/ and results/figures/!")
+    print(f"\nAll figures generated successfully in {output_dir}/!")
 
 if __name__ == "__main__":
     main()

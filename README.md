@@ -118,7 +118,7 @@ Nếu thiếu file (ví dụ chưa có `14_bus.mtx`), script sẽ báo lỗi rõ
 
 ## 5. Chạy thực nghiệm (Running Experiments)
 
-File cấu hình tại `experiments/configs.yaml` định nghĩa 6 nhóm thực nghiệm. Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình.
+File cấu hình tại `experiments/configs.yaml` định nghĩa 6 nhóm thực nghiệm. Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình. Mặc định toàn bộ kết quả được ghi vào thư mục `results_v2/` (đã được cấu hình trong `.gitignore`). Bạn có thể tùy chỉnh thư mục xuất qua cờ `--output-dir`.
 
 ### Xem trước kế hoạch chạy (Dry Run)
 ```bash
@@ -146,6 +146,9 @@ python experiments/run_experiments.py --group ablation_small --timeout 600
 # 6. Nhóm ablation_medium (Đánh giá ablation trên đồ thị biên trung bình 662_bus_n60, 1 rep)
 python experiments/run_experiments.py --group ablation_medium --timeout 600
 
+# Chỉ định thư mục lưu kết quả tùy chỉnh qua --output-dir
+python experiments/run_experiments.py --group solvers_small --output-dir results_v2
+
 # Chạy kèm cờ resume (mặc định chỉ bỏ qua các record đã chạy trong runs.jsonl)
 python experiments/run_experiments.py --group all --resume
 
@@ -167,30 +170,51 @@ python experiments/run_experiments.py --group all --record-metadata
 > - `--retry-failed`: Mặc định `--resume` bỏ qua tất cả kết quả đã ghi. Khi thêm `--retry-failed`, runner sẽ chỉ bỏ qua các record `OPTIMAL` (hoặc `SIZE_LIMIT`), và tự động chạy lại các cấu hình trước đó bị `TIMEOUT` hoặc `ERROR`.
 
 > [!NOTE]
-> **Ghi chú về kết quả bảng biểu hiện tại (`results/tables/`)**:
-> Các bảng tổng hợp hiện tại trong `results/tables/` được chạy với `--timeout 10` (có thể kiểm chứng từ giá trị PAR2 của các lượt timeout là 2 × 10 = 20.0s).
-> Sử dụng cờ `--record-metadata` khi chạy runner để tự động lưu git commit hash, timeout, và đường dẫn cấu hình vào `results/env.json` cũng như đầu file `results/runs.jsonl`.
+> Mặc định runner ghi dữ liệu vào `results_v2/` và không can thiệp vào `results/`.
+> Sử dụng cờ `--record-metadata` khi chạy runner để tự động lưu git commit hash, timeout, và đường dẫn cấu hình vào `results_v2/env.json` cũng như đầu file `results_v2/runs.jsonl`.
 
 ---
 
 ## 6. Sinh bảng biểu và đồ thị (Analysis & Visualization)
 
-```bash
-# Sinh các bảng tổng hợp LaTeX (.tex) và CSV (.csv) vào results/tables/
-python analysis/make_tables.py results/runs.jsonl
+Các script phân tích mặc định đọc từ `results_v2/runs.jsonl` và xuất ra `results_v2/tables/` cũng như `results_v2/figures/`. Có thể tùy chỉnh thư mục đầu ra thông qua cờ `--output-dir`:
 
-# Sinh các biểu đồ cactus, scatter, ablation vào results/figures/
-python analysis/make_plots.py results/runs.jsonl
+```bash
+# Sinh các bảng tổng hợp LaTeX (.tex) và CSV (.csv) vào results_v2/tables/
+python analysis/make_tables.py results_v2/runs.jsonl
+# Hoặc chỉ định rõ thư mục xuất:
+python analysis/make_tables.py results_v2/runs.jsonl --output-dir results_v2/tables
+
+# Sinh các biểu đồ cactus, scatter, ablation vào results_v2/figures/
+python analysis/make_plots.py results_v2/runs.jsonl
+# Hoặc chỉ định rõ thư mục xuất:
+python analysis/make_plots.py results_v2/runs.jsonl --output-dir results_v2/figures
 ```
 
 - Bảng `table_ablation_small` & `table_ablation_medium`: Đánh giá tác động của phá đối xứng quay, đối xứng gương và heuristic khởi tạo (tách riêng đồ thị nhỏ và trung bình).
 - Bảng `table_solvers_small` & `table_solvers_medium`: So sánh thời gian và tỷ lệ giải được của các solver SAT trên đồ thị nhỏ và trung bình.
 - Bảng `table_methods`: So sánh SAT với CP-SAT và CPLEX trên 7 instance (nhỏ + trung bình). Trường hợp CPLEX chạm ngưỡng Community Edition (<= 1000 biến/ràng buộc) được đánh dấu riêng bằng mã **SL** (Size Limit), tách biệt khỏi PAR2 và được chú thích dưới bảng.
-- Bảng `cross_validation.csv`: Đối chiếu nghiệm tối ưu `best_ub` giữa tất cả solver/method cùng đạt trạng thái OPTIMAL trên cùng dataset. Báo lỗi và dừng nếu phát hiện mâu thuẫn.
+- Bảng `cross_validation.csv`: Đối chiếu nghiệm tối ưu `best_ub` giữa tất cả solver/method cùng đạt trạng thái OPTIMAL trên cùng dataset. Báo lỗi và dừng nếu phát hiện mâu thuẫn hoặc nghiệm incumbent không hợp lệ (< opt).
 
 ---
 
-## 7. Chạy kiểm thử tự động (Running Tests)
+## 7. Hoàn thiện kết quả (Finalize)
+
+Khi toàn bộ thực nghiệm sạch trong `results_v2/` đã hoàn thành và được kiểm chứng hợp lệ:
+1. Lưu trữ kết quả pilot cũ (timeout 10s, 2 đồ thị, không dùng cho báo cáo chính thức):
+   ```bash
+   git mv results results_pilot
+   ```
+2. Sao chép kết quả chính thức từ `results_v2/` sang `results/` và commit:
+   ```bash
+   cp -r results_v2 results
+   git add results_pilot results
+   git commit -m "chore: archive pilot results and commit finalized experiment results"
+   ```
+
+---
+
+## 8. Chạy kiểm thử tự động (Running Tests)
 
 Toàn bộ các thuật toán và mô hình được kiểm thử tự động bằng `pytest`:
 
@@ -210,7 +234,7 @@ pytest tests/test_graph_atlas.py -v   # Đối chiếu toàn diện 1.252 đồ 
 
 ---
 
-## 8. Ghi chú mã nguồn cũ (Legacy)
+## 9. Ghi chú mã nguồn cũ (Legacy)
 
 - `legacy/bmp.py`: Là phiên bản triển khai CBMP đời đầu, không còn module nào trong dự án phụ thuộc hoặc import file này. Đã được chuyển vào thư mục `legacy/` để bảo tồn lịch sử phát triển.
 

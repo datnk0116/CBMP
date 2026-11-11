@@ -78,7 +78,7 @@ def get_git_commit_hash():
         return f"{commit}-dirty"
     return commit
 
-def collect_environment_info(output_path="results/env.json", timeout=None, config_path=None, record_metadata=False):
+def collect_environment_info(output_path="results_v2/env.json", timeout=None, config_path=None, record_metadata=False):
     """Collect hardware and software environment details."""
     info = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -551,7 +551,7 @@ def run_experiments(
     retry_failed=False,
     allow_dirty=False,
     dry_run=False,
-    output_dir="results",
+    output_dir="results_v2",
     record_metadata=False,
 ):
     from scripts.check_datasets import validate_datasets
@@ -850,8 +850,8 @@ if __name__ == "__main__":
     parser.add_argument("--retry-failed", action="store_true", help="re-run tasks that previously resulted in TIMEOUT or ERROR")
     parser.add_argument("--allow-dirty", action="store_true", help="allow running experiments even if working directory has uncommitted changes")
     parser.add_argument("--dry-run", action="store_true", help="list planned runs without executing")
-    parser.add_argument("--output-dir", type=str, default="results", help="directory to store results")
-    parser.add_argument("--record-metadata", action="store_true", default=False, help="record timeout, git commit hash, and config path into results/env.json and runs.jsonl header")
+    parser.add_argument("--output-dir", type=str, default="results_v2", help="directory to store results")
+    parser.add_argument("--record-metadata", action="store_true", default=False, help="record timeout, git commit hash, and config path into env.json and runs.jsonl header")
     args = parser.parse_args()
 
     run_experiments(
