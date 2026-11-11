@@ -48,16 +48,23 @@ def main(
         else:
             print("timeout, lowest bandwidth found:", best_ub.value)
     
-    elif p.exitcode == 0: # child exited normally (either optimal assignment found or empty graph)
+    elif p.exitcode == 0: # child exited normally
         child_status = shared_stats.get('status')
-        if child_status == 'OPTIMAL':
-            shared_stats['status'] = 'OPTIMAL'
+        if child_status in ('OPTIMAL', 'FEASIBLE', 'UNSAT', 'TIMEOUT'):
+            shared_stats['status'] = child_status
             shared_stats['best_ub'] = best_ub.value
-            print("minimum bandwidth:", best_ub.value)
+            if child_status == 'OPTIMAL':
+                print("minimum bandwidth:", best_ub.value)
+            elif child_status == 'FEASIBLE':
+                print("feasible bandwidth found:", best_ub.value)
+            elif child_status == 'UNSAT':
+                print("problem is unsatisfiable")
+            elif child_status == 'TIMEOUT':
+                print("timeout, lowest bandwidth found:", best_ub.value)
         else:
-            shared_stats['status'] = 'ERROR'
+            shared_stats['status'] = child_status if child_status else 'ERROR'
             shared_stats['best_ub'] = best_ub.value
-            print(f"child process finished with non-optimal status: {child_status} - lowest bandwidth found: {best_ub.value}")
+            print(f"child process finished with status: {shared_stats['status']} - lowest bandwidth found: {best_ub.value}")
     
     else:                 # child crashed
         shared_stats['status'] = 'ERROR'

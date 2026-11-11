@@ -132,3 +132,68 @@ def load_graph_from_mtx(filepath_or_name: str, dataset_dir: str = "datasets") ->
     # Normalize to undirected edges u < v
     edges = sorted(list(set((min(int(u), int(v)), max(int(u), int(v))) for u, v in pairs)))
     return N, edges, dataset_name
+
+def compute_cyclic_bandwidth(N: int, edges: Any, assignment: Any) -> int:
+    """
+    Compute cyclic bandwidth of graph (N, edges) under the given assignment:
+      CB(G, f) = max_{(u, v) in E} min(|f(u) - f(v)|, N - |f(u) - f(v)|)
+    """
+    if not edges:
+        return 0
+    max_d = 0
+    for u, v in edges:
+        d = abs(int(assignment[u]) - int(assignment[v]))
+        cd = min(d, N - d)
+        if cd > max_d:
+            max_d = cd
+    return max_d
+
+def validate_solution(
+    N: int,
+    edges: Any,
+    assignment: Any,
+    reported_objective: Optional[int] = None,
+) -> Tuple[bool, Optional[int], Optional[str]]:
+    """
+    Independently validate a CBMP candidate solution assignment.
+
+    Checks:
+      1. Assignment is a sequence of length N.
+      2. Every assigned label belongs to the valid label domain [0, N-1].
+      3. All labels are unique (permutation property).
+      4. Every edge uses valid vertex indices in [0, N-1].
+      5. The independently recomputed cyclic bandwidth matches reported_objective (if provided).
+
+    Returns:
+      (is_valid: bool, recomputed_bandwidth: Optional[int], error_message: Optional[str])
+    """
+    if not isinstance(assignment, (list, tuple)):
+        return False, None, f"Assignment must be a list or tuple, got {type(assignment).__name__}"
+
+    if len(assignment) != N:
+        return False, None, f"Assignment length {len(assignment)} does not match vertex count N={N}"
+
+    for u, label in enumerate(assignment):
+        if isinstance(label, bool) or not isinstance(label, int):
+            return False, None, f"Label for vertex {u} must be an integer, got {label!r}"
+        if label < 0 or label >= N:
+            return False, None, f"Label {label} for vertex {u} out of valid domain [0, {N-1}]"
+
+    if len(set(assignment)) != N:
+        return False, None, "Assignment contains duplicate labels: not an injective permutation"
+
+    if edges:
+        for u, v in edges:
+            if u < 0 or u >= N or v < 0 or v >= N:
+                return False, None, f"Edge ({u}, {v}) references out-of-bounds vertex for N={N}"
+
+    actual_bw = compute_cyclic_bandwidth(N, edges, assignment)
+
+    if reported_objective is not None:
+        if int(reported_objective) != actual_bw:
+            return False, actual_bw, (
+                f"Reported objective {reported_objective} does not match recomputed cyclic bandwidth {actual_bw}"
+            )
+
+    return True, actual_bw, None
+

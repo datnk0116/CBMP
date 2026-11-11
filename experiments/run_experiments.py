@@ -189,12 +189,12 @@ def get_canonical_key(record):
             flags = ()
     else:
         method = "sat"
-        rot = bool(cfg.get("sb_rotation", False))
-        ref = bool(cfg.get("sb_reflection", False))
-        heur = bool(cfg.get("heuristic_ub", False))
-        enc = str(cfg.get("encoding", "order")).lower()
-        mode = str(cfg.get("solving_mode", "incremental")).lower()
-        eo = str(cfg.get("eo_strategy", "commander")).lower()
+        rot = bool(record.get("sb_rotation") if "sb_rotation" in record else cfg.get("sb_rotation", False))
+        ref = bool(record.get("sb_reflection") if "sb_reflection" in record else cfg.get("sb_reflection", False))
+        heur = bool(record.get("heuristic_ub") if "heuristic_ub" in record else cfg.get("heuristic_ub", False))
+        enc = str(record.get("encoding") or cfg.get("encoding", "order")).lower()
+        mode = str(record.get("solving_mode") or cfg.get("solving_mode", "incremental")).lower()
+        eo = str(record.get("eo_strategy") or cfg.get("eo_strategy", "commander")).lower()
         if enc != "order" or mode != "incremental" or eo != "commander":
             flags = (rot, ref, heur, enc, mode, eo)
         else:

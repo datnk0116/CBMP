@@ -11,7 +11,13 @@ import numpy as np
 # Ensure repo root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
+from graph_utils import (
+    resolve_dataset_path,
+    validate_and_normalize_graph,
+    load_graph_from_mtx,
+    validate_solution,
+    compute_cyclic_bandwidth,
+)
 from ortools.sat.python import cp_model
 from cbmp import SolveResult, compute_cyclic_bandwidth
 
@@ -84,15 +90,31 @@ def solve_cpsat(
     t_start = time.perf_counter()
 
     if isinstance(dataset, int) and not isinstance(dataset, bool):
-        # Positional call: solve_cpsat(N, edges, ...)
-        edges = N
-        N = dataset
-        dataset = None
+        # Positional call: solve_cpsat(N, edges, ...) or solve_cpsat(6, edges=[...])
+        if isinstance(N, (list, tuple, set)):
+            edges = N
+            N = dataset
+            dataset = None
+        elif isinstance(N, int) and not isinstance(N, bool):
+            if N != dataset:
+                raise ValueError(f"Conflicting values for N: {dataset} vs {N}")
+            N = dataset
+            dataset = None
+        else:
+            if edges is None and N is not None:
+                edges = N
+            N = dataset
+            dataset = None
+
+    if dataset is not None and (N is not None or edges is not None):
+        raise ValueError("Cannot specify both dataset and explicit graph (N, edges).")
 
     if N is not None and edges is not None:
         N, edges = validate_and_normalize_graph(N, edges)
-        dataset_name = dataset if isinstance(dataset, str) else "custom"
+        dataset_name = "custom"
     elif dataset is not None:
+        if not isinstance(dataset, str):
+            raise TypeError(f"dataset must be a string path or name, got {dataset!r}")
         N, edges, dataset_name = load_graph_from_mtx(dataset)
     else:
         raise ValueError("Either (N, edges) or dataset must be provided to solve_cpsat.")
@@ -170,48 +192,56 @@ def solve_cpsat(
         best_lb = None
 
     if cp_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        # Extract and validate solution
+        reported_bw = int(round(solver.ObjectiveValue()))
         try:
-            reported_bw = int(round(solver.ObjectiveValue()))
-            best_ub = reported_bw
-            status = "OPTIMAL" if cp_status == cp_model.OPTIMAL else "TIMEOUT"
-            try:
-                assignment = [int(solver.Value(f[u])) - 1 for u in range(N)]
-                is_valid_perm = len(assignment) == N and sorted(assignment) == list(range(N))
-                if is_valid_perm:
-                    actual_bw = compute_cyclic_bandwidth(N, edges, assignment)
-                    best_ub = actual_bw
-                    if cp_status == cp_model.OPTIMAL and actual_bw != reported_bw:
-                        status = "ERROR"
-                elif cp_status == cp_model.OPTIMAL:
-                    best_ub = -1
-                    status = "ERROR"
-            except Exception:
-                if cp_status == cp_model.OPTIMAL:
-                    best_ub = -1
-                    status = "ERROR"
-        except Exception:
+            assignment = [int(solver.Value(f[u])) - 1 for u in range(N)]
+            valid, actual_bw, err_msg = validate_solution(
+                N, edges, assignment, reported_objective=reported_bw if cp_status == cp_model.OPTIMAL else None
+            )
+        except Exception as e:
+            valid, actual_bw, err_msg = False, None, str(e)
+
+        if valid and actual_bw is not None:
+            best_ub = actual_bw
+            if cp_status == cp_model.OPTIMAL:
+                status = "OPTIMAL"
+                if best_lb is None:
+                    best_lb = best_ub
+            else:
+                status = "FEASIBLE"
+        else:
             best_ub = -1
             status = "ERROR"
+            stats["validation_error"] = err_msg
 
-        if status == "OPTIMAL":
-            if best_lb is None:
-                best_lb = best_ub
-            if verbose:
-                print("minimum bandwidth:", best_ub)
-        elif status == "TIMEOUT" and verbose:
-            print("timeout, lowest bandwidth found:", best_ub)
+        if status == "OPTIMAL" and verbose:
+            print("minimum bandwidth:", best_ub)
+        elif status == "FEASIBLE" and verbose:
+            print("feasible solution found, bandwidth:", best_ub)
     elif cp_status == cp_model.UNKNOWN:
         best_ub = -1
         status = "TIMEOUT"
         if verbose:
             print("timeout, no valid assignment was found")
+    elif cp_status == cp_model.INFEASIBLE:
+        best_ub = -1
+        status = "INFEASIBLE"
+        if verbose:
+            print("model proved infeasible")
     else:
         best_ub = -1
         status = "ERROR"
         if verbose:
             print(f"CP-SAT finished with status: {solver.StatusName(cp_status)}")
 
+    gap = None
+    if best_ub >= 0 and best_lb is not None and best_lb >= 0:
+        if best_ub == 0:
+            gap = 0.0
+        else:
+            gap = float(best_ub - best_lb) / float(best_ub)
+
+    stats["gap"] = gap
     stats["best_ub"] = best_ub
     stats["best_lb"] = best_lb
     stats["status"] = status

@@ -11,7 +11,13 @@ from sat_encodings import (
     break_reflection_symmetry_order,
     break_reflection_symmetry_pairwise,
 )
-from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
+from graph_utils import (
+    resolve_dataset_path,
+    validate_and_normalize_graph,
+    load_graph_from_mtx,
+    validate_solution,
+    compute_cyclic_bandwidth,
+)
 import pysat.solvers
 import numpy as np
 
@@ -211,6 +217,8 @@ def solve(
             "eo_strategy": eo_strategy,
         },
         "solver": solver_name,
+        "encoding": enc_type,
+        "solving_mode": mode,
         "status": "RUNNING",
         "best_ub": -1,
         "encode_time": 0.0,
@@ -343,12 +351,8 @@ def solve(
                             u_, i_ = divmod(lit - 1, N)
                             assignment[u_] = i_
 
-                    if (
-                        isinstance(assignment, (list, tuple))
-                        and len(assignment) == N
-                        and sorted(assignment) == list(range(N))
-                    ):
-                        bandwidth = compute_cyclic_bandwidth(N, edges, assignment)
+                    valid, bandwidth, _ = validate_solution(N, edges, assignment)
+                    if valid and bandwidth is not None:
                         assert bandwidth < UB
                         UB = bandwidth
                         verified_best_ub = bandwidth
@@ -417,12 +421,8 @@ def solve(
                                 u_, i_ = divmod(lit - 1, N)
                                 assignment[u_] = i_
 
-                        if (
-                            isinstance(assignment, (list, tuple))
-                            and len(assignment) == N
-                            and sorted(assignment) == list(range(N))
-                        ):
-                            bandwidth = compute_cyclic_bandwidth(N, edges, assignment)
+                        valid, bandwidth, _ = validate_solution(N, edges, assignment)
+                        if valid and bandwidth is not None:
                             assert bandwidth < UB
                             UB = bandwidth
                             verified_best_ub = bandwidth

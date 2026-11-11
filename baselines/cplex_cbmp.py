@@ -10,10 +10,25 @@ from typing import Optional, Union, List, Tuple, Any, Dict
 # Ensure repo root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from graph_utils import resolve_dataset_path, validate_and_normalize_graph, load_graph_from_mtx
+from graph_utils import (
+    resolve_dataset_path,
+    validate_and_normalize_graph,
+    load_graph_from_mtx,
+    validate_solution,
+    compute_cyclic_bandwidth,
+)
 from docplex.mp.model import Model
 import docplex.mp.utils
-from cbmp import SolveResult, compute_cyclic_bandwidth
+from cbmp import SolveResult
+
+def is_cplex_available() -> bool:
+    """Return True if cplex and docplex are installed and importable."""
+    try:
+        import cplex  # noqa: F401
+        from docplex.mp.model import Model  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 def map_cplex_status(status_str, status_code, has_hit_limit, sol_available):
     """
@@ -117,15 +132,31 @@ def solve_cplex(
       SolveResult containing optimal cyclic bandwidth and stats dictionary.
     """
     if isinstance(dataset, int) and not isinstance(dataset, bool):
-        # Positional call: solve_cplex(N, edges, ...)
-        edges = N
-        N = dataset
-        dataset = None
+        # Positional call: solve_cplex(N, edges, ...) or solve_cplex(6, edges=[...])
+        if isinstance(N, (list, tuple, set)):
+            edges = N
+            N = dataset
+            dataset = None
+        elif isinstance(N, int) and not isinstance(N, bool):
+            if N != dataset:
+                raise ValueError(f"Conflicting values for N: {dataset} vs {N}")
+            N = dataset
+            dataset = None
+        else:
+            if edges is None and N is not None:
+                edges = N
+            N = dataset
+            dataset = None
+
+    if dataset is not None and (N is not None or edges is not None):
+        raise ValueError("Cannot specify both dataset and explicit graph (N, edges).")
 
     if N is not None and edges is not None:
         N, edges = validate_and_normalize_graph(N, edges)
-        dataset_name = dataset if isinstance(dataset, str) else "custom"
+        dataset_name = "custom"
     elif dataset is not None:
+        if not isinstance(dataset, str):
+            raise TypeError(f"dataset must be a string path or name, got {dataset!r}")
         N, edges, dataset_name = load_graph_from_mtx(dataset)
     else:
         raise ValueError("Either (N, edges) or dataset must be provided to solve_cplex.")
@@ -169,14 +200,6 @@ def solve_cplex(
     stats["num_vars"] = num_vars
     stats["num_clauses"] = num_constraints
 
-    # Community Edition check: 1000 variables and 1000 constraints limit
-    if num_vars > 1000 or num_constraints > 1000:
-        stats["status"] = "SIZE_LIMIT"
-        stats["best_ub"] = -1
-        if verbose:
-            print(f"SIZE_LIMIT: Problem exceeds CPLEX Community Edition limits ({num_vars} vars, {num_constraints} consts)")
-        return SolveResult(-1, stats)
-
     # Set time limit
     if timeout is not None and timeout > 0:
         mdl.parameters.timelimit = float(timeout)
@@ -184,15 +207,35 @@ def solve_cplex(
     t_sol_start = time.perf_counter()
     try:
         sol = mdl.solve(log_output=False)
-    except docplex.mp.utils.DOcplexLimitsExceeded:
+    except docplex.mp.utils.DOcplexLimitsExceeded as e:
         stats["status"] = "SIZE_LIMIT"
         stats["best_ub"] = -1
+        stats["error_message"] = str(e)
         if verbose:
-            print(f"SIZE_LIMIT: DOcplexLimitsExceeded raised during solve ({num_vars} vars, {num_constraints} consts)")
+            print(f"SIZE_LIMIT: DOcplexLimitsExceeded raised during solve ({num_vars} vars, {num_constraints} consts): {e}")
         return SolveResult(-1, stats)
     except Exception as e:
+        err_msg = str(e)
+        if "1016" in err_msg or "size limits exceeded" in err_msg.lower() or "community edition" in err_msg.lower():
+            stats["status"] = "SIZE_LIMIT"
+            stats["best_ub"] = -1
+            stats["error_message"] = err_msg
+            if verbose:
+                print(f"SIZE_LIMIT: {err_msg}")
+            return SolveResult(-1, stats)
+        if "license" in err_msg.lower():
+            stats["status"] = "LICENSE_ERROR"
+            stats["best_ub"] = -1
+            stats["error_message"] = err_msg
+            if verbose:
+                print(f"LICENSE_ERROR: {err_msg}")
+            return SolveResult(-1, stats)
         stats["status"] = "ERROR"
         stats["best_ub"] = -1
+        stats["error_message"] = err_msg
+        if verbose:
+            print(f"ERROR: {err_msg}")
+        return SolveResult(-1, stats)
         if verbose:
             print(f"CPLEX solve error: {e}")
         return SolveResult(-1, stats)
@@ -225,25 +268,25 @@ def solve_cplex(
     if use_incumbent and sol is not None:
         try:
             reported_bw = int(round(sol.get_value(k)))
-            best_ub = reported_bw
             try:
                 assignment = [int(round(sol.get_value(f[u]))) - 1 for u in range(N)]
-                is_valid_perm = len(assignment) == N and sorted(assignment) == list(range(N))
-                if is_valid_perm:
-                    actual_bw = compute_cyclic_bandwidth(N, edges, assignment)
-                    best_ub = actual_bw
-                    if status == "OPTIMAL" and actual_bw != reported_bw:
-                        status = "ERROR"
-                elif status == "OPTIMAL":
-                    best_ub = -1
-                    status = "ERROR"
-            except Exception:
-                if status == "OPTIMAL":
-                    best_ub = -1
-                    status = "ERROR"
-        except Exception:
+                valid, actual_bw, err_msg = validate_solution(N, edges, assignment, reported_objective=reported_bw)
+            except Exception as e:
+                valid, actual_bw, err_msg = False, None, str(e)
+
+            if valid and actual_bw is not None:
+                best_ub = actual_bw
+            elif status == "OPTIMAL":
+                best_ub = -1
+                status = "ERROR"
+                stats["validation_error"] = err_msg
+            else:
+                # Under TIMEOUT with incumbent from solver (e.g. mock or partial), retain reported objective
+                best_ub = reported_bw
+        except Exception as e:
             best_ub = -1
             status = "ERROR"
+            stats["validation_error"] = str(e)
     else:
         best_ub = -1
 
@@ -262,6 +305,14 @@ def solve_cplex(
         if verbose:
             print(f"CPLEX finished with status: {cpx_status_str or cpx_status_code}")
 
+    gap = None
+    if best_ub >= 0 and best_lb is not None and best_lb >= 0:
+        if best_ub == 0:
+            gap = 0.0
+        else:
+            gap = float(best_ub - best_lb) / float(best_ub)
+
+    stats["gap"] = gap
     stats["best_ub"] = best_ub
     stats["best_lb"] = best_lb
     stats["status"] = status
