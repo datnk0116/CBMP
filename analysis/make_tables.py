@@ -954,6 +954,56 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
     return df
 
+def make_table_per_dataset(records, base_filename="table_per_dataset", output_dirs=("results_v2/tables",)):
+    """Generate summary table for per_dataset group (cadical195 on all datasets)."""
+    if isinstance(output_dirs, str):
+        output_dirs = (output_dirs,)
+    ds_recs = [
+        r for r in records
+        if "per_dataset" in r.get("groups", []) or (
+            str(r.get("solver")).lower() == "cadical195"
+            and r.get("relabel_seed") is None
+            and r.get("config", {}).get("sb_rotation") is True
+            and r.get("config", {}).get("sb_reflection") is True
+            and r.get("config", {}).get("heuristic_ub") is True
+        )
+    ]
+    if not ds_recs:
+        return
+
+    by_ds = {}
+    for r in ds_recs:
+        ds = r["dataset"]
+        by_ds[ds] = r
+
+    ds_sorted = sorted(by_ds.keys(), key=lambda d: (by_ds[d].get("N", 0), d))
+    rows = []
+    for ds in ds_sorted:
+        r = by_ds[ds]
+        st = r.get("status")
+        ub = r.get("best_ub")
+        solve_t = r.get("solve_time", 0.0)
+        wall_t = r.get("wall_time", 0.0)
+        n_iters = r.get("num_iterations", len(r.get("per_iter_times", [])))
+        rows.append({
+            "dataset": ds,
+            "N": r.get("N", 0),
+            "|E|": r.get("num_edges", 0),
+            "status": st,
+            "best_ub": ub if ub is not None else "-",
+            "solve_time": f"{solve_t:.4f}",
+            "wall_time": f"{wall_t:.4f}",
+            "n_sat_iterations": n_iters,
+        })
+
+    df = pd.DataFrame(rows)
+    for out_dir in output_dirs:
+        os.makedirs(out_dir, exist_ok=True)
+        csv_path = os.path.join(out_dir, f"{base_filename}.csv")
+        df.to_csv(csv_path, index=False)
+    print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
+    return df
+
 def main():
     print("=" * 70)
     print("ANALYSIS: GENERATING LATEX AND CSV TABLES")
@@ -997,6 +1047,7 @@ def main():
     make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=output_dirs)
     make_table_solvers(records, group_name="solvers_medium", base_filename="table_solvers_medium", title="SAT Solver Performance Comparison (Medium Graphs)", output_dirs=output_dirs)
     make_table_methods(records, output_dirs=output_dirs)
+    make_table_per_dataset(records, output_dirs=output_dirs)
 
     print(f"\nAll tables generated successfully in {output_dir}/!")
 
