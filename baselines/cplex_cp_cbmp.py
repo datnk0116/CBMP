@@ -186,7 +186,14 @@ def solve_cplex_cp(
     sol_status = str(sol.get_solve_status()) if sol and hasattr(sol, "get_solve_status") and sol.get_solve_status() is not None else ""
     stop_cause = str(sol.get_stop_cause()) if sol and hasattr(sol, "get_stop_cause") and sol.get_stop_cause() is not None else ""
     fail_status = str(sol.get_fail_status()) if sol and hasattr(sol, "get_fail_status") and sol.get_fail_status() is not None else ""
+    search_status = str(sol.get_search_status()) if sol and hasattr(sol, "get_search_status") and sol.get_search_status() is not None else ""
     has_solution = sol.is_solution() if sol and hasattr(sol, "is_solution") else False
+
+    # Preserve raw solver status fields for auditability
+    stats["solve_status"] = sol_status
+    stats["stop_cause"] = stop_cause
+    stats["fail_status"] = fail_status
+    stats["search_status"] = search_status
 
     # Extract lower bound if exposed
     best_lb = None
@@ -234,7 +241,7 @@ def solve_cplex_cp(
     clean_sol_status = sol_status.lower().replace(" ", "").replace("_", "")
     clean_fail_status = fail_status.lower().replace(" ", "").replace("_", "")
 
-    # Explicit evidence of time limit from stop cause, status, or solver log
+    # Explicit evidence of time limit from stop cause, status, solver infos, or solver log
     is_timelimit = (
         "timelimit" in clean_stop_cause
         or "timelimit" in clean_sol_status
@@ -242,9 +249,24 @@ def solve_cplex_cp(
     )
     if not is_timelimit and sol:
         try:
+            if hasattr(sol, "get_solver_info"):
+                for k in ("SearchStopCause", "EffectiveSearchStopCause", "TimeLimit", "StopCause"):
+                    val = str(sol.get_solver_info(k, "") or "").lower()
+                    if "timelimit" in val:
+                        is_timelimit = True
+                        break
+        except Exception:
+            pass
+    if not is_timelimit and sol:
+        try:
             if hasattr(sol, "get_solver_log"):
                 log_txt = str(sol.get_solver_log() or "").lower()
-                if "time limit reached" in log_txt or "stopped by time limit" in log_txt or "timelimit reached" in log_txt:
+                if (
+                    "time limit reached" in log_txt
+                    or "stopped by time limit" in log_txt
+                    or "timelimit reached" in log_txt
+                    or "! time limit reached" in log_txt
+                ):
                     is_timelimit = True
         except Exception:
             pass

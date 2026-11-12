@@ -384,6 +384,68 @@ def test_cplex_cp_unknown_stop_without_limit_evidence_is_error(monkeypatch, mock
     assert stats["assignment"] is None
 
 
+def test_cplex_cp_statistics_invalid_and_exceptional(monkeypatch, mock_cpo_environment):
+    """Verify num_constraints gracefully handles exceptional or invalid solver info responses."""
+    class ExceptionalCpoSolution(FakeCpoSolution):
+        def get_solver_info(self, key):
+            raise RuntimeError("Corrupt solver info stream")
+        def get_solver_infos(self):
+            raise ValueError("Invalid solver infos")
+
+    fake_sol = ExceptionalCpoSolution(
+        solve_status="Optimal",
+        has_solution=True,
+        assignment=[1, 2, 3],
+        obj_val=1,
+    )
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "OPTIMAL"
+    assert stats["num_constraints"] is None, "Exceptional response must leave num_constraints as None"
+    assert stats["estimated_constraints"] == 2 + 1 + 1
+
+
+def test_cplex_cp_solver_exception_and_license_error(monkeypatch, mock_cpo_environment):
+    """Verify solve_cplex_cp handles model.solve exceptions and distinguishes LICENSE_ERROR."""
+    # Sub-case 1: General solver exception -> ERROR
+    def mock_solve_err(*args, **kwargs):
+        raise RuntimeError("Engine segmentation violation")
+
+    with patch("docplex.cp.model.CpoModel.solve", mock_solve_err):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1)], timeout=5.0, verbose=False)
+    assert stats["status"] == "ERROR"
+    assert "Engine segmentation violation" in stats["error"]
+    assert stats["best_ub"] == -1
+
+    # Sub-case 2: License failure -> LICENSE_ERROR
+    def mock_solve_lic(*args, **kwargs):
+        raise RuntimeError("CPLEX Error 1014: License token unavailable")
+
+    with patch("docplex.cp.model.CpoModel.solve", mock_solve_lic):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1)], timeout=5.0, verbose=False)
+    assert stats["status"] == "LICENSE_ERROR"
+    assert stats["best_ub"] == -1
+
+
+def test_cplex_cp_conditional_live_integration():
+    """Live integration test against installed CP Optimizer; skips explicitly if engine binary not in PATH."""
+    import shutil
+    if not shutil.which("cpoptimizer"):
+        pytest.skip("CP Optimizer executable 'cpoptimizer' is not installed or not in PATH.")
+
+    from baselines.cplex_cp_cbmp import solve_cplex_cp, is_cplex_cp_available
+    avail, reason = is_cplex_cp_available()
+    if not avail:
+        pytest.skip(f"CP Optimizer unavailable: {reason}")
+
+    res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "OPTIMAL"
+    assert res == 1
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] is not None
+
+
 # ============================================================================
 # 2. GUROBI MOCKED TESTS
 # ============================================================================

@@ -10,29 +10,75 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+def extract_time_limit(record, default_timeout=600.0):
+    """Safely extracts a validated positive numeric timeout from a record."""
+    val = record.get("time_limit")
+    if val is None:
+        val = record.get("timeout")
+    if val is None and isinstance(record.get("config"), dict):
+        val = record.get("config", {}).get("time_limit")
+    if val is not None:
+        try:
+            f_val = float(val)
+            if f_val > 0 and not math.isnan(f_val) and not math.isinf(f_val):
+                return f_val
+        except (ValueError, TypeError):
+            pass
+    return float(default_timeout)
+
+def categorize_status(raw_status):
+    """Maps any status string to an explicit canonical status category."""
+    st = str(raw_status).strip().upper() if raw_status is not None else ""
+    if st == "OPTIMAL":
+        return "OPTIMAL"
+    elif st == "TIMEOUT":
+        return "TIMEOUT"
+    elif st == "INTERRUPTED":
+        return "INTERRUPTED"
+    elif st == "FEASIBLE":
+        return "FEASIBLE"
+    elif st in ("INFEASIBLE", "UNSAT"):
+        return "INFEASIBLE"
+    elif st in ("ERROR", "NUMERIC_ERROR"):
+        return "ERROR"
+    elif st == "SIZE_LIMIT":
+        return "SIZE_LIMIT"
+    elif st == "UNAVAILABLE":
+        return "UNAVAILABLE"
+    elif st == "LICENSE_ERROR":
+        return "LICENSE_ERROR"
+    else:
+        return "UNKNOWN"
+
 def aggregate_repetitions(records):
     """
     Group records by unique configuration (dataset, method/solver, config_signature),
     and aggregate across repetitions by computing the median for numerical timing metrics.
 
-    PAR2 and Repetition Population Semantics:
+    Unified Population & PAR2 Semantics (applies identically for n_total == 1 and n_total > 1):
       - n_total: Total recorded repetitions for the configuration.
-      - Explicit status counters:
+      - Explicit status counters (every repetition belongs to exactly one category):
           n_optimal: Proven optimal runs.
           n_timeout: Timed-out runs.
           n_interrupted: Runs interrupted by external signal / abort.
           n_feasible: Runs terminated with valid incumbent but without optimality proof.
+          n_infeasible: Runs proved infeasible / UNSAT.
           n_error: Runs with unhandled exceptions, validation errors, or numerical issues.
           n_size_limit: Runs hitting engine capacity size limits (e.g. CPLEX Community Edition).
           n_unavailable: Solver binary/engine not installed in the environment.
           n_license_error: Solver license missing or expired.
-      - n_algorithmic = n_optimal + n_timeout + n_interrupted + n_feasible + n_error:
+          n_unknown: Repetitions with missing or unrecognized status strings.
+      - n_algorithmic = n_optimal + n_timeout + n_interrupted + n_feasible + n_infeasible + n_error:
           The eligible population where the solver algorithm was actually executed.
+          Invariant: n_algorithmic + n_size_limit + n_unavailable + n_license_error + n_unknown == n_total.
       - Algorithmic PAR2 is computed strictly over eligible algorithmic runs:
           Optimal runs contribute solve_time; non-optimal algorithmic runs contribute 2 * time_limit_r.
-          SIZE_LIMIT, UNAVAILABLE, and LICENSE_ERROR are excluded from algorithmic PAR2.
-      - Aggregated status is OPTIMAL if and only if n_optimal == n_total (proven solved across all reps).
-        If some runs are optimal and others are not, status is PARTIAL.
+          SIZE_LIMIT, UNAVAILABLE, LICENSE_ERROR, and UNKNOWN are excluded from algorithmic PAR2.
+      - Aggregated status:
+          OPTIMAL if and only if n_optimal == n_total (100% of recorded repetitions solved to optimality).
+          PARTIAL if n_optimal > 0 and n_optimal < n_total.
+          Otherwise non-optimal algorithmic status if n_algorithmic > 0 (FEASIBLE, TIMEOUT, INTERRUPTED, INFEASIBLE, ERROR).
+          Otherwise non-algorithmic barrier status (SIZE_LIMIT, LICENSE_ERROR, UNAVAILABLE, UNKNOWN).
     """
     groups = {}
     for r in records:
@@ -52,157 +98,163 @@ def aggregate_repetitions(records):
 
     aggregated = []
     for key, reps in groups.items():
-        n_total = len(reps)
-
-        # Explicit per-status counters
-        n_optimal = sum(1 for r in reps if str(r.get("status", "")).upper() == "OPTIMAL")
-        n_timeout = sum(1 for r in reps if str(r.get("status", "")).upper() == "TIMEOUT")
-        n_interrupted = sum(1 for r in reps if str(r.get("status", "")).upper() == "INTERRUPTED")
-        n_feasible = sum(1 for r in reps if str(r.get("status", "")).upper() == "FEASIBLE")
-        n_error = sum(1 for r in reps if str(r.get("status", "")).upper() in ("ERROR", "NUMERIC_ERROR"))
-        n_size_limit = sum(1 for r in reps if str(r.get("status", "")).upper() == "SIZE_LIMIT")
-        n_unavailable = sum(1 for r in reps if str(r.get("status", "")).upper() == "UNAVAILABLE")
-        n_license_error = sum(1 for r in reps if str(r.get("status", "")).upper() == "LICENSE_ERROR")
-
-        # Algorithmic population: repetitions where solver algorithm was evaluated
-        n_algorithmic = n_optimal + n_timeout + n_interrupted + n_feasible + n_error
-
-        # Compute per-rep PAR2 values strictly over eligible algorithmic runs:
-        # Each OPTIMAL rep contributes solve_time; each non-optimal algorithmic rep contributes 2 * timeout_r;
-        # SIZE_LIMIT, UNAVAILABLE, and LICENSE_ERROR are excluded from algorithmic PAR2.
-        rep_par2_vals = []
+        # Clean and categorize each repetition
+        cleaned_reps = []
         for r in reps:
-            st = str(r.get("status", "")).upper()
-            if st == "OPTIMAL":
-                t = r.get("solve_time")
-                if t is not None:
-                    rep_par2_vals.append(float(t))
-                elif r.get("wall_time") is not None:
-                    rep_par2_vals.append(float(r["wall_time"]))
-            elif st in ("SIZE_LIMIT", "UNAVAILABLE", "LICENSE_ERROR"):
-                pass
-            else:
-                r_timeout = r.get("config", {}).get("time_limit") or r.get("time_limit") or 600.0
-                rep_par2_vals.append(2.0 * float(r_timeout))
+            rc = dict(r)
+            cat = categorize_status(rc.get("status"))
+            if rc.get("validation_error"):
+                cat = "ERROR"
+                rc["status"] = "ERROR"
+                rc["best_ub"] = -1
+                rc["assignment"] = None
+            elif cat in ("ERROR", "LICENSE_ERROR", "UNAVAILABLE", "SIZE_LIMIT", "INFEASIBLE", "UNKNOWN"):
+                rc["best_ub"] = -1
+                rc["assignment"] = None
+            rc["_cat"] = cat
+            cleaned_reps.append(rc)
+        reps = cleaned_reps
 
-        if n_total == 1:
-            agg = dict(reps[0])
-            agg["n_total"] = 1
-            agg["n_algorithmic"] = n_algorithmic
-            agg["n_optimal"] = n_optimal
-            agg["n_timeout"] = n_timeout
-            agg["n_interrupted"] = n_interrupted
-            agg["n_feasible"] = n_feasible
-            agg["n_error"] = n_error
-            agg["n_size_limit"] = n_size_limit
-            agg["n_unavailable"] = n_unavailable
-            agg["n_license_error"] = n_license_error
-            if rep_par2_vals:
-                agg["par2"] = float(np.mean(rep_par2_vals))
-            else:
-                agg.pop("par2", None)
-            if agg.get("status") in ("ERROR", "LICENSE_ERROR", "UNAVAILABLE") or agg.get("validation_error"):
-                agg["best_ub"] = -1
-                agg["assignment"] = None
-            aggregated.append(agg)
+        n_total = len(reps)
+        if n_total == 0:
             continue
 
-        if n_algorithmic == 0:
-            # Only environment barriers or size limits
-            if n_size_limit > 0:
-                rep_chosen = next(r for r in reps if str(r.get("status", "")).upper() == "SIZE_LIMIT")
-                status = "SIZE_LIMIT"
-            elif n_license_error > 0:
-                rep_chosen = next(r for r in reps if str(r.get("status", "")).upper() == "LICENSE_ERROR")
-                status = "LICENSE_ERROR"
-            elif n_unavailable > 0:
-                rep_chosen = next(r for r in reps if str(r.get("status", "")).upper() == "UNAVAILABLE")
-                status = "UNAVAILABLE"
+        n_optimal = sum(1 for r in reps if r["_cat"] == "OPTIMAL")
+        n_timeout = sum(1 for r in reps if r["_cat"] == "TIMEOUT")
+        n_interrupted = sum(1 for r in reps if r["_cat"] == "INTERRUPTED")
+        n_feasible = sum(1 for r in reps if r["_cat"] == "FEASIBLE")
+        n_infeasible = sum(1 for r in reps if r["_cat"] == "INFEASIBLE")
+        n_error = sum(1 for r in reps if r["_cat"] == "ERROR")
+        n_size_limit = sum(1 for r in reps if r["_cat"] == "SIZE_LIMIT")
+        n_unavailable = sum(1 for r in reps if r["_cat"] == "UNAVAILABLE")
+        n_license_error = sum(1 for r in reps if r["_cat"] == "LICENSE_ERROR")
+        n_unknown = sum(1 for r in reps if r["_cat"] == "UNKNOWN")
+
+        n_algorithmic = n_optimal + n_timeout + n_interrupted + n_feasible + n_infeasible + n_error
+
+        # Compute per-rep PAR2 values strictly over eligible algorithmic runs
+        rep_par2_vals = []
+        for r in reps:
+            cat = r["_cat"]
+            if cat == "OPTIMAL":
+                t = r.get("solve_time")
+                if t is None:
+                    t = r.get("wall_time")
+                if t is not None:
+                    try:
+                        ft = float(t)
+                        if ft >= 0 and not math.isnan(ft) and not math.isinf(ft):
+                            rep_par2_vals.append(ft)
+                        else:
+                            t_lim = extract_time_limit(r)
+                            rep_par2_vals.append(2.0 * t_lim)
+                    except (ValueError, TypeError):
+                        t_lim = extract_time_limit(r)
+                        rep_par2_vals.append(2.0 * t_lim)
+                else:
+                    t_lim = extract_time_limit(r)
+                    rep_par2_vals.append(2.0 * t_lim)
+            elif cat in ("TIMEOUT", "INTERRUPTED", "FEASIBLE", "INFEASIBLE", "ERROR"):
+                t_lim = extract_time_limit(r)
+                rep_par2_vals.append(2.0 * t_lim)
             else:
-                rep_chosen = reps[0]
-                status = str(rep_chosen.get("status", "UNKNOWN")).upper()
-            agg = dict(rep_chosen)
-            agg["status"] = status
-            solve_times = []
-            wall_times = [r["wall_time"] for r in reps if r.get("wall_time") is not None]
-            encode_times = [r["encode_time"] for r in reps if r.get("encode_time") is not None]
-        elif n_optimal == n_algorithmic:
-            # All algorithmic reps optimal -> OPTIMAL
-            optimal_reps = [r for r in reps if str(r.get("status", "")).upper() == "OPTIMAL"]
-            reps_sorted = sorted(
-                optimal_reps,
-                key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
-            )
-            rep_chosen = reps_sorted[len(reps_sorted) // 2]
-            agg = dict(rep_chosen)
-            agg["status"] = "OPTIMAL"
-            solve_times = [r["solve_time"] for r in optimal_reps if r.get("solve_time") is not None]
-            wall_times = [r["wall_time"] for r in optimal_reps if r.get("wall_time") is not None]
-            encode_times = [r["encode_time"] for r in optimal_reps if r.get("encode_time") is not None]
+                # Non-algorithmic exclusions: SIZE_LIMIT, UNAVAILABLE, LICENSE_ERROR, UNKNOWN
+                pass
+
+        # Determine aggregated status
+        if n_optimal == n_total:
+            agg_status = "OPTIMAL"
         elif n_optimal > 0:
-            # Mixed: some algorithmic reps OPTIMAL, some not -> PARTIAL
-            optimal_reps = [r for r in reps if str(r.get("status", "")).upper() == "OPTIMAL"]
+            agg_status = "PARTIAL"
+        elif n_algorithmic > 0:
+            if n_feasible > 0:
+                agg_status = "FEASIBLE"
+            elif n_timeout > 0:
+                agg_status = "TIMEOUT"
+            elif n_interrupted > 0:
+                agg_status = "INTERRUPTED"
+            elif n_infeasible > 0:
+                agg_status = "INFEASIBLE"
+            else:
+                agg_status = "ERROR"
+        else:
+            if n_size_limit > 0:
+                agg_status = "SIZE_LIMIT"
+            elif n_license_error > 0:
+                agg_status = "LICENSE_ERROR"
+            elif n_unavailable > 0:
+                agg_status = "UNAVAILABLE"
+            else:
+                agg_status = "UNKNOWN"
+
+        # Select representative record to seed the aggregated dictionary
+        if agg_status in ("OPTIMAL", "PARTIAL"):
+            opt_reps = [r for r in reps if r["_cat"] == "OPTIMAL"]
             reps_sorted = sorted(
-                optimal_reps,
+                opt_reps,
                 key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
             )
             rep_chosen = reps_sorted[len(reps_sorted) // 2]
-            agg = dict(rep_chosen)
-            agg["status"] = "PARTIAL"
+            solve_times = [r["solve_time"] for r in opt_reps if r.get("solve_time") is not None]
+            wall_times = [r["wall_time"] for r in opt_reps if r.get("wall_time") is not None]
+        elif agg_status == "FEASIBLE":
+            feas_reps = [r for r in reps if r["_cat"] == "FEASIBLE"]
+            reps_sorted = sorted(
+                feas_reps,
+                key=lambda x: (x.get("best_ub", float("inf")), x.get("solve_time", float("inf"))),
+            )
+            rep_chosen = reps_sorted[0]
+            solve_times = [r["solve_time"] for r in feas_reps if r.get("solve_time") is not None]
+            wall_times = [r["wall_time"] for r in feas_reps if r.get("wall_time") is not None]
+        else:
+            matching = [r for r in reps if r["_cat"] == agg_status]
+            candidates = matching if matching else reps
+            reps_sorted = sorted(
+                candidates,
+                key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
+            )
+            rep_chosen = reps_sorted[len(reps_sorted) // 2]
+            solve_times = [r["solve_time"] for r in candidates if r.get("solve_time") is not None]
+            wall_times = [r["wall_time"] for r in candidates if r.get("wall_time") is not None]
+
+        encode_times = [r["encode_time"] for r in reps if r.get("encode_time") is not None]
+
+        agg = dict(rep_chosen)
+        agg["status"] = agg_status
+        if agg_status == "PARTIAL":
             agg["mixed"] = True
             agg["is_mixed"] = True
-            solve_times = [r["solve_time"] for r in optimal_reps if r.get("solve_time") is not None]
-            wall_times = [r["wall_time"] for r in optimal_reps if r.get("wall_time") is not None]
-            encode_times = [r["encode_time"] for r in optimal_reps if r.get("encode_time") is not None]
-        else:
-            # 0 optimal reps among algorithmic attempts
-            non_opt_alg = [r for r in reps if str(r.get("status", "")).upper() in ("TIMEOUT", "INTERRUPTED", "FEASIBLE", "ERROR", "NUMERIC_ERROR")]
-            if n_feasible > 0:
-                feas_reps = [r for r in non_opt_alg if str(r.get("status", "")).upper() == "FEASIBLE"]
-                reps_sorted = sorted(
-                    feas_reps,
-                    key=lambda x: (x.get("best_ub", float("inf")), x.get("solve_time", float("inf"))),
-                )
-                rep_chosen = reps_sorted[0]
-                agg = dict(rep_chosen)
-                agg["status"] = "FEASIBLE"
-            else:
-                reps_to_sort = non_opt_alg if non_opt_alg else reps
-                reps_sorted = sorted(
-                    reps_to_sort,
-                    key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
-                )
-                rep_chosen = reps_sorted[len(reps_sorted) // 2]
-                agg = dict(rep_chosen)
-                agg["status"] = str(rep_chosen.get("status", "TIMEOUT")).upper()
-            solve_times = [r["solve_time"] for r in (non_opt_alg if non_opt_alg else reps) if r.get("solve_time") is not None]
-            wall_times = [r["wall_time"] for r in (non_opt_alg if non_opt_alg else reps) if r.get("wall_time") is not None]
-            encode_times = [r["encode_time"] for r in (non_opt_alg if non_opt_alg else reps) if r.get("encode_time") is not None]
 
-        # Attach all explicit population counters
+        # Attach unified population counters
         agg["n_total"] = n_total
         agg["n_algorithmic"] = n_algorithmic
         agg["n_optimal"] = n_optimal
         agg["n_timeout"] = n_timeout
         agg["n_interrupted"] = n_interrupted
         agg["n_feasible"] = n_feasible
+        agg["n_infeasible"] = n_infeasible
         agg["n_error"] = n_error
         agg["n_size_limit"] = n_size_limit
         agg["n_unavailable"] = n_unavailable
         agg["n_license_error"] = n_license_error
+        agg["n_unknown"] = n_unknown
 
         if solve_times:
             agg["solve_time"] = float(np.median(solve_times))
+        elif "solve_time" not in agg or agg["solve_time"] is None:
+            agg["solve_time"] = 0.0
+
         if wall_times:
             agg["wall_time"] = float(np.median(wall_times))
         if encode_times:
             agg["encode_time"] = float(np.median(encode_times))
+
         if rep_par2_vals:
             agg["par2"] = float(np.mean(rep_par2_vals))
         else:
             agg.pop("par2", None)
 
-        if agg.get("status") in ("ERROR", "LICENSE_ERROR", "UNAVAILABLE") or agg.get("validation_error"):
+        if agg_status in ("ERROR", "NUMERIC_ERROR", "LICENSE_ERROR", "UNAVAILABLE", "SIZE_LIMIT", "INFEASIBLE", "UNKNOWN") or agg.get("validation_error"):
             agg["best_ub"] = -1
             agg["assignment"] = None
 
@@ -460,7 +512,7 @@ def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_to
     if st == "OPTIMAL":
         return f"{solve_time:.4f}"
     elif st == "PARTIAL":
-        denom = n_algorithmic if (n_algorithmic is not None and n_algorithmic > 0) else n_total
+        denom = n_total if (n_total is not None and n_total > 0) else n_algorithmic
         k_n = f"{n_optimal}/{denom}" if (n_optimal is not None and denom is not None) else "PARTIAL"
         return f"{k_n} {solve_time:.4f}*"
     elif st == "FEASIBLE":
@@ -475,12 +527,14 @@ def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_to
         return "UNAV"
     elif st == "LICENSE_ERROR":
         return "LIC"
-    elif st == "INFEASIBLE":
+    elif st in ("INFEASIBLE", "UNSAT"):
         return "UNSAT"
     elif st == "NUMERIC_ERROR":
         return "NUM_ERR"
     elif st == "ERROR":
         return "ERR"
+    elif st == "UNKNOWN":
+        return "UNK"
     elif not st or st == "NONE":
         return "-"
     else:
@@ -518,18 +572,18 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             rec = row.get(col)
             if not rec:
                 continue
-            st = rec.get("status")
+            st = str(rec.get("status", "")).upper()
             t = rec.get("solve_time", 0.0) or 0.0
-            rec_timeout = rec.get("config", {}).get("time_limit", timeout) or timeout
+            rec_timeout = extract_time_limit(rec, default_timeout=timeout)
 
             if st == "OPTIMAL":
                 solved += 1
-                par2_val = rec.get("par2") if rec.get("par2") is not None else t
+                par2_val = rec.get("par2") if ("par2" in rec and rec.get("par2") is not None) else t
                 par2_vals.append(par2_val)
                 if ds in baseline_times and t > 0:
                     ratios.append(baseline_times[ds] / t)
             elif st == "PARTIAL":
-                if rec.get("par2") is not None:
+                if "par2" in rec and rec.get("par2") is not None:
                     par2_vals.append(rec["par2"])
                 else:
                     n_opt = rec.get("n_optimal", 0)
@@ -539,11 +593,11 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             elif st == "SIZE_LIMIT":
                 sl_count += 1
                 # SIZE_LIMIT is reported separately in SL and not penalized in PAR2 as timeout
-            elif st in ("UNAVAILABLE", "LICENSE_ERROR"):
-                # Solver environment unavailability / missing license is excluded from algorithmic PAR2
+            elif st in ("UNAVAILABLE", "LICENSE_ERROR", "UNKNOWN"):
+                # Solver environment unavailability, missing license, or unknown status excluded from algorithmic PAR2
                 pass
             else:
-                par2_val = rec.get("par2") if rec.get("par2") is not None else (2.0 * float(rec_timeout))
+                par2_val = rec.get("par2") if ("par2" in rec and rec.get("par2") is not None) else (2.0 * float(rec_timeout))
                 par2_vals.append(par2_val)
 
         solved_counts[col] = solved

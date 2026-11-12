@@ -496,43 +496,46 @@ def test_par2_and_repetition_twelve_scenarios():
     assert abs(agg_s2["par2"] - (1232.0 / 3.0)) < 1e-4
     assert format_cell_value(agg_s2["status"], solve_time=agg_s2["solve_time"], n_optimal=agg_s2["n_optimal"], n_algorithmic=agg_s2["n_algorithmic"]) == "2/3 16.0000*"
 
-    # 3. OPTIMAL mixed with UNAVAILABLE -> OPTIMAL on algorithmic population
+    # 3. OPTIMAL mixed with UNAVAILABLE -> PARTIAL (some reps succeeded, but environment error prevented 100% completion)
     reps_s3 = [
         {"dataset": "d3", "solver": "cadical", "status": "OPTIMAL", "solve_time": 8.0, "time_limit": 600.0, "rep": 1},
         {"dataset": "d3", "solver": "cadical", "status": "UNAVAILABLE", "solve_time": 0.0, "time_limit": 600.0, "rep": 2},
         {"dataset": "d3", "solver": "cadical", "status": "OPTIMAL", "solve_time": 10.0, "time_limit": 600.0, "rep": 3},
     ]
     agg_s3 = aggregate_repetitions(reps_s3)[0]
-    assert agg_s3["status"] == "OPTIMAL"
+    assert agg_s3["status"] == "PARTIAL"
     assert agg_s3["n_total"] == 3
     assert agg_s3["n_algorithmic"] == 2
     assert agg_s3["n_optimal"] == 2
     assert agg_s3["n_unavailable"] == 1
-    assert agg_s3["par2"] == 9.0  # mean(8, 10) = 9.0; UNAVAILABLE excluded
+    assert agg_s3["par2"] == 9.0  # mean(8, 10) = 9.0; UNAVAILABLE excluded from algorithmic PAR2
+    assert format_cell_value(agg_s3["status"], solve_time=agg_s3["solve_time"], n_optimal=agg_s3["n_optimal"], n_total=agg_s3["n_total"]) == "2/3 9.0000*"
 
-    # 4. OPTIMAL mixed with LICENSE_ERROR -> OPTIMAL on algorithmic population
+    # 4. OPTIMAL mixed with LICENSE_ERROR -> PARTIAL
     reps_s4 = [
         {"dataset": "d4", "solver": "cplex", "status": "OPTIMAL", "solve_time": 20.0, "time_limit": 600.0, "rep": 1},
         {"dataset": "d4", "solver": "cplex", "status": "LICENSE_ERROR", "solve_time": 0.0, "time_limit": 600.0, "rep": 2},
     ]
     agg_s4 = aggregate_repetitions(reps_s4)[0]
-    assert agg_s4["status"] == "OPTIMAL"
+    assert agg_s4["status"] == "PARTIAL"
     assert agg_s4["n_total"] == 2
     assert agg_s4["n_algorithmic"] == 1
     assert agg_s4["n_license_error"] == 1
     assert agg_s4["par2"] == 20.0
+    assert format_cell_value(agg_s4["status"], solve_time=agg_s4["solve_time"], n_optimal=agg_s4["n_optimal"], n_total=agg_s4["n_total"]) == "1/2 20.0000*"
 
-    # 5. OPTIMAL mixed with SIZE_LIMIT -> OPTIMAL on algorithmic population
+    # 5. OPTIMAL mixed with SIZE_LIMIT -> PARTIAL
     reps_s5 = [
         {"dataset": "d5", "solver": "cplex", "status": "OPTIMAL", "solve_time": 25.0, "time_limit": 600.0, "rep": 1},
         {"dataset": "d5", "solver": "cplex", "status": "SIZE_LIMIT", "solve_time": 0.05, "time_limit": 600.0, "rep": 2},
     ]
     agg_s5 = aggregate_repetitions(reps_s5)[0]
-    assert agg_s5["status"] == "OPTIMAL"
+    assert agg_s5["status"] == "PARTIAL"
     assert agg_s5["n_total"] == 2
     assert agg_s5["n_algorithmic"] == 1
     assert agg_s5["n_size_limit"] == 1
     assert agg_s5["par2"] == 25.0
+    assert format_cell_value(agg_s5["status"], solve_time=agg_s5["solve_time"], n_optimal=agg_s5["n_optimal"], n_total=agg_s5["n_total"]) == "1/2 25.0000*"
 
     # 6. Only UNAVAILABLE
     reps_s6 = [
@@ -626,8 +629,8 @@ def test_par2_and_repetition_twelve_scenarios():
     df_multi = pd.DataFrame({"solver_col": all_aggs}, index=[f"d{i}" for i in range(1, 11)])
     solved_m, sl_m, par2_m, _ = compute_summary_stats(df_multi, ["solver_col"], timeout=600.0)
 
-    # Proven optimal: d1, d3, d4, d5 (d2 is PARTIAL, not counted as fully proven solved in summary solved count)
-    assert solved_m["solver_col"] == 4
+    # Proven optimal across 100% of repetitions: strictly d1
+    assert solved_m["solver_col"] == 1
     # SIZE_LIMIT tracked: d8 (d5 had 1 SL rep, but was OPTIMAL on algorithmic attempt)
     assert sl_m["solver_col"] == 1
 
@@ -645,4 +648,267 @@ def test_par2_and_repetition_twelve_scenarios():
     expected_par2_list = [11.0, 1232.0 / 3.0, 9.0, 20.0, 25.0, 1200.0, 1200.0]
     expected_mean_par2 = float(np.mean(expected_par2_list))
     assert abs(par2_m["solver_col"] - expected_mean_par2) < 1e-3
+
+
+def test_infeasible_and_unsat_repetition_aggregation():
+    """Verify INFEASIBLE and UNSAT statuses are normalized, counted, receive PAR2 penalty, and format as UNSAT."""
+    from analysis.make_tables import aggregate_repetitions, format_cell_value
+
+    reps = [
+        {"dataset": "d_unsat", "solver": "cadical", "status": "INFEASIBLE", "time_limit": 300.0, "rep": 1},
+        {"dataset": "d_unsat", "solver": "cadical", "status": "UNSAT", "time_limit": 300.0, "rep": 2},
+    ]
+    agg = aggregate_repetitions(reps)[0]
+    assert agg["status"] == "INFEASIBLE"
+    assert agg["n_total"] == 2
+    assert agg["n_algorithmic"] == 2
+    assert agg["n_infeasible"] == 2
+    assert agg["n_optimal"] == 0
+    assert agg["best_ub"] == -1
+    assert agg["assignment"] is None
+    # Each non-optimal algorithmic run penalized as 2 * 300 = 600.0
+    assert agg["par2"] == 600.0
+    assert format_cell_value(agg["status"]) == "UNSAT"
+
+
+def test_unknown_and_missing_status_handling():
+    """Verify unknown or missing statuses are preserved in n_unknown, excluded from algorithmic PAR2 without false penalty."""
+    from analysis.make_tables import aggregate_repetitions, format_cell_value
+
+    reps = [
+        {"dataset": "d_unk", "solver": "cadical", "status": "WEIRD_CORRUPT_STATUS", "time_limit": 600.0, "rep": 1},
+        {"dataset": "d_unk", "solver": "cadical", "status": None, "time_limit": 600.0, "rep": 2},
+    ]
+    agg = aggregate_repetitions(reps)[0]
+    assert agg["status"] == "UNKNOWN"
+    assert agg["n_total"] == 2
+    assert agg["n_algorithmic"] == 0
+    assert agg["n_unknown"] == 2
+    assert agg.get("par2") is None
+    assert "par2" not in agg
+    assert format_cell_value(agg["status"]) == "UNK"
+
+
+def test_optimal_missing_timing_penalized_not_dropped():
+    """Verify that an OPTIMAL repetition with missing solve_time and wall_time is not given artificial 0.0s and is included in PAR2."""
+    from analysis.make_tables import aggregate_repetitions
+
+    reps = [
+        {"dataset": "d_miss_t", "solver": "cadical", "status": "OPTIMAL", "solve_time": None, "wall_time": None, "time_limit": 100.0, "rep": 1},
+    ]
+    agg = aggregate_repetitions(reps)[0]
+    assert agg["status"] == "OPTIMAL"
+    assert agg["n_total"] == 1
+    assert agg["n_algorithmic"] == 1
+    assert agg["n_optimal"] == 1
+    # Missing timing for OPTIMAL run must not receive 0.0s; penalized with 2 * time_limit = 200.0
+    assert agg["par2"] == 200.0
+
+
+@pytest.mark.parametrize("status, has_incumbent, validation_error, expected_status", [
+    ("OPTIMAL", True, False, "OPTIMAL"),
+    ("TIMEOUT", True, False, "TIMEOUT"),
+    ("FEASIBLE", True, False, "FEASIBLE"),
+    ("SIZE_LIMIT", False, False, "SIZE_LIMIT"),
+    ("UNAVAILABLE", False, False, "UNAVAILABLE"),
+    ("LICENSE_ERROR", False, False, "LICENSE_ERROR"),
+    ("INFEASIBLE", False, False, "INFEASIBLE"),
+    ("ERROR", False, False, "ERROR"),
+    ("OPTIMAL", True, True, "ERROR"),  # validation error overrides OPTIMAL to ERROR
+])
+def test_single_record_vs_multi_record_aggregation_consistency(status, has_incumbent, validation_error, expected_status):
+    """
+    Verify that single-repetition aggregation produces the EXACT same semantics,
+    schema, status normalization, and cleanup as multi-repetition aggregation.
+    """
+    from analysis.make_tables import aggregate_repetitions
+
+    def make_record(rep):
+        rec = {
+            "dataset": "d_test",
+            "solver": "cadical",
+            "status": status,
+            "solve_time": 10.0,
+            "wall_time": 10.5,
+            "time_limit": 600.0,
+            "rep": rep,
+            "best_ub": 2 if has_incumbent else -1,
+            "assignment": [0, 1, 2] if has_incumbent else None,
+        }
+        if validation_error:
+            rec["validation_error"] = "Invalid permutation bijection"
+        return rec
+
+    # 1-record aggregation
+    single_agg = aggregate_repetitions([make_record(1)])[0]
+    # 3-identical-records aggregation
+    multi_agg = aggregate_repetitions([make_record(1), make_record(2), make_record(3)])[0]
+
+    assert single_agg["status"] == expected_status
+    assert multi_agg["status"] == expected_status
+
+    if expected_status in ("ERROR", "SIZE_LIMIT", "UNAVAILABLE", "LICENSE_ERROR", "INFEASIBLE"):
+        assert single_agg["best_ub"] == -1
+        assert multi_agg["best_ub"] == -1
+        assert single_agg["assignment"] is None
+        assert multi_agg["assignment"] is None
+
+    # PAR2 consistency: either both have par2 or both exclude par2
+    if "par2" in single_agg:
+        assert "par2" in multi_agg
+        assert single_agg["par2"] == multi_agg["par2"]
+    else:
+        assert "par2" not in multi_agg
+
+    # Population proportions consistency
+    assert single_agg["n_total"] == 1
+    assert multi_agg["n_total"] == 3
+    if expected_status == "OPTIMAL":
+        assert single_agg["n_optimal"] == 1 and multi_agg["n_optimal"] == 3
+    elif expected_status == "SIZE_LIMIT":
+        assert single_agg["n_size_limit"] == 1 and multi_agg["n_size_limit"] == 3
+    elif expected_status == "ERROR":
+        assert single_agg["n_error"] == 1 and multi_agg["n_error"] == 3
+
+
+def test_end_to_end_aggregation_summary_and_table_formatting(tmp_path):
+    """
+    Synthetic end-to-end test that passes records through:
+    1. aggregate_repetitions (grouping and population metrics).
+    2. compute_summary_stats (Solved, SL, PAR2).
+    3. format_cell_value (cell formatting).
+    4. export_table (CSV and LaTeX generation).
+    Verifies that all summaries are mutually consistent, PAR2 denominator excludes non-algorithmic
+    failures, and CSV exports preserve population counters.
+    """
+    from analysis.make_tables import (
+        aggregate_repetitions,
+        compute_summary_stats,
+        format_cell_value,
+        export_table,
+    )
+    import pandas as pd
+
+    raw_records = [
+        # Dataset 1: solver A is fully OPTIMAL across 3 reps, solver B has 1 OPTIMAL and 2 TIMEOUT -> PARTIAL
+        {"dataset": "ds1", "solver": "sol_a", "status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "ds1", "solver": "sol_a", "status": "OPTIMAL", "solve_time": 3.0, "time_limit": 600.0, "rep": 2},
+        {"dataset": "ds1", "solver": "sol_a", "status": "OPTIMAL", "solve_time": 4.0, "time_limit": 600.0, "rep": 3},
+        {"dataset": "ds1", "solver": "sol_b", "status": "OPTIMAL", "solve_time": 5.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "ds1", "solver": "sol_b", "status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0, "rep": 2},
+        {"dataset": "ds1", "solver": "sol_b", "status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0, "rep": 3},
+
+        # Dataset 2: solver A is FEASIBLE (incumbent 4), solver B hits SIZE_LIMIT
+        {"dataset": "ds2", "solver": "sol_a", "status": "FEASIBLE", "best_ub": 4, "solve_time": 50.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "ds2", "solver": "sol_b", "status": "SIZE_LIMIT", "solve_time": 0.05, "time_limit": 600.0, "rep": 1},
+
+        # Dataset 3: solver A has UNAVAILABLE, solver B has LICENSE_ERROR
+        {"dataset": "ds3", "solver": "sol_a", "status": "UNAVAILABLE", "solve_time": 0.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "ds3", "solver": "sol_b", "status": "LICENSE_ERROR", "solve_time": 0.0, "time_limit": 600.0, "rep": 1},
+
+        # Dataset 4: solver A is INFEASIBLE, solver B has ERROR
+        {"dataset": "ds4", "solver": "sol_a", "status": "INFEASIBLE", "time_limit": 600.0, "rep": 1},
+        {"dataset": "ds4", "solver": "sol_b", "status": "ERROR", "time_limit": 600.0, "rep": 1},
+    ]
+
+    agg = aggregate_repetitions(raw_records)
+    agg_map = {(r["dataset"], r["solver"]): r for r in agg}
+
+    # Verify per-cell aggregation
+    assert agg_map[("ds1", "sol_a")]["status"] == "OPTIMAL"
+    assert agg_map[("ds1", "sol_a")]["solve_time"] == 3.0
+    assert agg_map[("ds1", "sol_a")]["par2"] == 3.0
+    assert format_cell_value(agg_map[("ds1", "sol_a")]) == "3.0000"
+
+    assert agg_map[("ds1", "sol_b")]["status"] == "PARTIAL"
+    assert agg_map[("ds1", "sol_b")]["n_optimal"] == 1
+    assert agg_map[("ds1", "sol_b")]["n_total"] == 3
+    # PAR2 = (5 + 1200 + 1200) / 3 = 2405 / 3 = 801.6667
+    assert abs(agg_map[("ds1", "sol_b")]["par2"] - (2405.0 / 3.0)) < 1e-4
+    assert format_cell_value(agg_map[("ds1", "sol_b")]) == "1/3 5.0000*"
+
+    assert agg_map[("ds2", "sol_a")]["status"] == "FEASIBLE"
+    assert format_cell_value(agg_map[("ds2", "sol_a")]) == "FEAS(4)"
+
+    assert agg_map[("ds2", "sol_b")]["status"] == "SIZE_LIMIT"
+    assert format_cell_value(agg_map[("ds2", "sol_b")]) == "SL"
+    assert "par2" not in agg_map[("ds2", "sol_b")]
+
+    assert agg_map[("ds3", "sol_a")]["status"] == "UNAVAILABLE"
+    assert format_cell_value(agg_map[("ds3", "sol_a")]) == "UNAV"
+
+    assert agg_map[("ds3", "sol_b")]["status"] == "LICENSE_ERROR"
+    assert format_cell_value(agg_map[("ds3", "sol_b")]) == "LIC"
+
+    assert agg_map[("ds4", "sol_a")]["status"] == "INFEASIBLE"
+    assert format_cell_value(agg_map[("ds4", "sol_a")]) == "UNSAT"
+
+    assert agg_map[("ds4", "sol_b")]["status"] == "ERROR"
+    assert format_cell_value(agg_map[("ds4", "sol_b")]) == "ERR"
+
+    # Construct DataFrame for summary stats
+    datasets = ["ds1", "ds2", "ds3", "ds4"]
+    df_raw = pd.DataFrame({
+        "sol_a": [agg_map[(ds, "sol_a")] for ds in datasets],
+        "sol_b": [agg_map[(ds, "sol_b")] for ds in datasets],
+    }, index=datasets)
+
+    df_display = pd.DataFrame({
+        "sol_a": [format_cell_value(agg_map[(ds, "sol_a")]) for ds in datasets],
+        "sol_b": [format_cell_value(agg_map[(ds, "sol_b")]) for ds in datasets],
+    }, index=datasets)
+
+    cols = ["sol_a", "sol_b"]
+    solved, sl, par2, speedups = compute_summary_stats(df_raw, cols, baseline_col="sol_a", timeout=600.0)
+
+    # Proven optimal: only sol_a on ds1 is OPTIMAL (sol_b is PARTIAL on ds1)
+    assert solved["sol_a"] == 1
+    assert solved["sol_b"] == 0
+
+    # Size limit count: only sol_b on ds2
+    assert sl["sol_a"] == 0
+    assert sl["sol_b"] == 1
+
+    # PAR2 for sol_a:
+    # ds1: 3.0 (OPTIMAL)
+    # ds2: 1200.0 (FEASIBLE penalized as 2*600)
+    # ds3: UNAVAILABLE -> excluded
+    # ds4: 1200.0 (INFEASIBLE penalized as 2*600)
+    # mean = (3.0 + 1200.0 + 1200.0) / 3 = 2403.0 / 3 = 801.0
+    assert abs(par2["sol_a"] - 801.0) < 1e-4
+
+    # PAR2 for sol_b:
+    # ds1: 2405 / 3 = 801.6667 (PARTIAL)
+    # ds2: SIZE_LIMIT -> excluded
+    # ds3: LICENSE_ERROR -> excluded
+    # ds4: 1200.0 (ERROR penalized as 2*600)
+    # mean = (801.6667 + 1200.0) / 2 = 1000.8333
+    expected_par2_b = ((2405.0 / 3.0) + 1200.0) / 2.0
+    assert abs(par2["sol_b"] - expected_par2_b) < 1e-4
+
+    # Export table to verify CSV generation
+    summary_rows = [
+        ("Solved", {c: solved[c] for c in cols}),
+        ("SL", {c: sl[c] for c in cols}),
+        ("PAR2 (s)", {c: f"{par2[c]:.2f}" for c in cols}),
+    ]
+    out_dir = str(tmp_path / "tables")
+    export_table(df_display, summary_rows, title="End to End Test Table", base_filename="e2e_table", output_dirs=(out_dir,))
+
+    csv_path = f"{out_dir}/e2e_table.csv"
+    assert os.path.exists(csv_path)
+    with open(csv_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "3.0000" in content
+    assert "1/3 5.0000*" in content
+    assert "FEAS(4)" in content
+    assert "SL" in content
+    assert "UNAV" in content
+    assert "LIC" in content
+    assert "UNSAT" in content
+    assert "ERR" in content
+    assert "Solved,1,0" in content
+    assert "SL,0,1" in content
+
+
 

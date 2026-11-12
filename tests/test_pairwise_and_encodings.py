@@ -508,12 +508,19 @@ def enumerate_projected_sat_models(N, edges, UB, encoding="order", sb_rot=False,
 
 
 @pytest.mark.parametrize("name, N, edges", [
-    ("edge_2", 2, [(0, 1)]),
+    ("empty_2", 2, []),
+    ("clique_2", 2, [(0, 1)]),
+    ("empty_3", 3, []),
     ("path_3", 3, [(0, 1), (1, 2)]),
+    ("clique_3", 3, [(0, 1), (1, 2), (0, 2)]),
+    ("empty_4", 4, []),
     ("path_4", 4, [(0, 1), (1, 2), (2, 3)]),
     ("cycle_4", 4, [(0, 1), (1, 2), (2, 3), (0, 3)]),
     ("star_4", 4, [(0, 1), (0, 2), (0, 3)]),
     ("disconnected_2k2_4", 4, [(0, 1), (2, 3)]),
+    ("comp_k3_plus_isolated_4", 4, [(0, 1), (1, 2), (0, 2)]),
+    ("comp_p3_plus_isolated_4", 4, [(0, 1), (1, 2)]),
+    ("clique_4", 4, [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]),
 ])
 @pytest.mark.parametrize("encoding", ["order", "pairwise"])
 @pytest.mark.parametrize("sb_rot, sb_ref", [
@@ -578,6 +585,13 @@ def test_projected_sat_models_match_canonical_orbit_representatives(name, N, edg
         f"  Missing: {expected_reps - actual_sat_models}\n"
         f"  Unexpected: {actual_sat_models - expected_reps}"
     )
+
+
+@pytest.mark.parametrize("encoding", ["order", "pairwise"])
+def test_sat_projected_models_n1_boundary_case(encoding):
+    """Verify N=1 boundary case: exactly 1 bijection (0,) is produced for both encodings."""
+    models = enumerate_projected_sat_models(N=1, edges=[], UB=1, encoding=encoding, sb_rot=False, sb_ref=False)
+    assert models == {(0,)}
 
 
 
