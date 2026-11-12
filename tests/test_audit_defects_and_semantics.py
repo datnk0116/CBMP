@@ -911,4 +911,304 @@ def test_end_to_end_aggregation_summary_and_table_formatting(tmp_path):
     assert "SL,0,1" in content
 
 
+def test_par2_partial_two_optimal_substantially_different_plus_timeout():
+    """
+    Test PAR2 calculation for PARTIAL status with 2 OPTIMAL reps having substantially
+    different solve times plus 1 TIMEOUT rep.
+    Verifies that PAR2 is computed from individual repetitions, NOT approximated via median.
+    """
+    import math
+    import pandas as pd
+    from analysis.make_tables import aggregate_repetitions, compute_summary_stats
+
+    records = [
+        {"dataset": "ds_skewed", "solver": "sol_x", "status": "OPTIMAL", "solve_time": 5.0, "time_limit": 600.0, "rep": 1},
+        {"dataset": "ds_skewed", "solver": "sol_x", "status": "OPTIMAL", "solve_time": 45.0, "time_limit": 600.0, "rep": 2},
+        {"dataset": "ds_skewed", "solver": "sol_x", "status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0, "rep": 3},
+    ]
+
+    agg = aggregate_repetitions(records)
+    assert len(agg) == 1
+    rec = agg[0]
+    assert rec["status"] == "PARTIAL"
+    assert rec["n_optimal"] == 2
+    assert rec["n_timeout"] == 1
+    assert rec["n_total"] == 3
+    assert rec["n_algorithmic"] == 3
+
+    # Exact manual PAR2: (5.0 + 45.0 + 2 * 600.0) / 3 = 1250.0 / 3 = 416.6666667
+    expected_par2 = 1250.0 / 3.0
+    assert abs(rec["par2"] - expected_par2) < 1e-5
+
+    # Test fallback in compute_summary_stats when precomputed par2 is absent:
+    rec_no_par2 = dict(rec)
+    del rec_no_par2["par2"]
+    df_raw = pd.DataFrame({"sol_x": [rec_no_par2]}, index=["ds_skewed"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_x"], timeout=600.0)
+    assert abs(par2["sol_x"] - expected_par2) < 1e-5
+
+
+def test_par2_partial_three_optimal_plus_one_feasible():
+    """
+    Test PAR2 calculation for PARTIAL status with 3 OPTIMAL reps with different solve times
+    plus 1 FEASIBLE rep (non-optimal algorithmic termination).
+    """
+    import pandas as pd
+    from analysis.make_tables import aggregate_repetitions, compute_summary_stats
+
+    records = [
+        {"dataset": "ds_feas", "solver": "sol_y", "status": "OPTIMAL", "solve_time": 2.0, "time_limit": 300.0, "rep": 1},
+        {"dataset": "ds_feas", "solver": "sol_y", "status": "OPTIMAL", "solve_time": 6.0, "time_limit": 300.0, "rep": 2},
+        {"dataset": "ds_feas", "solver": "sol_y", "status": "OPTIMAL", "solve_time": 22.0, "time_limit": 300.0, "rep": 3},
+        {"dataset": "ds_feas", "solver": "sol_y", "status": "FEASIBLE", "best_ub": 4, "solve_time": 300.0, "time_limit": 300.0, "rep": 4},
+    ]
+
+    agg = aggregate_repetitions(records)
+    assert len(agg) == 1
+    rec = agg[0]
+    assert rec["status"] == "PARTIAL"
+    assert rec["n_optimal"] == 3
+    assert rec["n_feasible"] == 1
+    assert rec["n_total"] == 4
+    assert rec["n_algorithmic"] == 4
+
+    # Exact manual PAR2: (2.0 + 6.0 + 22.0 + 2 * 300.0) / 4 = 630.0 / 4 = 157.5
+    expected_par2 = 157.5
+    assert abs(rec["par2"] - expected_par2) < 1e-5
+
+    rec_no_par2 = dict(rec)
+    del rec_no_par2["par2"]
+    df_raw = pd.DataFrame({"sol_y": [rec_no_par2]}, index=["ds_feas"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_y"], timeout=300.0)
+    assert abs(par2["sol_y"] - expected_par2) < 1e-5
+
+
+def test_par2_different_time_limits_across_repetitions():
+    """
+    Test PAR2 calculation when individual repetitions have different time limits.
+    """
+    import pandas as pd
+    from analysis.make_tables import aggregate_repetitions, compute_summary_stats
+
+    records = [
+        {"dataset": "ds_var_tl", "solver": "sol_z", "status": "OPTIMAL", "solve_time": 4.0, "time_limit": 100.0, "rep": 1},
+        {"dataset": "ds_var_tl", "solver": "sol_z", "status": "TIMEOUT", "solve_time": 200.0, "time_limit": 200.0, "rep": 2},
+        {"dataset": "ds_var_tl", "solver": "sol_z", "status": "TIMEOUT", "solve_time": 500.0, "time_limit": 500.0, "rep": 3},
+    ]
+
+    agg = aggregate_repetitions(records)
+    assert len(agg) == 1
+    rec = agg[0]
+    assert rec["status"] == "PARTIAL"
+
+    # Exact manual PAR2: (4.0 + 2 * 200.0 + 2 * 500.0) / 3 = (4.0 + 400.0 + 1000.0) / 3 = 1404.0 / 3 = 468.0
+    expected_par2 = 468.0
+    assert abs(rec["par2"] - expected_par2) < 1e-5
+
+    rec_no_par2 = dict(rec)
+    del rec_no_par2["par2"]
+    df_raw = pd.DataFrame({"sol_z": [rec_no_par2]}, index=["ds_var_tl"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_z"], timeout=600.0)
+    assert abs(par2["sol_z"] - expected_par2) < 1e-5
+
+
+def test_par2_partial_with_existing_valid_par2():
+    """
+    Test that compute_summary_stats preserves an already-computed valid par2 for PARTIAL records.
+    """
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    rec = {
+        "status": "PARTIAL",
+        "solve_time": 10.0,
+        "par2": 345.678,
+        "n_optimal": 1,
+        "n_total": 2,
+        "n_algorithmic": 2,
+    }
+    df_raw = pd.DataFrame({"sol_m": [rec]}, index=["ds_test"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_m"], timeout=600.0)
+    assert abs(par2["sol_m"] - 345.678) < 1e-5
+
+
+def test_par2_legacy_partial_without_par2_or_reps():
+    """
+    Test that a legacy PARTIAL record without precomputed par2 and without individual repetition data
+    does NOT guess an approximate PAR2 using median solve time.
+    """
+    import math
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    legacy_rec = {
+        "status": "PARTIAL",
+        "solve_time": 15.0,
+        "n_optimal": 1,
+        "n_total": 3,
+        "n_algorithmic": 3,
+    }
+    df_raw = pd.DataFrame({"sol_legacy": [legacy_rec]}, index=["ds_legacy"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_legacy"], timeout=600.0)
+
+    # When no par2 can be accurately computed, par2_scores should be nan
+    assert math.isnan(par2["sol_legacy"])
+
+
+def test_export_table_data_csv_readback_and_population_counters(tmp_path):
+    """
+    Test export_table generating both <base_filename>.csv and machine-readable <base_filename>_data.csv.
+    Asserts that reading back <base_filename>_data.csv preserves all 12 population counters and metrics.
+    """
+    import pandas as pd
+    from analysis.make_tables import export_table
+
+    df_display = pd.DataFrame({
+        "m1": ["1.2345", "1/3 4.5678*"],
+        "m2": ["FEAS(3)", "SL"],
+    }, index=["ds_alpha", "ds_beta"])
+
+    df_raw = pd.DataFrame({
+        "m1": [
+            {
+                "status": "OPTIMAL",
+                "par2": 1.2345,
+                "solve_time": 1.2345,
+                "wall_time": 1.30,
+                "encode_time": 0.05,
+                "best_ub": 2,
+                "n_total": 1,
+                "n_algorithmic": 1,
+                "n_optimal": 1,
+                "n_timeout": 0,
+                "n_interrupted": 0,
+                "n_feasible": 0,
+                "n_infeasible": 0,
+                "n_error": 0,
+                "n_size_limit": 0,
+                "n_unavailable": 0,
+                "n_license_error": 0,
+                "n_unknown": 0,
+            },
+            {
+                "status": "PARTIAL",
+                "par2": 404.5678,
+                "solve_time": 4.5678,
+                "wall_time": 4.60,
+                "encode_time": 0.10,
+                "best_ub": 3,
+                "n_total": 3,
+                "n_algorithmic": 3,
+                "n_optimal": 1,
+                "n_timeout": 2,
+                "n_interrupted": 0,
+                "n_feasible": 0,
+                "n_infeasible": 0,
+                "n_error": 0,
+                "n_size_limit": 0,
+                "n_unavailable": 0,
+                "n_license_error": 0,
+                "n_unknown": 0,
+            },
+        ],
+        "m2": [
+            {
+                "status": "FEASIBLE",
+                "par2": 1200.0,
+                "solve_time": 600.0,
+                "wall_time": 600.1,
+                "encode_time": 0.02,
+                "best_ub": 3,
+                "n_total": 1,
+                "n_algorithmic": 1,
+                "n_optimal": 0,
+                "n_timeout": 0,
+                "n_interrupted": 0,
+                "n_feasible": 1,
+                "n_infeasible": 0,
+                "n_error": 0,
+                "n_size_limit": 0,
+                "n_unavailable": 0,
+                "n_license_error": 0,
+                "n_unknown": 0,
+            },
+            {
+                "status": "SIZE_LIMIT",
+                "par2": None,
+                "solve_time": 0.01,
+                "wall_time": 0.02,
+                "encode_time": 0.01,
+                "best_ub": -1,
+                "n_total": 1,
+                "n_algorithmic": 0,
+                "n_optimal": 0,
+                "n_timeout": 0,
+                "n_interrupted": 0,
+                "n_feasible": 0,
+                "n_infeasible": 0,
+                "n_error": 0,
+                "n_size_limit": 1,
+                "n_unavailable": 0,
+                "n_license_error": 0,
+                "n_unknown": 0,
+            },
+        ],
+    }, index=["ds_alpha", "ds_beta"])
+
+    summary_rows = [
+        ("Solved", {"m1": "1", "m2": "0"}),
+        ("SL", {"m1": "0", "m2": "1"}),
+    ]
+
+    out_dir = str(tmp_path / "table_out")
+    export_table(
+        df_display,
+        summary_rows,
+        title="Audit Table",
+        base_filename="audit_table",
+        output_dirs=(out_dir,),
+        df_raw=df_raw,
+    )
+
+    disp_csv_path = os.path.join(out_dir, "audit_table.csv")
+    data_csv_path = os.path.join(out_dir, "audit_table_data.csv")
+    assert os.path.exists(disp_csv_path)
+    assert os.path.exists(data_csv_path)
+
+    # Read back machine-readable data CSV
+    df_readback = pd.read_csv(data_csv_path)
+    assert len(df_readback) == 4  # 2 datasets * 2 methods
+
+    expected_cols = [
+        "dataset", "column", "status", "par2", "solve_time", "wall_time", "encode_time", "best_ub",
+        "n_total", "n_algorithmic", "n_optimal", "n_timeout", "n_interrupted", "n_feasible",
+        "n_infeasible", "n_error", "n_size_limit", "n_unavailable", "n_license_error", "n_unknown",
+    ]
+    for col in expected_cols:
+        assert col in df_readback.columns
+
+    # Verify specific row values
+    row_alpha_m1 = df_readback[(df_readback["dataset"] == "ds_alpha") & (df_readback["column"] == "m1")].iloc[0]
+    assert row_alpha_m1["status"] == "OPTIMAL"
+    assert row_alpha_m1["n_total"] == 1
+    assert row_alpha_m1["n_algorithmic"] == 1
+    assert row_alpha_m1["n_optimal"] == 1
+    assert row_alpha_m1["n_timeout"] == 0
+    assert abs(row_alpha_m1["par2"] - 1.2345) < 1e-4
+
+    row_beta_m1 = df_readback[(df_readback["dataset"] == "ds_beta") & (df_readback["column"] == "m1")].iloc[0]
+    assert row_beta_m1["status"] == "PARTIAL"
+    assert row_beta_m1["n_total"] == 3
+    assert row_beta_m1["n_algorithmic"] == 3
+    assert row_beta_m1["n_optimal"] == 1
+    assert row_beta_m1["n_timeout"] == 2
+
+    row_beta_m2 = df_readback[(df_readback["dataset"] == "ds_beta") & (df_readback["column"] == "m2")].iloc[0]
+    assert row_beta_m2["status"] == "SIZE_LIMIT"
+    assert row_beta_m2["n_total"] == 1
+    assert row_beta_m2["n_algorithmic"] == 0
+    assert row_beta_m2["n_size_limit"] == 1
+
+
+
 

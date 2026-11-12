@@ -485,26 +485,54 @@ def enumerate_projected_sat_models(N, edges, UB, encoding="order", sb_rot=False,
             clauses.extend(cyclic_edge_pairwise(N, X, u, v, UB))
 
     solver = Cadical195()
-    solver.append_formula(clauses)
+    try:
+        solver.append_formula(clauses)
 
-    projected_assignments = set()
-    while solver.solve():
-        model = set(solver.get_model())
-        assignment = [None] * N
-        blocking = []
-        for u in range(N):
-            for i in range(N):
-                var = X[u][i]
-                if var in model:
-                    assignment[u] = i
-                    blocking.append(-var)
-                    break
-        assert None not in assignment, f"Incomplete assignment in SAT model: {assignment}"
-        projected_assignments.add(tuple(assignment))
-        solver.add_clause(blocking)
+        projected_assignments = set()
+        while solver.solve():
+            model = set(solver.get_model())
+            assignment = [None] * N
+            blocking = []
+            for u in range(N):
+                for i in range(N):
+                    var = X[u][i]
+                    if var in model:
+                        assignment[u] = i
+                        blocking.append(-var)
+                        break
+            assert None not in assignment, f"Incomplete assignment in SAT model: {assignment}"
+            assert len(set(assignment)) == N, f"Projected assignment is not a valid bijection permutation: {assignment}"
+            assert compute_cyclic_bandwidth(N, edges, assignment) < UB, f"Projected assignment exceeds target bandwidth bound: {assignment}"
+            projected_assignments.add(tuple(assignment))
+            solver.add_clause(blocking)
 
-    solver.delete()
-    return projected_assignments
+        return projected_assignments
+    finally:
+        solver.delete()
+
+
+def test_enumerate_projected_sat_models_resource_cleanup_on_exception(monkeypatch):
+    """Verify solver.delete() is executed via try/finally even if an exception occurs during solving."""
+    from pysat.solvers import Cadical195
+
+    delete_called = False
+    original_delete = Cadical195.delete
+
+    def mock_delete(self):
+        nonlocal delete_called
+        delete_called = True
+        original_delete(self)
+
+    def mock_solve(self):
+        raise RuntimeError("Simulated solver interrupt during model enumeration")
+
+    monkeypatch.setattr(Cadical195, "delete", mock_delete)
+    monkeypatch.setattr(Cadical195, "solve", mock_solve)
+
+    with pytest.raises(RuntimeError, match="Simulated solver interrupt"):
+        enumerate_projected_sat_models(N=2, edges=[], UB=1, encoding="order")
+
+    assert delete_called is True, "solver.delete() must be guaranteed to execute via finally"
 
 
 @pytest.mark.parametrize("name, N, edges", [

@@ -70,6 +70,26 @@ def build_cplex_cp_model(N: int, edges: list, sb_rotation: bool = True):
     mdl.minimize(k)
     return mdl, f, k
 
+def _validate_constraint_count(val):
+    """
+    Accepts only genuine non-negative integer constraint counts.
+    Rejects booleans, negative numbers, NaN, infinity, malformed strings, and invalid values.
+    """
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        if isinstance(val, (int, float, str)):
+            f_val = float(val)
+            if math.isnan(f_val) or math.isinf(f_val):
+                return None
+            if f_val < 0:
+                return None
+            if f_val.is_integer():
+                return int(f_val)
+    except (ValueError, TypeError):
+        pass
+    return None
+
 def solve_cplex_cp(
     dataset: Optional[Union[str, int]] = None,
     N: Optional[int] = None,
@@ -166,22 +186,28 @@ def solve_cplex_cp(
     stats["per_iter_times"] = [solve_time]
     stats["num_iterations"] = 1
 
+    # Attempt genuine solver-info sources independently
+    num_constraints = None
     if sol and hasattr(sol, "get_solver_info"):
         try:
             raw_c = sol.get_solver_info("NumberOfConstraints")
-            if raw_c is not None:
-                stats["num_constraints"] = int(raw_c)
+            num_constraints = _validate_constraint_count(raw_c)
         except Exception:
-            pass
-    elif sol and hasattr(sol, "get_solver_infos"):
+            num_constraints = None
+
+    if num_constraints is None and sol and hasattr(sol, "get_solver_infos"):
         try:
             infos = sol.get_solver_infos()
-            if infos and hasattr(infos, "get_number_of_constraints"):
-                c = infos.get_number_of_constraints()
-                if c is not None and c > 0:
-                    stats["num_constraints"] = int(c)
+            raw_c = None
+            if hasattr(infos, "get_number_of_constraints"):
+                raw_c = infos.get_number_of_constraints()
+            elif hasattr(infos, "get"):
+                raw_c = infos.get("NumberOfConstraints")
+            num_constraints = _validate_constraint_count(raw_c)
         except Exception:
-            pass
+            num_constraints = None
+
+    stats["num_constraints"] = num_constraints
 
     sol_status = str(sol.get_solve_status()) if sol and hasattr(sol, "get_solve_status") and sol.get_solve_status() is not None else ""
     stop_cause = str(sol.get_stop_cause()) if sol and hasattr(sol, "get_stop_cause") and sol.get_stop_cause() is not None else ""

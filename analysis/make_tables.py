@@ -266,6 +266,7 @@ def aggregate_repetitions(records):
             if "_group" in r:
                 all_groups.add(r["_group"])
         agg["groups"] = sorted(list(all_groups))
+        agg["reps"] = reps
 
         aggregated.append(agg)
 
@@ -585,11 +586,28 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             elif st == "PARTIAL":
                 if "par2" in rec and rec.get("par2") is not None:
                     par2_vals.append(rec["par2"])
+                elif "reps" in rec and rec["reps"]:
+                    rep_par2s = []
+                    for r_item in rec["reps"]:
+                        r_cat = r_item.get("_cat") or categorize_status(r_item.get("status"))
+                        if r_cat == "OPTIMAL":
+                            t_r = r_item.get("solve_time")
+                            if t_r is None:
+                                t_r = r_item.get("wall_time")
+                            if t_r is not None and float(t_r) >= 0:
+                                rep_par2s.append(float(t_r))
+                            else:
+                                t_lim = extract_time_limit(r_item, default_timeout=rec_timeout)
+                                rep_par2s.append(2.0 * t_lim)
+                        elif r_cat in ("TIMEOUT", "INTERRUPTED", "FEASIBLE", "INFEASIBLE", "ERROR"):
+                            t_lim = extract_time_limit(r_item, default_timeout=rec_timeout)
+                            rep_par2s.append(2.0 * t_lim)
+                    if rep_par2s:
+                        par2_vals.append(float(np.mean(rep_par2s)))
                 else:
-                    n_opt = rec.get("n_optimal", 0)
-                    n_alg = rec.get("n_algorithmic", rec.get("n_total", 1))
-                    n_alg = max(n_alg, 1)
-                    par2_vals.append((n_opt * t + (n_alg - n_opt) * 2.0 * float(rec_timeout)) / n_alg)
+                    # Legacy record without precomputed par2 and without individual repetition data:
+                    # Do not reconstruct exact PAR2 from median timing.
+                    pass
             elif st == "SIZE_LIMIT":
                 sl_count += 1
                 # SIZE_LIMIT is reported separately in SL and not penalized in PAR2 as timeout
@@ -616,8 +634,8 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
 
     return solved_counts, sl_counts, par2_scores, speedups
 
-def export_table(df_display, summary_rows, title, base_filename, output_dirs=("results_v2/tables",), note=None):
-    """Saves formatted table as both CSV and LaTeX."""
+def export_table(df_display, summary_rows, title, base_filename, output_dirs=("results_v2/tables",), note=None, df_raw=None):
+    """Saves formatted table as both CSV and LaTeX, and optionally exports machine-readable raw metrics."""
     if isinstance(output_dirs, str):
         output_dirs = (output_dirs,)
     full_df = df_display.astype(object).copy()
@@ -660,6 +678,40 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("r
                 f.write(f"\\multicolumn{{{total_cols}}}{{l}}{{\\footnotesize {note}}} \\\\\n")
             f.write("\\end{tabular}\n")
             f.write("\\end{table}\n")
+
+        # Dedicated machine-readable aggregation export preserving exact population counters
+        if df_raw is not None:
+            raw_rows = []
+            for ds, row in df_raw.iterrows():
+                for col in df_raw.columns:
+                    cell = row.get(col)
+                    if isinstance(cell, dict):
+                        raw_rows.append({
+                            "dataset": ds,
+                            "column": col,
+                            "status": cell.get("status"),
+                            "par2": cell.get("par2"),
+                            "solve_time": cell.get("solve_time"),
+                            "wall_time": cell.get("wall_time"),
+                            "encode_time": cell.get("encode_time"),
+                            "best_ub": cell.get("best_ub"),
+                            "n_total": cell.get("n_total"),
+                            "n_algorithmic": cell.get("n_algorithmic"),
+                            "n_optimal": cell.get("n_optimal"),
+                            "n_timeout": cell.get("n_timeout"),
+                            "n_interrupted": cell.get("n_interrupted"),
+                            "n_feasible": cell.get("n_feasible"),
+                            "n_infeasible": cell.get("n_infeasible"),
+                            "n_error": cell.get("n_error"),
+                            "n_size_limit": cell.get("n_size_limit"),
+                            "n_unavailable": cell.get("n_unavailable"),
+                            "n_license_error": cell.get("n_license_error"),
+                            "n_unknown": cell.get("n_unknown"),
+                        })
+            if raw_rows:
+                df_metrics = pd.DataFrame(raw_rows)
+                metrics_csv_path = os.path.join(out_dir, f"{base_filename}_data.csv")
+                df_metrics.to_csv(metrics_csv_path, index=False)
 
     print(f"Table saved: {base_filename}.csv and {base_filename}.tex in {output_dirs[0]}/")
     return full_df
@@ -755,7 +807,7 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
     ])
 
     note = f"Speedup chỉ tính trên instance mà baseline >= 0.1s ({n_used}/{n_total}). Các variant chưa giải hết các instance này ghi '-'."
-    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs, note=note)
+    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs, note=note, df_raw=df_raw)
 
 def make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=("results_v2/tables",)):
     """Generate Solvers comparison table for a specific solvers group."""
@@ -872,7 +924,7 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
     else:
         note = speedup_note
 
-    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs, note=note)
+    export_table(df_display, summary, title, base_filename, output_dirs=output_dirs, note=note, df_raw=df_raw)
 
 def make_table_methods(records, output_dirs=("results_v2/tables",)):
     """Generate Methods comparison table (SAT vs CP-SAT vs CPLEX)."""
@@ -944,7 +996,7 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
     ]
 
     note = f"SL = Size Limit (vượt giới hạn CPLEX Community Edition, loại khỏi PAR2). Speedup chỉ tính trên instance mà baseline >= 0.1s ({n_used}/{n_total}). Các method chưa giải hết các instance này ghi '-'."
-    export_table(df_display, summary, "Comparison of Methods: SAT vs CP-SAT vs CPLEX", "table_methods", output_dirs=output_dirs, note=note)
+    export_table(df_display, summary, "Comparison of Methods: SAT vs CP-SAT vs CPLEX", "table_methods", output_dirs=output_dirs, note=note, df_raw=df_raw)
 
 def make_table_ablation_family(records, base_filename="table_ablation_family", output_dirs=("results_v2/tables",)):
     """

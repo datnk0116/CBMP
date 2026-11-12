@@ -385,25 +385,75 @@ def test_cplex_cp_unknown_stop_without_limit_evidence_is_error(monkeypatch, mock
 
 
 def test_cplex_cp_statistics_invalid_and_exceptional(monkeypatch, mock_cpo_environment):
-    """Verify num_constraints gracefully handles exceptional or invalid solver info responses."""
-    class ExceptionalCpoSolution(FakeCpoSolution):
+    """Verify num_constraints independently evaluates solver-info sources and rejects invalid values."""
+    # 1. get_solver_info raises, but get_solver_infos succeeds -> returns 20
+    class FallbackCpoSolution(FakeCpoSolution):
+        def get_solver_info(self, key):
+            raise RuntimeError("Primary API failure")
+        def get_solver_infos(self):
+            class FakeInfos:
+                def get_number_of_constraints(self):
+                    return 20
+            return FakeInfos()
+
+    fake_sol_fb = FallbackCpoSolution(solve_status="Optimal", has_solution=True, assignment=[1, 2, 3], obj_val=1)
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol_fb):
+        res, stats_fb = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats_fb["num_constraints"] == 20
+
+    # 2. get_solver_info returns None, but get_solver_infos succeeds -> returns 25
+    class NoneFallbackCpoSolution(FakeCpoSolution):
+        def get_solver_info(self, key):
+            return None
+        def get_solver_infos(self):
+            return {"NumberOfConstraints": 25}
+
+    fake_sol_nfb = NoneFallbackCpoSolution(solve_status="Optimal", has_solution=True, assignment=[1, 2, 3], obj_val=1)
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol_nfb):
+        res, stats_nfb = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats_nfb["num_constraints"] == 25
+
+    # 3. Both sources raise -> None
+    class BothRaiseCpoSolution(FakeCpoSolution):
         def get_solver_info(self, key):
             raise RuntimeError("Corrupt solver info stream")
         def get_solver_infos(self):
             raise ValueError("Invalid solver infos")
 
-    fake_sol = ExceptionalCpoSolution(
-        solve_status="Optimal",
-        has_solution=True,
-        assignment=[1, 2, 3],
-        obj_val=1,
-    )
-    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol):
-        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    fake_sol_br = BothRaiseCpoSolution(solve_status="Optimal", has_solution=True, assignment=[1, 2, 3], obj_val=1)
+    with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol_br):
+        res, stats_br = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats_br["num_constraints"] is None
+    assert stats_br["estimated_constraints"] == 2 + 1 + 1
 
-    assert stats["status"] == "OPTIMAL"
-    assert stats["num_constraints"] is None, "Exceptional response must leave num_constraints as None"
-    assert stats["estimated_constraints"] == 2 + 1 + 1
+    # 4. Invalid values (boolean True, negative, NaN, infinity, bad string) must all be rejected -> None
+    for invalid_val in [True, False, -5, float("nan"), float("inf"), "invalid_str"]:
+        class InvalidValCpoSolution(FakeCpoSolution):
+            def get_solver_info(self, key):
+                return invalid_val
+            def get_solver_infos(self):
+                return {"NumberOfConstraints": invalid_val}
+
+        fake_sol_inv = InvalidValCpoSolution(solve_status="Optimal", has_solution=True, assignment=[1, 2, 3], obj_val=1)
+        with patch("docplex.cp.model.CpoModel.solve", return_value=fake_sol_inv):
+            res, stats_inv = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+        assert stats_inv["num_constraints"] is None, f"Invalid value {invalid_val!r} must be rejected"
+
+    # 5. No solver-info API available at all -> None
+    class BareCpoSolution:
+        def is_solution(self): return True
+        def get_solve_status(self): return "Optimal"
+        def is_solution_optimal(self): return True
+        def get_stop_cause(self): return None
+        def get_fail_status(self): return None
+        def get_search_status(self): return None
+        def __getitem__(self, var):
+            name = getattr(var, "name", str(var))
+            return 1 if "k" in name else 1
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=BareCpoSolution()):
+        res, stats_bare = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats_bare["num_constraints"] is None
 
 
 def test_cplex_cp_solver_exception_and_license_error(monkeypatch, mock_cpo_environment):
