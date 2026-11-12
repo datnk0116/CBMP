@@ -3,6 +3,7 @@ import sys
 import glob
 import json
 import time
+import math
 import yaml
 import signal
 import logging
@@ -17,6 +18,8 @@ logger = logging.getLogger("experiments")
 # Ensure repo root is in sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+from analysis.make_tables import normalize_status, validate_best_ub
 
 def get_dataset_info(filepath):
     """Quickly read N and M from MatrixMarket header without parsing entire matrix."""
@@ -230,7 +233,9 @@ def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool
     if not retry_failed:
         return True
 
-    status = str(record.get("status", "")).upper()
+    status = normalize_status(record.get("status"))
+    if not status:
+        status = str(record.get("status", "")).strip().upper()
 
     # 1. Conclusive proofs and limits
     if status in ("OPTIMAL", "INFEASIBLE", "SIZE_LIMIT"):
@@ -242,13 +247,9 @@ def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool
 
     # 3. Preserved feasible incumbents
     if status == "FEASIBLE":
-        best_ub = record.get("best_ub")
-        if best_ub is not None:
-            try:
-                if int(best_ub) >= 0 and not record.get("validation_error"):
-                    return True
-            except (ValueError, TypeError):
-                pass
+        ub_val = validate_best_ub(record.get("best_ub"))
+        if ub_val is not None and not record.get("validation_error"):
+            return True
         return False
 
     # 4. Transient failures are retryable
@@ -1108,9 +1109,16 @@ def run_experiments(
         if resume:
             existing_runs[(key, rep)] = record
 
-        status_str = record.get("status", "UNKNOWN")
-        ub_str = f"ub={record.get('best_ub')}" if record.get("best_ub") is not None else ""
-        print(f"       -> {status_str} {ub_str} (solve_time: {record.get('solve_time', 0):.3f}s, wall_time: {wall_time:.3f}s)")
+        status_str = normalize_status(record.get("status")) or str(record.get("status", "UNKNOWN"))
+        ub_val = validate_best_ub(record.get("best_ub"))
+        ub_str = f"ub={ub_val}" if ub_val is not None else (f"ub={record.get('best_ub')}" if record.get('best_ub') is not None else "")
+        st_val = record.get("solve_time")
+        if isinstance(st_val, (int, float)) and not isinstance(st_val, bool) and math.isfinite(st_val):
+            st_disp = f"{float(st_val):.3f}s"
+        else:
+            st_disp = "-"
+        wt_disp = f"{float(wall_time):.3f}s" if (isinstance(wall_time, (int, float)) and not isinstance(wall_time, bool) and math.isfinite(wall_time)) else "-"
+        print(f"       -> {status_str} {ub_str} (solve_time: {st_disp}, wall_time: {wt_disp})")
 
     print(f"\nExperiment execution finished. All results saved in: {runs_file}")
 

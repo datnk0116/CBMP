@@ -2816,3 +2816,217 @@ def test_missing_value_types_edge_cases():
     assert normalize_status("error") == "ERROR"
     assert normalize_status("numeric_error") == "NUMERIC_ERROR"
 
+
+def test_is_run_completed_unified_validation():
+    """
+    Test Section 1 & 4 requirements:
+    Verify unified validation between run_experiments.py and make_tables.py.
+    Ensure fractional ub, booleans, negative values, and validation errors are rejected.
+    """
+    from experiments.run_experiments import is_run_completed
+
+    # retry_failed=False always accepts existing records
+    assert is_run_completed({"status": "ERROR"}, retry_failed=False) is True
+    assert is_run_completed({"status": "TIMEOUT"}, retry_failed=False) is True
+
+    # retry_failed=True
+    # Conclusive proofs and limits
+    for st in ["OPTIMAL", "optimal", "INFEASIBLE", "infeasible", "SIZE_LIMIT", "size_limit"]:
+        assert is_run_completed({"status": st}, retry_failed=True) is True
+
+    # Environmental/license barriers
+    for st in ["UNAVAILABLE", "unavailable", "LICENSE_ERROR", "license_error"]:
+        assert is_run_completed({"status": st}, retry_failed=True) is True
+
+    # Feasible with valid integer bounds
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": 3}, retry_failed=True) is True
+    assert is_run_completed({"status": "feasible", "best_ub": 3.0}, retry_failed=True) is True
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": "3"}, retry_failed=True) is True
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": 0}, retry_failed=True) is True
+
+    # Feasible with invalid bounds - MUST be rejected
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": 3.7}, retry_failed=True) is False
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": "3.7"}, retry_failed=True) is False
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": True}, retry_failed=True) is False
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": False}, retry_failed=True) is False
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": -1}, retry_failed=True) is False
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": None}, retry_failed=True) is False
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": float("nan")}, retry_failed=True) is False
+    assert is_run_completed({"status": "FEASIBLE", "best_ub": 3, "validation_error": True}, retry_failed=True) is False
+
+    # Transient failures
+    for st in ["TIMEOUT", "MEMOUT", "ERROR", "UNKNOWN", "unknown", "arbitrary_fail"]:
+        assert is_run_completed({"status": st}, retry_failed=True) is False
+
+
+def test_make_plots_hardening_and_safety(tmp_path):
+    """
+    Test Section 3 requirements:
+    Verify make_plots.py functions handle pathological records safely
+    and output valid PNG/PDF without crashes or invalid log-scale zeroes.
+    """
+    import os
+    from analysis.make_plots import (
+        plot_cactus,
+        plot_scatter_sb_vs_nosb,
+        plot_ablation_median_time,
+        plot_ablation_iterations_and_unsat,
+        plot_ablation_family_boxplots,
+    )
+
+    out_dir = str(tmp_path / "figs")
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 1. Pathological records: None, NaN, inf, negative, strings, empty arrays
+    pathological_recs = [
+        {"dataset": "ds1", "status": "UNKNOWN", "solve_time": None, "groups": ["solvers_small"]},
+        {"dataset": "ds2", "status": "OPTIMAL", "solve_time": float("nan"), "groups": ["solvers_small"]},
+        {"dataset": "ds3", "status": "OPTIMAL", "solve_time": -5.0, "groups": ["solvers_small"]},
+        {"dataset": "ds4", "status": "OPTIMAL", "solve_time": 0.0, "groups": ["solvers_small"]},
+        {"dataset": "ds5", "status": "OPTIMAL", "solve_time": "invalid", "groups": ["solvers_small"]},
+        {"dataset": "ds6", "status": "OPTIMAL", "solve_time": 1.5, "per_iter_times": [float("nan"), "err"], "num_iterations": "none", "groups": ["ablation_small"], "config": {}},
+    ]
+
+    # None of these should crash
+    plot_cactus(pathological_recs, "solvers_small", lambda r: "test", "Test Cactus", "cactus_patho", output_dirs=(out_dir,))
+    plot_scatter_sb_vs_nosb(pathological_recs, "ablation_small", "scatter_patho", "Test Scatter", output_dirs=(out_dir,))
+    plot_ablation_median_time(pathological_recs, "ablation_small", "median_patho", "Test Median", output_dirs=(out_dir,))
+    plot_ablation_iterations_and_unsat(pathological_recs, "ablation_small", "iter_patho", "Test Iter", output_dirs=(out_dir,))
+    plot_ablation_family_boxplots(pathological_recs, "boxplot_patho", output_dirs=(out_dir,))
+
+    # 2. Valid records for all plot functions
+    valid_recs = [
+        # Cactus & Ablation small records
+        {"dataset": "dsA", "status": "OPTIMAL", "solve_time": 0.12, "groups": ["solvers_small", "ablation_small"], "solver": "sat_kissat", "config": {}, "num_iterations": 2, "per_iter_times": [0.05, 0.07]},
+        {"dataset": "dsB", "status": "OPTIMAL", "solve_time": 0.45, "groups": ["solvers_small", "ablation_small"], "solver": "sat_kissat", "config": {"sb_rotation": True}, "num_iterations": 3, "per_iter_times": [0.1, 0.15, 0.2]},
+        {"dataset": "dsA", "status": "OPTIMAL", "solve_time": 0.08, "groups": ["solvers_small", "ablation_small"], "solver": "sat_kissat", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "num_iterations": 1, "per_iter_times": [0.08]},
+        # Family records for N=40 and N=50
+    ]
+    for n_val in [40, 50]:
+        for seed in [1, 2]:
+            for var_cfg, var_name in [
+                ({}, "none"),
+                ({"sb_rotation": True}, "rotation"),
+                ({"sb_rotation": True, "sb_reflection": True}, "rot_ref"),
+                ({"heuristic_ub": True}, "heur_ub"),
+                ({"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "all"),
+            ]:
+                valid_recs.append({
+                    "dataset": f"ds_fam_{n_val}",
+                    "N": n_val,
+                    "relabel_seed": seed,
+                    "status": "OPTIMAL",
+                    "solve_time": 1.0 if var_name == "none" else 0.5,
+                    "config": var_cfg,
+                })
+
+    plot_cactus(valid_recs, "solvers_small", lambda r: r.get("solver", "s"), "Valid Cactus", "cactus_valid", output_dirs=(out_dir,))
+    assert os.path.exists(f"{out_dir}/cactus_valid.png")
+    assert os.path.exists(f"{out_dir}/cactus_valid.pdf")
+    assert os.path.getsize(f"{out_dir}/cactus_valid.png") > 0
+
+    plot_scatter_sb_vs_nosb(valid_recs, "ablation_small", "scatter_valid", "Valid Scatter", output_dirs=(out_dir,))
+    assert os.path.exists(f"{out_dir}/scatter_valid.png")
+    assert os.path.exists(f"{out_dir}/scatter_valid.pdf")
+
+    plot_ablation_median_time(valid_recs, "ablation_small", "median_valid", "Valid Median", output_dirs=(out_dir,))
+    assert os.path.exists(f"{out_dir}/median_valid.png")
+    assert os.path.exists(f"{out_dir}/median_valid.pdf")
+
+    plot_ablation_iterations_and_unsat(valid_recs, "ablation_small", "iter_valid", "Valid Iter", output_dirs=(out_dir,))
+    assert os.path.exists(f"{out_dir}/iter_valid.png")
+    assert os.path.exists(f"{out_dir}/iter_valid.pdf")
+
+    plot_ablation_family_boxplots(valid_recs, "boxplot_valid", output_dirs=(out_dir,))
+    assert os.path.exists(f"{out_dir}/boxplot_valid.png")
+    assert os.path.exists(f"{out_dir}/boxplot_valid.pdf")
+
+
+def test_end_to_end_pipeline_roundtrip(tmp_path):
+    """
+    Test Section 7 requirements:
+    Full pipeline round-trip: JSONL -> load_records -> tables -> CSV/LaTeX -> reload verify.
+    """
+    import json
+    import pandas as pd
+    from analysis.make_tables import (
+        load_records,
+        make_table_per_dataset,
+        export_table,
+        DATA_CSV_COLUMNS,
+    )
+
+    jsonl_path = tmp_path / "runs.jsonl"
+    out_dir = str(tmp_path / "results")
+
+    # Generate synthetic experiment records
+    records = [
+        {
+            "dataset": "494_bus_n40",
+            "N": 40,
+            "M": 80,
+            "density": 0.1,
+            "solver": "cbmp_cadical",
+            "method": "sat",
+            "repetition": 1,
+            "status": "OPTIMAL",
+            "best_ub": 5,
+            "lower_bound": 5,
+            "solve_time": 0.245,
+            "wall_time": 0.250,
+            "encode_time": 0.005,
+            "num_iterations": 3,
+            "groups": ["per_dataset", "methods"],
+            "termination_reason": "OPTIMAL_FOUND",
+        },
+        {
+            "dataset": "494_bus_n40",
+            "N": 40,
+            "M": 80,
+            "density": 0.1,
+            "solver": "ortools_cpsat",
+            "method": "cp",
+            "repetition": 1,
+            "status": "FEASIBLE",
+            "best_ub": 7,
+            "lower_bound": 3,
+            "solve_time": 600.0,
+            "wall_time": 600.05,
+            "encode_time": 0.01,
+            "num_iterations": None,
+            "groups": ["per_dataset", "methods"],
+            "termination_reason": "TIME_LIMIT",
+        },
+    ]
+
+    with open(jsonl_path, "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+    loaded = load_records(str(jsonl_path))
+    assert len(loaded) == 2
+
+    # Build per_dataset table
+    df_per_ds = make_table_per_dataset(loaded, output_dirs=(out_dir,))
+    assert not df_per_ds.empty
+    assert os.path.exists(f"{out_dir}/table_per_dataset.csv")
+
+    # Export 21-column data CSV using export_table
+    df_raw = pd.DataFrame({"cadical": [loaded[0]], "cpsat": [loaded[1]]}, index=["494_bus_n40"])
+    df_disp = pd.DataFrame({"cadical": ["0.2450"], "cpsat": ["TO"]}, index=["494_bus_n40"])
+    export_table(
+        df_disp,
+        [],
+        title="Test Per Dataset",
+        base_filename="table_test_roundtrip",
+        output_dirs=(out_dir,),
+        df_raw=df_raw,
+    )
+
+    csv_data_path = f"{out_dir}/table_test_roundtrip_data.csv"
+    assert os.path.exists(csv_data_path)
+    df_reloaded = pd.read_csv(csv_data_path)
+    assert list(df_reloaded.columns) == DATA_CSV_COLUMNS
+    assert df_reloaded.columns[20] == "termination_reason"
+    assert len(df_reloaded) == 2
+
