@@ -1476,5 +1476,286 @@ def test_par2_exact_numerator_and_denominator_with_exclusions():
     assert sl["sol_denom"] == 0  # rec status is PARTIAL, sl_count counts cell status == SIZE_LIMIT
 
 
+def test_par2_optimal_aggregate_skewed_times_recomputes_exact_mean_from_reps():
+    """
+    Test that when an OPTIMAL aggregated record has an invalid or missing par2,
+    compute_summary_stats recomputes the exact arithmetic mean PAR2 from individual reps
+    rather than substituting the record's median solve_time.
+    Solve times: [1.0, 2.0, 3.0, 4.0, 100.0].
+    Median = 3.0.
+    Mean = 22.0.
+    """
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    reps = [
+        {"status": "OPTIMAL", "solve_time": 1.0, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": 3.0, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": 4.0, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": 100.0, "time_limit": 600.0},
+    ]
+    rec = {
+        "status": "OPTIMAL",
+        "solve_time": 3.0,  # median
+        "n_total": 5,
+        "n_algorithmic": 5,
+        "n_optimal": 5,
+        "par2": None,  # unpopulated or invalid
+        "reps": reps,
+    }
+
+    df_raw = pd.DataFrame({"sol_opt": [rec]}, index=["ds_skew"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_opt"], timeout=600.0)
+    assert solved["sol_opt"] == 1
+    assert abs(par2["sol_opt"] - 22.0) < 1e-5
+    assert abs(par2["sol_opt"] - 3.0) > 1.0  # Must NOT be the median 3.0
+
+
+def test_par2_optimal_aggregate_valid_par2_prioritized():
+    """
+    When an OPTIMAL aggregated record already contains a validated precomputed par2,
+    compute_summary_stats must preserve and prioritize it.
+    """
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    reps = [
+        {"status": "OPTIMAL", "solve_time": 1.0, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": 3.0, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": 4.0, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": 100.0, "time_limit": 600.0},
+    ]
+    rec = {
+        "status": "OPTIMAL",
+        "solve_time": 3.0,
+        "n_total": 5,
+        "n_algorithmic": 5,
+        "n_optimal": 5,
+        "par2": 22.0,  # valid precomputed par2
+        "reps": reps,
+    }
+
+    df_raw = pd.DataFrame({"sol_opt": [rec]}, index=["ds_skew"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_opt"], timeout=600.0)
+    assert abs(par2["sol_opt"] - 22.0) < 1e-5
+
+
+def test_par2_optimal_single_run_timing_and_fallbacks():
+    """
+    Test direct timing extraction and timeout fallbacks for single independent runs (n_total == 1).
+    """
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    # Case 1: valid solve_time
+    r1 = {"status": "OPTIMAL", "solve_time": 4.5, "n_total": 1, "n_algorithmic": 1, "n_optimal": 1}
+    # Case 2: solve_time is None, fallback to wall_time
+    r2 = {"status": "OPTIMAL", "solve_time": None, "wall_time": 4.8, "n_total": 1, "n_algorithmic": 1, "n_optimal": 1}
+    # Case 3: invalid solve_time (-1.0), penalize with 2 * timeout
+    r3 = {"status": "OPTIMAL", "solve_time": -1.0, "n_total": 1, "n_algorithmic": 1, "n_optimal": 1}
+
+    df = pd.DataFrame({"s1": [r1], "s2": [r2], "s3": [r3]}, index=["ds1"])
+    solved, sl, par2, _ = compute_summary_stats(df, ["s1", "s2", "s3"], timeout=600.0)
+
+    assert abs(par2["s1"] - 4.5) < 1e-5
+    assert abs(par2["s2"] - 4.8) < 1e-5
+    assert abs(par2["s3"] - 1200.0) < 1e-5
+
+
+def test_par2_optimal_aggregate_without_reps_yields_nan():
+    """
+    When an aggregated OPTIMAL record (n_total > 1) lacks both valid par2 and reps,
+    compute_summary_stats must NOT substitute median solve_time; PAR2 must be NaN.
+    """
+    import math
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    rec = {
+        "status": "OPTIMAL",
+        "solve_time": 3.0,  # median across unknown runs
+        "n_total": 5,
+        "n_algorithmic": 5,
+        "n_optimal": 5,
+        "par2": "corrupted",
+    }
+
+    df_raw = pd.DataFrame({"sol_opt": [rec]}, index=["ds_opt"])
+    solved, sl, par2, _ = compute_summary_stats(df_raw, ["sol_opt"], timeout=600.0)
+    assert math.isnan(par2["sol_opt"])
+
+
+def test_compute_repetition_par2_unit_and_exclusions():
+    """
+    Unit tests for compute_repetition_par2 helper covering all status categories and exclusions.
+    """
+    from analysis.make_tables import compute_repetition_par2
+
+    assert compute_repetition_par2([]) is None
+
+    # All non-algorithmic
+    all_non_algo = [
+        {"status": "SIZE_LIMIT", "solve_time": 0.01},
+        {"status": "UNAVAILABLE", "solve_time": 0.0},
+        {"status": "LICENSE_ERROR", "solve_time": 0.0},
+        {"status": "UNKNOWN", "solve_time": 0.0},
+    ]
+    assert compute_repetition_par2(all_non_algo) is None
+
+    # Mixed algorithmic and non-algorithmic
+    mixed = [
+        {"status": "OPTIMAL", "solve_time": 10.0, "time_limit": 300.0},
+        {"status": "TIMEOUT", "solve_time": 300.0, "time_limit": 300.0},
+        {"status": "SIZE_LIMIT", "solve_time": 0.01, "time_limit": 300.0},
+        {"status": "UNAVAILABLE", "solve_time": 0.0, "time_limit": 300.0},
+    ]
+    # Numerator: 10.0 + 2 * 300.0 = 610.0; Denominator: 2
+    assert abs(compute_repetition_par2(mixed, default_timeout=300.0) - 305.0) < 1e-5
+
+    # OPTIMAL with wall_time fallback
+    opt_wall = [{"status": "OPTIMAL", "solve_time": None, "wall_time": 12.34, "time_limit": 300.0}]
+    assert abs(compute_repetition_par2(opt_wall) - 12.34) < 1e-5
+
+    # Rep with invalid solve_time penalized as 2 * timeout
+    opt_bad_time = [{"status": "OPTIMAL", "solve_time": -5.0, "time_limit": 300.0}]
+    assert abs(compute_repetition_par2(opt_bad_time, default_timeout=300.0) - 600.0) < 1e-5
+
+
+def test_make_table_solvers_unification_with_canonical_par2(tmp_path):
+    """
+    Test that make_table_solvers aggregates runs using aggregate_repetition_group:
+    - Sets all 12 population counters.
+    - Excludes SIZE_LIMIT and UNAVAILABLE runs from PAR2 denominator.
+    - Recomputes exact arithmetic PAR2 across seeds.
+    - If all runs are non-algorithmic, status is SIZE_LIMIT and PAR2 is NaN.
+    """
+    import math
+    from analysis.make_tables import make_table_solvers
+
+    # Dataset 1: Mixed 3 seeds (2 OPTIMAL, 1 TIMEOUT)
+    recs_ds1 = [
+        {"dataset": "ds1", "solver": "cadical195", "status": "OPTIMAL", "solve_time": 1.0, "config": {"time_limit": 300.0}, "groups": ["solvers_small"]},
+        {"dataset": "ds1", "solver": "cadical195", "status": "OPTIMAL", "solve_time": 3.0, "config": {"time_limit": 300.0}, "groups": ["solvers_small"]},
+        {"dataset": "ds1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 300.0, "config": {"time_limit": 300.0}, "groups": ["solvers_small"]},
+    ]
+
+    # Dataset 2: Mixed with SIZE_LIMIT (1 OPTIMAL, 1 SIZE_LIMIT)
+    recs_ds2 = [
+        {"dataset": "ds2", "solver": "cadical195", "status": "OPTIMAL", "solve_time": 5.0, "config": {"time_limit": 300.0}, "groups": ["solvers_small"]},
+        {"dataset": "ds2", "solver": "cadical195", "status": "SIZE_LIMIT", "solve_time": 0.01, "config": {"time_limit": 300.0}, "groups": ["solvers_small"]},
+    ]
+
+    # Dataset 3: All SIZE_LIMIT
+    recs_ds3 = [
+        {"dataset": "ds3", "solver": "cadical195", "status": "SIZE_LIMIT", "solve_time": 0.01, "config": {"time_limit": 300.0}, "groups": ["solvers_small"]},
+        {"dataset": "ds3", "solver": "cadical195", "status": "SIZE_LIMIT", "solve_time": 0.01, "config": {"time_limit": 300.0}, "groups": ["solvers_small"]},
+    ]
+
+    all_recs = recs_ds1 + recs_ds2 + recs_ds3
+    out_dir = str(tmp_path / "solvers_tables")
+
+    make_table_solvers(all_recs, group_name="solvers_small", base_filename="test_solvers", output_dirs=(out_dir,))
+
+    # Read back the generated CSV
+    import pandas as pd
+    data_csv = f"{out_dir}/test_solvers_data.csv"
+    assert os.path.exists(data_csv)
+    df_data = pd.read_csv(data_csv)
+
+    row_ds1 = df_data[(df_data["dataset"] == "ds1") & (df_data["column"] == "cadical195")].iloc[0]
+    assert row_ds1["status"] == "PARTIAL"
+    assert row_ds1["n_total"] == 3
+    assert row_ds1["n_algorithmic"] == 3
+    assert row_ds1["n_optimal"] == 2
+    assert row_ds1["n_timeout"] == 1
+    # PAR2 for ds1: (1.0 + 3.0 + 600.0) / 3 = 201.3333...
+    expected_par2_ds1 = (1.0 + 3.0 + 600.0) / 3.0
+    assert abs(row_ds1["par2"] - expected_par2_ds1) < 1e-4
+
+    row_ds2 = df_data[(df_data["dataset"] == "ds2") & (df_data["column"] == "cadical195")].iloc[0]
+    assert row_ds2["status"] == "PARTIAL"
+    assert row_ds2["n_total"] == 2
+    assert row_ds2["n_algorithmic"] == 1
+    assert row_ds2["n_optimal"] == 1
+    assert row_ds2["n_size_limit"] == 1
+    # SIZE_LIMIT excluded: PAR2 is 5.0 / 1 = 5.0
+    assert abs(row_ds2["par2"] - 5.0) < 1e-4
+
+    row_ds3 = df_data[(df_data["dataset"] == "ds3") & (df_data["column"] == "cadical195")].iloc[0]
+    assert row_ds3["status"] == "SIZE_LIMIT"
+    assert row_ds3["n_total"] == 2
+    assert row_ds3["n_algorithmic"] == 0
+    assert row_ds3["n_size_limit"] == 2
+    assert pd.isna(row_ds3["par2"])
+
+
+def test_data_csv_schema_and_termination_reason(tmp_path):
+    """
+    Test machine-readable CSV export schema:
+    - DATA_CSV_COLUMNS has 21 columns including termination_reason.
+    - Records with termination_reason export it correctly.
+    - Records without termination_reason export empty/NaN.
+    """
+    import pandas as pd
+    from analysis.make_tables import export_table, DATA_CSV_COLUMNS
+
+    assert "termination_reason" in DATA_CSV_COLUMNS
+    assert len(DATA_CSV_COLUMNS) == 21
+
+    cell_gurobi_search = {
+        "status": "ERROR",
+        "termination_reason": "search_limit",
+        "solve_time": 10.0,
+        "n_total": 1,
+        "n_algorithmic": 1,
+        "n_error": 1,
+    }
+    cell_gurobi_time = {
+        "status": "TIMEOUT",
+        "termination_reason": "time_limit",
+        "solve_time": 300.0,
+        "n_total": 1,
+        "n_algorithmic": 1,
+        "n_timeout": 1,
+    }
+    cell_sat = {
+        "status": "OPTIMAL",
+        "solve_time": 1.23,
+        "n_total": 1,
+        "n_algorithmic": 1,
+        "n_optimal": 1,
+    }
+
+    df_raw = pd.DataFrame(
+        {
+            "gurobi": [cell_gurobi_search, cell_gurobi_time],
+            "sat": [cell_sat, None],
+        },
+        index=["ds1", "ds2"],
+    )
+    df_disp = pd.DataFrame({"gurobi": ["ERR", "TO"], "sat": ["1.23", "-"]}, index=["ds1", "ds2"])
+    summary_rows = [("Solved", {"gurobi": "0", "sat": "1"})]
+
+    out_dir = str(tmp_path / "csv_schema_test")
+    export_table(df_disp, summary_rows, title="Schema Test", base_filename="schema_test", output_dirs=(out_dir,), df_raw=df_raw)
+
+    csv_path = f"{out_dir}/schema_test_data.csv"
+    assert os.path.exists(csv_path)
+
+    df_read = pd.read_csv(csv_path)
+    assert list(df_read.columns) == DATA_CSV_COLUMNS
+
+    row_grb1 = df_read[(df_read["dataset"] == "ds1") & (df_read["column"] == "gurobi")].iloc[0]
+    assert row_grb1["termination_reason"] == "search_limit"
+
+    row_grb2 = df_read[(df_read["dataset"] == "ds2") & (df_read["column"] == "gurobi")].iloc[0]
+    assert row_grb2["termination_reason"] == "time_limit"
+
+    row_sat = df_read[(df_read["dataset"] == "ds1") & (df_read["column"] == "sat")].iloc[0]
+    assert pd.isna(row_sat["termination_reason"])
+
+
 
 
