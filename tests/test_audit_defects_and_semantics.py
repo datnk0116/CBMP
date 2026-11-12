@@ -1233,13 +1233,13 @@ def test_validate_solve_time_helper():
     assert validate_solve_time(12.345) == 12.345
     assert validate_solve_time("42.5") == 42.5
 
-    # extract_repetition_solve_time checks solve_time, then wall_time
+    # extract_repetition_solve_time strictly checks solve_time and does NOT fall back to wall_time
     assert extract_repetition_solve_time({"solve_time": 5.0, "wall_time": 6.0}) == 5.0
-    assert extract_repetition_solve_time({"solve_time": None, "wall_time": 6.0}) == 6.0
-    assert extract_repetition_solve_time({"solve_time": "bad", "wall_time": 6.0}) == 6.0
-    assert extract_repetition_solve_time({"solve_time": -1, "wall_time": 6.0}) == 6.0
-    assert extract_repetition_solve_time({"solve_time": float("nan"), "wall_time": 6.0}) == 6.0
-    assert extract_repetition_solve_time({"solve_time": float("inf"), "wall_time": 6.0}) == 6.0
+    assert extract_repetition_solve_time({"solve_time": None, "wall_time": 6.0}) is None
+    assert extract_repetition_solve_time({"solve_time": "bad", "wall_time": 6.0}) is None
+    assert extract_repetition_solve_time({"solve_time": -1, "wall_time": 6.0}) is None
+    assert extract_repetition_solve_time({"solve_time": float("nan"), "wall_time": 6.0}) is None
+    assert extract_repetition_solve_time({"solve_time": float("inf"), "wall_time": 6.0}) is None
     assert extract_repetition_solve_time({"solve_time": -1, "wall_time": "invalid"}) is None
     assert extract_repetition_solve_time("not_a_dict") is None
 
@@ -1247,17 +1247,17 @@ def test_validate_solve_time_helper():
 def test_par2_fallback_with_invalid_solve_times_and_wall_time_fallback():
     """
     Test compute_summary_stats with repetitions having invalid solve_time:
-    1. Valid wall_time fallback.
-    2. Both solve_time and wall_time invalid -> penalized as 2 * time_limit.
+    Under strict timing semantics (Section 4 & 5), missing or invalid solve_time
+    is not substituted by wall_time; each is penalized as 2 * time_limit.
     """
     import pandas as pd
     from analysis.make_tables import compute_summary_stats
 
-    # Repetition 1: solve_time is 'invalid', wall_time is 4.0 -> uses 4.0
-    # Repetition 2: solve_time is NaN, wall_time is 8.0 -> uses 8.0
-    # Repetition 3: solve_time is -1, wall_time is -1 -> penalized as 2 * 300 = 600.0
+    # Repetition 1: solve_time is 'invalid' -> penalized as 2 * 300 = 600.0
+    # Repetition 2: solve_time is NaN -> penalized as 2 * 300 = 600.0
+    # Repetition 3: solve_time is -1 -> penalized as 2 * 300 = 600.0
     # Repetition 4: TIMEOUT at 300 -> penalized as 2 * 300 = 600.0
-    # Exact PAR2 = (4.0 + 8.0 + 600.0 + 600.0) / 4 = 1212.0 / 4 = 303.0
+    # Exact PAR2 = (600.0 + 600.0 + 600.0 + 600.0) / 4 = 2400.0 / 4 = 600.0
     rec_reps = {
         "status": "PARTIAL",
         "solve_time": 6.0,
@@ -1276,7 +1276,7 @@ def test_par2_fallback_with_invalid_solve_times_and_wall_time_fallback():
     df_raw = pd.DataFrame({"sol_test": [rec_reps]}, index=["ds_timing"])
     solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_test"], timeout=300.0)
 
-    expected_par2 = (4.0 + 8.0 + 600.0 + 600.0) / 4.0
+    expected_par2 = 600.0
     assert abs(par2["sol_test"] - expected_par2) < 1e-5
 
 
@@ -1545,22 +1545,23 @@ def test_par2_optimal_aggregate_valid_par2_prioritized():
 def test_par2_optimal_single_run_timing_and_fallbacks():
     """
     Test direct timing extraction and timeout fallbacks for single independent runs (n_total == 1).
+    Under strict timing semantics, missing solve_time is penalized with 2 * timeout.
     """
     import pandas as pd
     from analysis.make_tables import compute_summary_stats
 
     # Case 1: valid solve_time
     r1 = {"status": "OPTIMAL", "solve_time": 4.5, "n_total": 1, "n_algorithmic": 1, "n_optimal": 1}
-    # Case 2: solve_time is None, fallback to wall_time
+    # Case 2: solve_time is None -> penalize with 2 * timeout (no disguised wall_time)
     r2 = {"status": "OPTIMAL", "solve_time": None, "wall_time": 4.8, "n_total": 1, "n_algorithmic": 1, "n_optimal": 1}
-    # Case 3: invalid solve_time (-1.0), penalize with 2 * timeout
+    # Case 3: invalid solve_time (-1.0) -> penalize with 2 * timeout
     r3 = {"status": "OPTIMAL", "solve_time": -1.0, "n_total": 1, "n_algorithmic": 1, "n_optimal": 1}
 
     df = pd.DataFrame({"s1": [r1], "s2": [r2], "s3": [r3]}, index=["ds1"])
     solved, sl, par2, _ = compute_summary_stats(df, ["s1", "s2", "s3"], timeout=600.0)
 
     assert abs(par2["s1"] - 4.5) < 1e-5
-    assert abs(par2["s2"] - 4.8) < 1e-5
+    assert abs(par2["s2"] - 1200.0) < 1e-5
     assert abs(par2["s3"] - 1200.0) < 1e-5
 
 
@@ -1614,9 +1615,9 @@ def test_compute_repetition_par2_unit_and_exclusions():
     # Numerator: 10.0 + 2 * 300.0 = 610.0; Denominator: 2
     assert abs(compute_repetition_par2(mixed, default_timeout=300.0) - 305.0) < 1e-5
 
-    # OPTIMAL with wall_time fallback
+    # OPTIMAL with missing solve_time penalized as 2 * timeout
     opt_wall = [{"status": "OPTIMAL", "solve_time": None, "wall_time": 12.34, "time_limit": 300.0}]
-    assert abs(compute_repetition_par2(opt_wall) - 12.34) < 1e-5
+    assert abs(compute_repetition_par2(opt_wall, default_timeout=300.0) - 600.0) < 1e-5
 
     # Rep with invalid solve_time penalized as 2 * timeout
     opt_bad_time = [{"status": "OPTIMAL", "solve_time": -5.0, "time_limit": 300.0}]
@@ -1971,7 +1972,7 @@ def test_format_cell_value_missing_and_invalid_timing():
     # Dict-based OPTIMAL cases
     assert format_cell_value({"status": "OPTIMAL", "solve_time": None, "wall_time": None}) == "-"
     assert format_cell_value({"status": "OPTIMAL", "solve_time": 0.0}) == "0.0000"
-    assert format_cell_value({"status": "OPTIMAL", "solve_time": None, "wall_time": 2.5}) == "2.5000"
+    assert format_cell_value({"status": "OPTIMAL", "solve_time": None, "wall_time": 2.5}) == "-"
 
     # PARTIAL cases
     assert format_cell_value("PARTIAL", solve_time=None, n_optimal=2, n_total=4) == "2/4 -*"
@@ -2025,21 +2026,21 @@ def test_speedup_calculation_symmetric_timing_and_corner_cases():
     assert abs(sp1["base"] - 1.00) < 1e-5
     assert abs(sp1["cand"] - 2.00) < 1e-5
 
-    # Scenario 2: Baseline lacks solve_time but has wall_time
+    # Scenario 2: Baseline lacks solve_time -> speedup is NaN (no wall_time disguised as solve_time)
     df2 = pd.DataFrame({
         "base": [{"status": "OPTIMAL", "solve_time": None, "wall_time": 10.0}],
         "cand": [{"status": "OPTIMAL", "solve_time": 5.0}],
     }, index=["ds1"])
     _, _, _, sp2 = compute_summary_stats(df2, ["base", "cand"], baseline_col="base")
-    assert abs(sp2["cand"] - 2.00) < 1e-5
+    assert math.isnan(sp2["cand"])
 
-    # Scenario 3: Candidate lacks solve_time but has wall_time
+    # Scenario 3: Candidate lacks solve_time -> speedup is NaN
     df3 = pd.DataFrame({
         "base": [{"status": "OPTIMAL", "solve_time": 10.0}],
         "cand": [{"status": "OPTIMAL", "solve_time": None, "wall_time": 5.0}],
     }, index=["ds1"])
     _, _, _, sp3 = compute_summary_stats(df3, ["base", "cand"], baseline_col="base")
-    assert abs(sp3["cand"] - 2.00) < 1e-5
+    assert math.isnan(sp3["cand"])
 
     # Scenario 4: Baseline lacks both solve_time and wall_time
     df4 = pd.DataFrame({
@@ -2117,6 +2118,7 @@ def test_integration_optimal_solve_time_none_wall_time_valid(tmp_path):
     - Export to CSV/LaTeX succeeds without exception.
     """
     import os
+    import math
     import pandas as pd
     from analysis.make_tables import (
         aggregate_repetition_group,
@@ -2133,14 +2135,16 @@ def test_integration_optimal_solve_time_none_wall_time_valid(tmp_path):
     agg = aggregate_repetition_group(reps, default_timeout=300.0)
     assert agg is not None
     assert agg["status"] == "OPTIMAL"
-    assert agg["solve_time"] == 5.5
+    assert agg["solve_time"] is None
     assert agg["wall_time"] == 5.5
-    assert abs(agg["par2"] - 5.5) < 1e-5
+    assert agg["effective_time"] == 5.5
+    assert agg["effective_time_source"] == "wall_time"
+    assert abs(agg["par2"] - 600.0) < 1e-5
 
-    # Cell presentation must format 5.5000, not 0.0000 and not -
-    assert format_cell_value(agg) == "5.5000"
+    # Cell presentation must format -, not disguise wall_time as solve_time
+    assert format_cell_value(agg) == "-"
 
-    # Speedup: baseline cadical has 5.5s, candidate has 2.75s -> 2.0x
+    # Speedup: baseline cadical lacks solve_time -> speedup is NaN
     df_raw = pd.DataFrame({
         "cadical": [agg],
         "glucose": [{"status": "OPTIMAL", "solve_time": 2.75, "time_limit": 300.0}],
@@ -2149,13 +2153,13 @@ def test_integration_optimal_solve_time_none_wall_time_valid(tmp_path):
     solved, sl, par2, speedup = compute_summary_stats(df_raw, ["cadical", "glucose"], baseline_col="cadical", timeout=300.0)
     assert solved["cadical"] == 1
     assert solved["glucose"] == 1
-    assert abs(par2["cadical"] - 5.5) < 1e-5
-    assert abs(speedup["cadical"] - 1.00) < 1e-5
-    assert abs(speedup["glucose"] - 2.00) < 1e-5
+    assert abs(par2["cadical"] - 600.0) < 1e-5
+    assert math.isnan(speedup["cadical"])
+    assert math.isnan(speedup["glucose"])
 
     # Export table to CSV and LaTeX
     out_dir = str(tmp_path / "integration_export")
-    df_disp = pd.DataFrame({"cadical": ["5.5000"], "glucose": ["2.7500"]}, index=["ds_opt_wall"])
+    df_disp = pd.DataFrame({"cadical": ["-"], "glucose": ["2.7500"]}, index=["ds_opt_wall"])
     summary_rows = [("Solved", {"cadical": "1", "glucose": "1"})]
 
     export_table(df_disp, summary_rows, title="Integration Test", base_filename="integ_table", output_dirs=(out_dir,), df_raw=df_raw)
@@ -2170,7 +2174,8 @@ def test_integration_optimal_solve_time_none_wall_time_valid(tmp_path):
 
     df_read = pd.read_csv(data_csv_path)
     assert list(df_read.columns) == DATA_CSV_COLUMNS
-    assert df_read[df_read["column"] == "cadical"].iloc[0]["solve_time"] == 5.5
+    assert pd.isna(df_read[df_read["column"] == "cadical"].iloc[0]["solve_time"])
+    assert df_read[df_read["column"] == "cadical"].iloc[0]["wall_time"] == 5.5
 
 
 def test_aggregate_repetition_interleaved_valid_and_invalid_timing():
@@ -2216,9 +2221,10 @@ def test_aggregate_repetition_interleaved_valid_and_invalid_timing():
     assert agg["timing_fallback"] is False
     assert abs(agg["wall_time"] - 3.0) < 1e-5
 
-    # PAR2: 4 optimal runs (1.0 + 3.0 + 2.0 + 4.0 = 10.0), 1 timeout (2 * 300 = 600.0), SIZE_LIMIT excluded
-    # Denominator: 5. Numerator: 610.0. PAR2 = 610 / 5 = 122.0
-    assert abs(agg["par2"] - 122.0) < 1e-5
+    # PAR2: 2 optimal with solve_time (1.0 + 3.0), 2 optimal with missing solve_time (2 * 600 = 1200),
+    # 1 timeout (2 * 300 = 600.0), SIZE_LIMIT excluded.
+    # Denominator: 5. Numerator: 1.0 + 3.0 + 600.0 + 600.0 + 600.0 = 1804.0. PAR2 = 1804 / 5 = 360.8
+    assert abs(agg["par2"] - 360.8) < 1e-5
 
 
 def test_is_valid_record_dict_comprehensive():
@@ -2421,7 +2427,7 @@ def test_speedup_and_n_used_synchronization():
     df_raw = pd.DataFrame({
         "baseline": [
             {"status": "OPTIMAL", "solve_time": 0.05, "time_limit": 600.0},       # ds1: timing < 0.1s -> NOT eligible
-            {"status": "OPTIMAL", "solve_time": None, "wall_time": 2.0, "time_limit": 600.0}, # ds2: fallback wall_time 2.0s -> eligible
+            {"status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0},        # ds2: genuine solve_time 2.0s -> eligible
             {"status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0},      # ds3: TIMEOUT -> NOT eligible
             {"status": "FEASIBLE", "solve_time": 10.0, "time_limit": 600.0},     # ds4: FEASIBLE -> NOT eligible
             {"status": "PARTIAL", "solve_time": 5.0, "time_limit": 600.0},       # ds5: PARTIAL -> NOT eligible
@@ -2432,8 +2438,8 @@ def test_speedup_and_n_used_synchronization():
             {"status": "OPTIMAL", "solve_time": 1.0, "time_limit": 600.0},       # ds2: ratio 2.0/1.0 = 2.0
             {"status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0},      # ds3
             {"status": "OPTIMAL", "solve_time": 5.0, "time_limit": 600.0},       # ds4
-            {"status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0},       # ds5
-            {"status": "OPTIMAL", "solve_time": None, "wall_time": 2.0, "time_limit": 600.0}, # ds6: fallback wall_time 2.0s -> ratio 4.0/2.0 = 2.0
+            {"status": "OPTIMAL", "solve_time": 5.0, "time_limit": 600.0},       # ds5
+            {"status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0},       # ds6: ratio 4.0/2.0 = 2.0
         ],
         "cand_missing_one": [
             {"status": "OPTIMAL", "solve_time": 0.01, "time_limit": 600.0},      # ds1
@@ -2752,16 +2758,18 @@ def test_aggregation_solve_time_and_wall_time_provenance():
     """
     from analysis.make_tables import aggregate_repetition_group
 
-    # 1. Pool with ONLY wall_time
+    # 1. Pool with ONLY wall_time (genuine solve_time is None, wall_time is preserved)
     reps_wall_only = [
         {"status": "OPTIMAL", "solve_time": None, "wall_time": 5.0, "time_limit": 600.0},
         {"status": "OPTIMAL", "solve_time": None, "wall_time": 7.0, "time_limit": 600.0},
     ]
     agg1 = aggregate_repetition_group(reps_wall_only)
-    assert agg1["solve_time"] == 6.0
-    assert agg1["solve_time_source"] == "wall_time"
-    assert agg1["timing_fallback"] is True
+    assert agg1["solve_time"] is None
+    assert agg1["solve_time_source"] is None
+    assert agg1["timing_fallback"] is False
     assert agg1["wall_time"] == 6.0
+    assert agg1["effective_time"] == 6.0
+    assert agg1["effective_time_source"] == "wall_time"
 
     # 2. Pool with neither solve_time nor wall_time
     reps_none = [

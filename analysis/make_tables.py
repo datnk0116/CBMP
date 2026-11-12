@@ -3,9 +3,12 @@ import sys
 import glob
 import json
 import math
+import logging
 import numpy as np
 import pandas as pd
 from pathlib import Path
+
+logger = logging.getLogger("make_tables")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -64,6 +67,21 @@ def validate_best_ub(val):
                 return None
     return None
 
+def validate_lower_bound(val):
+    """
+    Validates that a lower bound is a genuine finite non-negative integer.
+    Bandwidth bounds (e.g. ceil(Delta / 2) or solver lower bounds) are integers >= 0.
+    Rejects:
+      - Fractional floats (e.g. 3.7) - NEVER truncates or rounds
+      - Booleans (bool is a subclass of int in Python)
+      - Negative values
+      - None, NaN, +inf, -inf, pd.NA, pd.NaT
+      - Malformed strings, lists, dicts
+    Returns:
+        int if valid, else None.
+    """
+    return validate_best_ub(val)
+
 def validate_solve_time(val):
     """
     Validates that a timing metric is a genuine finite, non-negative float.
@@ -84,16 +102,119 @@ def validate_solve_time(val):
 
 def extract_repetition_solve_time(r):
     """
-    Extracts a validated solve time from a repetition record.
-    Checks 'solve_time' first; if invalid or missing, falls back to 'wall_time'.
-    Returns validated non-negative finite float, or None if neither is valid.
+    Extracts a validated solve time strictly from the 'solve_time' field of a record.
+    Does NOT fall back to 'wall_time'.
+    Returns validated non-negative finite float, or None if invalid or missing.
     """
     if not isinstance(r, dict):
         return None
-    t = validate_solve_time(r.get("solve_time"))
-    if t is not None:
-        return t
-    return validate_solve_time(r.get("wall_time"))
+    return validate_solve_time(r.get("solve_time"))
+
+def extract_effective_time(r):
+    """
+    Extracts timing with explicit provenance.
+    Checks 'solve_time' first; if invalid/missing, falls back to 'wall_time'.
+    Returns (time_value, source_name) where source_name is 'solve_time', 'wall_time', or None.
+    """
+    if not isinstance(r, dict):
+        return None, None
+    st = validate_solve_time(r.get("solve_time"))
+    if st is not None:
+        return st, "solve_time"
+    wt = validate_solve_time(r.get("wall_time"))
+    if wt is not None:
+        return wt, "wall_time"
+    return None, None
+
+def get_canonical_key(record):
+    """
+    Extracts a deterministic canonical key (dataset, method, solver, flags, relabel_seed)
+    from a task or result record dictionary.
+
+    Guarantees:
+    - Different method or solver produce different keys.
+    - Missing solver does not falsely collapse different methods.
+    - Different encodings, solving modes, EO strategies, symmetry breaking flags,
+      worker counts, or relabel seeds produce different keys.
+    - Prioritizes record top-level fields over config dictionary.
+    - Preserves seed=0 distinctly from seed=None.
+    """
+    if not isinstance(record, dict):
+        return None
+
+    dataset = record.get("dataset")
+    if dataset is not None:
+        dataset = str(dataset).strip()
+
+    cfg = record.get("config") if isinstance(record.get("config"), dict) else {}
+
+    raw_solver = record.get("solver") if record.get("solver") is not None else cfg.get("solver")
+    raw_method = record.get("method") if record.get("method") is not None else cfg.get("method")
+
+    s_lower = str(raw_solver).strip().lower() if raw_solver is not None else ""
+    m_lower = str(raw_method).strip().lower() if raw_method is not None else ""
+
+    # Relabel seed: 0 is a valid seed, distinguish from None!
+    relabel_seed = record.get("relabel_seed") if record.get("relabel_seed") is not None else cfg.get("relabel_seed")
+    if relabel_seed is not None and not isinstance(relabel_seed, bool):
+        try:
+            relabel_seed = int(relabel_seed)
+        except (ValueError, TypeError):
+            relabel_seed = str(relabel_seed)
+    else:
+        relabel_seed = None
+
+    if s_lower in ("cp_sat", "cpsat", "ortools_cpsat") or m_lower in ("cpsat", "cp_sat"):
+        method = "cpsat"
+        solver = s_lower if s_lower else "cp_sat"
+        w_val = record.get("num_workers") if record.get("num_workers") is not None else cfg.get("num_workers", 1)
+        try:
+            workers = int(w_val)
+        except (ValueError, TypeError):
+            workers = 1
+        rot_val = record.get("sb_rotation") if "sb_rotation" in record and record.get("sb_rotation") is not None else cfg.get("sb_rotation")
+        sb_rot = bool(rot_val) if rot_val is not None else True
+        flags = (workers, sb_rot)
+    elif s_lower in ("cplex", "cplex_milp", "ibm_cplex") or m_lower == "cplex":
+        method = "cplex"
+        solver = s_lower if s_lower else "cplex"
+        rot_val = record.get("sb_rotation") if "sb_rotation" in record and record.get("sb_rotation") is not None else cfg.get("sb_rotation")
+        flags = (bool(rot_val),) if rot_val is not None else ()
+    elif s_lower in ("cplex_cp", "cpoptimizer", "docplex_cp") or m_lower == "cplex_cp":
+        method = "cplex_cp"
+        solver = s_lower if s_lower else "cplex_cp"
+        rot_val = record.get("sb_rotation") if "sb_rotation" in record and record.get("sb_rotation") is not None else cfg.get("sb_rotation")
+        flags = (bool(rot_val),) if rot_val is not None else ()
+    elif s_lower in ("gurobi", "grb") or m_lower == "gurobi":
+        method = "gurobi"
+        solver = s_lower if s_lower else "gurobi"
+        rot_val = record.get("sb_rotation") if "sb_rotation" in record and record.get("sb_rotation") is not None else cfg.get("sb_rotation")
+        flags = (bool(rot_val),) if rot_val is not None else ()
+    else:
+        method = m_lower if m_lower else "sat"
+        solver = s_lower
+        rot_val = record.get("sb_rotation") if "sb_rotation" in record and record.get("sb_rotation") is not None else cfg.get("sb_rotation", False)
+        rot = bool(rot_val) if rot_val is not None else False
+        ref_val = record.get("sb_reflection") if "sb_reflection" in record and record.get("sb_reflection") is not None else cfg.get("sb_reflection", False)
+        ref = bool(ref_val) if ref_val is not None else False
+        heur_val = record.get("heuristic_ub") if "heuristic_ub" in record and record.get("heuristic_ub") is not None else cfg.get("heuristic_ub", False)
+        heur = bool(heur_val) if heur_val is not None else False
+
+        enc_val = record.get("encoding") if record.get("encoding") is not None else cfg.get("encoding", "order")
+        enc = str(enc_val).strip().lower() if enc_val is not None else "order"
+
+        mode_val = record.get("solving_mode") if record.get("solving_mode") is not None else cfg.get("solving_mode", "incremental")
+        mode = str(mode_val).strip().lower() if mode_val is not None else "incremental"
+
+        eo_val = record.get("eo_strategy") if record.get("eo_strategy") is not None else cfg.get("eo_strategy", "commander")
+        eo = str(eo_val).strip().lower() if eo_val is not None else "commander"
+
+        if enc != "order" or mode != "incremental" or eo != "commander":
+            flags = (rot, ref, heur, enc, mode, eo)
+        else:
+            flags = (rot, ref, heur)
+
+    return (dataset, method, solver, flags, relabel_seed)
 
 def extract_time_limit(record, default_timeout=600.0):
     """Safely extracts a validated positive numeric timeout from a record."""
@@ -165,7 +286,7 @@ def normalize_status(val):
         return "LICENSE_ERROR"
     elif s in ("INFEASIBLE", "UNSAT"):
         return "INFEASIBLE"
-    elif s in ("ERROR",):
+    elif s in ("ERROR", "MEMOUT"):
         return "ERROR"
     elif s in ("NUMERIC_ERROR",):
         return "NUMERIC_ERROR"
@@ -260,7 +381,7 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
     - Canonical aggregated status (OPTIMAL, PARTIAL, FEASIBLE, TIMEOUT, etc.)
     - Exact 12 population counters (n_total, n_algorithmic, n_optimal, etc.)
     - Exact PAR2 via compute_repetition_par2 (excluding non-algorithmic runs)
-    - Median solve_time, wall_time, encode_time
+    - Median genuine solve_time, wall_time, encode_time
     - Attached list of reps
     """
     if not reps:
@@ -271,15 +392,23 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
         if not isinstance(r, dict):
             continue
         rc = dict(r)
-        cat = categorize_status(rc.get("status"))
-        if rc.get("validation_error"):
+        st_norm = normalize_status(rc.get("status"))
+        ub_val = validate_best_ub(rc.get("best_ub"))
+        lb_val = validate_lower_bound(rc.get("lower_bound") if rc.get("lower_bound") is not None else rc.get("best_lb"))
+
+        # Bound contradiction: ub < lb is impossible in minimization
+        has_bound_conflict = (ub_val is not None and lb_val is not None and ub_val < lb_val)
+        if rc.get("validation_error") or has_bound_conflict:
+            rc["validation_error"] = True
             cat = "ERROR"
             rc["status"] = "ERROR"
             rc["best_ub"] = -1
             rc["assignment"] = None
-        elif cat in ("ERROR", "LICENSE_ERROR", "UNAVAILABLE", "SIZE_LIMIT", "INFEASIBLE", "UNKNOWN"):
-            rc["best_ub"] = -1
-            rc["assignment"] = None
+        else:
+            cat = categorize_status(st_norm)
+            if cat in ("ERROR", "LICENSE_ERROR", "UNAVAILABLE", "SIZE_LIMIT", "INFEASIBLE", "UNKNOWN"):
+                rc["best_ub"] = -1
+                rc["assignment"] = None
         rc["_cat"] = cat
         cleaned_reps.append(rc)
     reps = cleaned_reps
@@ -328,21 +457,25 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
             agg_status = "UNKNOWN"
 
     def _safe_solve_key(r):
-        t = extract_repetition_solve_time(r)
-        return t if t is not None else float("inf")
+        t = validate_solve_time(r.get("solve_time"))
+        return (0, t) if t is not None else (1, float("inf"))
 
     def _safe_ub_key(r):
         ub = validate_best_ub(r.get("best_ub"))
-        return ub if ub is not None else float("inf")
+        return (0, ub) if ub is not None else (1, float("inf"))
 
     # Select representative record to seed the aggregated dictionary
     if agg_status in ("OPTIMAL", "PARTIAL"):
         rep_pool = [r for r in reps if r["_cat"] == "OPTIMAL"]
-        reps_sorted = sorted(rep_pool, key=_safe_solve_key)
+        valid_ub_pool = [r for r in rep_pool if validate_best_ub(r.get("best_ub")) is not None]
+        cand_pool = valid_ub_pool if valid_ub_pool else rep_pool
+        reps_sorted = sorted(cand_pool, key=_safe_solve_key)
         rep_chosen = reps_sorted[len(reps_sorted) // 2]
     elif agg_status == "FEASIBLE":
         rep_pool = [r for r in reps if r["_cat"] == "FEASIBLE"]
-        reps_sorted = sorted(rep_pool, key=lambda x: (_safe_ub_key(x), _safe_solve_key(x)))
+        valid_ub_pool = [r for r in rep_pool if validate_best_ub(r.get("best_ub")) is not None]
+        cand_pool = valid_ub_pool if valid_ub_pool else rep_pool
+        reps_sorted = sorted(cand_pool, key=lambda x: (_safe_ub_key(x), _safe_solve_key(x)))
         rep_chosen = reps_sorted[0]
     else:
         matching = [r for r in reps if r["_cat"] == agg_status]
@@ -385,21 +518,28 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
 
     if genuine_solve_times:
         agg["solve_time"] = float(np.median(genuine_solve_times))
-        agg["timing_fallback"] = False
         agg["solve_time_source"] = "solve_time"
-    elif wall_times:
-        agg["solve_time"] = float(np.median(wall_times))
-        agg["timing_fallback"] = True
-        agg["solve_time_source"] = "wall_time"
+        agg["timing_fallback"] = False
     else:
         agg["solve_time"] = None
-        agg["timing_fallback"] = False
         agg["solve_time_source"] = None
+        agg["timing_fallback"] = False
 
     if wall_times:
         agg["wall_time"] = float(np.median(wall_times))
     else:
         agg["wall_time"] = validate_solve_time(rep_chosen.get("wall_time"))
+
+    # Explicit effective time with provenance
+    if genuine_solve_times:
+        agg["effective_time"] = float(np.median(genuine_solve_times))
+        agg["effective_time_source"] = "solve_time"
+    elif wall_times:
+        agg["effective_time"] = float(np.median(wall_times))
+        agg["effective_time_source"] = "wall_time"
+    else:
+        agg["effective_time"] = None
+        agg["effective_time_source"] = None
 
     if encode_times:
         agg["encode_time"] = float(np.median(encode_times))
@@ -420,8 +560,7 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
         agg["best_ub"] = ub_c if ub_c is not None else -1
     elif agg_status in ("OPTIMAL", "PARTIAL"):
         ub_c = validate_best_ub(rep_chosen.get("best_ub"))
-        if ub_c is not None:
-            agg["best_ub"] = ub_c
+        agg["best_ub"] = ub_c if ub_c is not None else -1
 
     # Union of groups across reps
     all_groups = set()
@@ -437,37 +576,38 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
 
 def aggregate_repetitions(records):
     """
-    Group records by unique configuration (dataset, method/solver, config_signature),
+    Group records by unique configuration using get_canonical_key(record),
     and aggregate across repetitions using aggregate_repetition_group.
     """
     groups = {}
     for r in records:
-        ds = r.get("dataset")
-        sol = str(r.get("solver", "")).lower()
-        cfg = r.get("config", {})
-        rot = bool(cfg.get("sb_rotation", False))
-        ref = bool(cfg.get("sb_reflection", False))
-        heur = bool(cfg.get("heuristic_ub", False))
-        num_w = cfg.get("num_workers", 1)
-        seed = r.get("relabel_seed")
-        enc = str(r.get("encoding") or cfg.get("encoding", "order")).lower()
-        mode = str(r.get("solving_mode") or cfg.get("solving_mode", "incremental")).lower()
-        eo = str(r.get("eo_strategy") or cfg.get("eo_strategy", "commander")).lower()
-        key = (ds, sol, rot, ref, heur, num_w, seed, enc, mode, eo)
+        if not is_valid_record_dict(r):
+            continue
+        key = get_canonical_key(r)
+        if key is None:
+            continue
         groups.setdefault(key, []).append(r)
 
     aggregated = []
     for key, reps in groups.items():
         agg = aggregate_repetition_group(reps)
         if agg is not None:
+            agg["canonical_key"] = key
             aggregated.append(agg)
 
     return aggregated
 
-def load_records(jsonl_source=None):
+def load_records(jsonl_source=None, strict=False):
     """
-    Load all records from runs.jsonl (or pattern/fallback),
-    and aggregate across repetitions taking the median.
+    Load all valid records from runs.jsonl (or pattern/fallback),
+    and aggregate across repetitions using aggregate_repetitions.
+
+    Data integrity and error reporting:
+    - Distinguishes empty lines, metadata records, JSON syntax errors,
+      non-dict JSON objects, and missing required identity (dataset, solver/method).
+    - In strict=True mode: raises ValueError on syntax errors, non-objects, or missing identity.
+    - In strict=False mode (default): logs structured warnings with file, line number, and reason.
+    - Deduplicates duplicate (canonical_key, rep) entries safely.
     """
     raw_records = []
     if jsonl_source is not None and os.path.isfile(jsonl_source):
@@ -482,78 +622,163 @@ def load_records(jsonl_source=None):
     else:
         files = sorted(glob.glob("results_v2/*.jsonl")) or sorted(glob.glob("results/*.jsonl"))
 
+    if not files:
+        logger.warning("load_records: no JSONL files found.")
+        return []
+
+    total_lines = 0
+    empty_count = 0
+    meta_count = 0
+    syntax_error_count = 0
+    non_obj_count = 0
+    missing_id_count = 0
+    seen_runs = {}  # (canonical_key, rep) -> index in raw_records
+
     for filepath in files:
         group_name = Path(filepath).stem
-        with open(filepath, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    if data.get("_type") == "metadata" or "dataset" not in data:
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, start=1):
+                    total_lines += 1
+                    s_line = line.strip()
+                    if not s_line:
+                        empty_count += 1
                         continue
+
+                    try:
+                        data = json.loads(s_line)
+                    except json.JSONDecodeError as e:
+                        syntax_error_count += 1
+                        msg = f"[{filepath}:{line_no}] JSON syntax error: {e}"
+                        if strict:
+                            raise ValueError(f"JSONL integrity violations: {msg}") from e
+                        logger.warning(msg)
+                        continue
+
+                    if not isinstance(data, dict):
+                        non_obj_count += 1
+                        msg = f"[{filepath}:{line_no}] Expected JSON object, got {type(data).__name__}"
+                        if strict:
+                            raise ValueError(f"JSONL integrity violations: {msg}")
+                        logger.warning(msg)
+                        continue
+
+                    if data.get("_type") == "metadata" or data.get("type") == "metadata" or ("environment" in data and "dataset" not in data):
+                        meta_count += 1
+                        continue
+
+                    dataset = data.get("dataset")
+                    if not dataset or not isinstance(dataset, str) or not dataset.strip():
+                        missing_id_count += 1
+                        msg = f"[{filepath}:{line_no}] Missing mandatory 'dataset' in record"
+                        if strict:
+                            raise ValueError(f"JSONL integrity violations: {msg}")
+                        logger.warning(msg)
+                        continue
+
+                    raw_sol = data.get("solver")
+                    raw_method = data.get("method")
+                    cfg = data.get("config") if isinstance(data.get("config"), dict) else {}
+                    if not raw_sol and not raw_method and not cfg.get("solver") and not cfg.get("method"):
+                        missing_id_count += 1
+                        msg = f"[{filepath}:{line_no}] Record on dataset '{dataset}' missing both 'solver' and 'method'"
+                        if strict:
+                            raise ValueError(f"JSONL integrity violations: {msg}")
+                        logger.warning(msg)
+                        continue
+
                     if "groups" not in data or not isinstance(data["groups"], list):
                         data["groups"] = [data.get("_group", group_name)]
-                    if "rep" not in data:
-                        data["rep"] = 1
+
+                    raw_rep = data.get("rep") if data.get("rep") is not None else data.get("repetition", 1)
+                    try:
+                        rep_num = int(raw_rep) if raw_rep is not None else 1
+                        if rep_num < 1:
+                            rep_num = 1
+                    except (ValueError, TypeError):
+                        rep_num = 1
+                    data["rep"] = rep_num
+                    data["repetition"] = rep_num
                     data["_file"] = filepath
+                    data["_line"] = line_no
+
+                    c_key = get_canonical_key(data)
+                    run_id = (c_key, rep_num)
+                    if run_id in seen_runs:
+                        prev_idx = seen_runs[run_id]
+                        prev_rec = raw_records[prev_idx]
+                        st_old = normalize_status(prev_rec.get("status"))
+                        st_new = normalize_status(data.get("status"))
+                        ub_old = validate_best_ub(prev_rec.get("best_ub"))
+                        ub_new = validate_best_ub(data.get("best_ub"))
+                        if st_old != st_new or ub_old != ub_new:
+                            logger.warning(
+                                "[%s:%d] Duplicate run conflict for %s rep=%d: (status=%s, ub=%s) vs (status=%s, ub=%s)",
+                                filepath, line_no, c_key, rep_num, st_old, ub_old, st_new, ub_new
+                            )
+                        # Keep completed valid OPTIMAL over failure
+                        st_new_opt = (st_new == "OPTIMAL" and ub_new is not None)
+                        st_old_opt = (st_old == "OPTIMAL" and ub_old is not None)
+                        if st_new_opt and not st_old_opt:
+                            raw_records[prev_idx] = data
+                        continue
+
+                    seen_runs[run_id] = len(raw_records)
                     raw_records.append(data)
-                except Exception:
-                    pass
+        except Exception as e:
+            if strict:
+                raise
+            logger.error("Error reading JSONL file %s: %s", filepath, e)
+
+    skipped_total = syntax_error_count + non_obj_count + missing_id_count
+    if skipped_total > 0:
+        logger.warning(
+            "load_records: scanned %d lines in %d file(s). Valid: %d, Meta: %d, Empty: %d, Skipped: %d (syntax: %d, non-obj: %d, missing_id: %d)",
+            total_lines, len(files), len(raw_records), meta_count, empty_count, skipped_total,
+            syntax_error_count, non_obj_count, missing_id_count
+        )
 
     return aggregate_repetitions(raw_records)
 
 def get_source_key(record):
-    """Extracts (solver_or_method, canonical_config) from a record."""
-    sol = str(record.get("solver") or record.get("method") or "unknown").lower()
-    cfg = record.get("config") if isinstance(record.get("config"), dict) else {}
-
-    if sol in ("cp_sat", "cpsat"):
-        solver_name = "cpsat"
-        num_w = cfg.get("num_workers", record.get("num_workers", 1))
-        canonical_config = ("cpsat", num_w)
-    elif sol == "cplex":
-        solver_name = "cplex"
-        canonical_config = ("cplex",)
-    else:
-        solver_name = sol
-        rot = bool(cfg.get("sb_rotation", record.get("sb_rotation", False)))
-        ref = bool(cfg.get("sb_reflection", record.get("sb_reflection", False)))
-        heur = bool(cfg.get("heuristic_ub", record.get("heuristic_ub", False)))
-        enc = str(record.get("encoding") or cfg.get("encoding", "order")).lower()
-        mode = str(record.get("solving_mode") or cfg.get("solving_mode", "incremental")).lower()
-        eo = str(record.get("eo_strategy") or cfg.get("eo_strategy", "commander")).lower()
-        variant = cfg.get("variant", record.get("variant"))
-        extra_flags = (enc, mode, eo) if (enc != "order" or mode != "incremental" or eo != "commander") else ()
-        if variant:
-            canonical_config = (str(variant), rot, ref, heur) + extra_flags
-        else:
-            canonical_config = (rot, ref, heur) + extra_flags
-
-    return (solver_name, canonical_config)
+    """Extracts (solver_or_method, canonical_config) from a record using get_canonical_key."""
+    canon_key = get_canonical_key(record)
+    if canon_key is None:
+        return ("unknown", ())
+    dataset, method, solver, flags, seed = canon_key
+    src_solver = solver if solver else method
+    return (src_solver, (method, flags))
 
 def cross_validate_optima(records, output_dir=None):
     """
     Cross-validation check:
-    1. Group OPTIMAL records by (dataset, relabel_seed) and (solver_or_method, canonical_config).
-       For a given (dataset, relabel_seed), verified only when >= 2 distinct keys reach identical OPTIMAL best_ub.
-       Repetitions of the same key are deduplicated, not counted as separate sources.
-       If only 1 distinct key is present, mark as 'single_source' and warn.
-       If distinct keys report conflicting optima, mark as 'conflict' and raise ValueError.
+    1. Group OPTIMAL records by (dataset, relabel_seed) and independent source (method, solver, flags).
+       Verified only when >= 2 distinct independent sources reach identical valid OPTIMAL best_ub.
+       Repetitions of the same source are deduplicated, not counted as separate sources.
+       If only 1 distinct source is present, mark as 'single_source'.
+       If distinct sources report conflicting optima, mark as 'conflict' and raise ValueError.
     2. Check across seeds: all seeds of the same base dataset must reach the exact same optimum.
        If different seeds report conflicting optima, mark as 'conflict' and raise ValueError.
     3. Check incumbents: for any dataset with a proven optimum `opt`, every non-OPTIMAL record
-       with best_ub >= 0 must satisfy best_ub >= opt; otherwise raises ValueError with the offending record.
+       with valid best_ub must satisfy best_ub >= opt; otherwise raises ValueError with offending record.
     4. Exports cross_validation.csv to output_dir if output_dir is provided.
     """
     optimal_by_inst = {}
     for r in records:
+        if not is_valid_record_dict(r) or r.get("validation_error"):
+            continue
         if is_optimal_status(r):
             ds = r.get("dataset")
+            if not ds:
+                continue
             seed = r.get("relabel_seed")
-            ub = r.get("best_ub")
-            src_key = get_source_key(r)
+            ub = validate_best_ub(r.get("best_ub"))
+            if ub is None:
+                continue
+            canon = get_canonical_key(r)
+            if canon is None:
+                continue
+            src_key = (canon[1], canon[2], canon[3])  # (method, solver, flags)
             optimal_by_inst.setdefault((ds, seed), {}).setdefault(src_key, []).append(ub)
 
     distinct_sources = {}
@@ -566,7 +791,7 @@ def cross_validate_optima(records, output_dir=None):
         for src_key, ubs in sources.items():
             unique_key_ubs = set(u for u in ubs if u is not None)
             if len(unique_key_ubs) > 1:
-                mismatches.append((ds, f"Internal conflict across repetitions of key {src_key} on seed {seed}: {unique_key_ubs}"))
+                mismatches.append((ds, f"Internal conflict across repetitions of source {src_key} on seed {seed}: {unique_key_ubs}"))
             distinct_sources[(ds, seed)][src_key] = list(unique_key_ubs)[0] if unique_key_ubs else None
 
         all_inst_ubs = set(u for u in distinct_sources[(ds, seed)].values() if u is not None)
@@ -583,11 +808,13 @@ def cross_validate_optima(records, output_dir=None):
     # Check incumbents against proven optima
     incumbent_violations = []
     for r in records:
+        if not is_valid_record_dict(r) or r.get("validation_error"):
+            continue
         ds = r.get("dataset")
-        st = r.get("status")
+        st = normalize_status(r.get("status"))
         if ds in proven_optima_by_ds and st != "OPTIMAL":
-            ub = r.get("best_ub")
-            if ub is not None and ub >= 0:
+            ub = validate_best_ub(r.get("best_ub"))
+            if ub is not None:
                 opt = proven_optima_by_ds[ds]
                 if ub < opt:
                     incumbent_violations.append((ds, ub, opt, r))
@@ -607,11 +834,12 @@ def cross_validate_optima(records, output_dir=None):
         else:
             ds_status = "single_source"
 
-        for (solver_name, canonical_cfg), ub in sources.items():
+        for (method_name, solver_name, flags), ub in sources.items():
+            disp_sol = solver_name if solver_name else method_name
             row_dict = {
                 "dataset": ds,
-                "solver_or_method": solver_name,
-                "canonical_config": str(canonical_cfg),
+                "solver_or_method": disp_sol,
+                "canonical_config": str((method_name, flags)),
                 "best_ub": ub,
                 "num_distinct_sources": num_keys,
                 "validation_status": ds_status,
@@ -1042,7 +1270,7 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
     for r in solver_recs:
         ds = r["dataset"]
         meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
-        sol = r["solver"].lower()
+        sol = str(r.get("solver") or "").lower()
         recs_by_ds_sol.setdefault((ds, sol), []).append(r)
 
     data_by_ds = {}
@@ -1129,7 +1357,7 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
     for r in method_recs:
         ds = r["dataset"]
         meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
-        sol = r["solver"].lower()
+        sol = str(r.get("solver") or "").lower()
         if sol in ("cp_sat", "cpsat"):
             m = "cpsat"
         elif sol == "cplex":
@@ -1229,7 +1457,10 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
         ds = r.get("dataset")
         seed = r.get("relabel_seed")
         var = get_var(r)
-        pairs_map.setdefault((ds, seed), {})[var] = r
+        sol = str(r.get("solver") or "").lower()
+        enc = str(r.get("encoding") or (r.get("config", {}).get("encoding", "order"))).lower()
+        base_key = (ds, sol, enc, seed)
+        pairs_map.setdefault(base_key, {})[var] = r
 
     comparisons = [
         ("variant vs none", "rotation", "rotation", "none"),
@@ -1244,7 +1475,7 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
     # Condition: >= 1 valid pair for EACH comparison
     for comp_group, var_label, var_target, var_ref in comparisons:
         n_pairs = sum(
-            1 for (ds, seed), vmap in pairs_map.items()
+            1 for base_key, vmap in pairs_map.items()
             if var_target in vmap and var_ref in vmap
             and is_optimal_status(vmap[var_target])
             and is_optimal_status(vmap[var_ref])
@@ -1262,7 +1493,7 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
         ratios = []
         faster_count = 0
         total_count = 0
-        for (ds, seed), vmap in pairs_map.items():
+        for base_key, vmap in pairs_map.items():
             if var_target in vmap and var_ref in vmap:
                 rec_t = vmap[var_target]
                 rec_r = vmap[var_ref]
@@ -1312,7 +1543,7 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
     print(f"Table saved: {base_filename}.csv in {output_dirs[0]}/")
 
     # Generate table_ablation_family_per_graph.csv
-    datasets = sorted(list(set(ds for (ds, seed) in pairs_map.keys())))
+    datasets = sorted(list(set(base_key[0] for base_key in pairs_map.keys())))
     can_generate_pg = True
     if not datasets:
         can_generate_pg = False
@@ -1320,8 +1551,8 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
         for ds in datasets:
             for comp_group, var_label, var_target, var_ref in comparisons:
                 count = sum(
-                    1 for (d, seed), vmap in pairs_map.items()
-                    if d == ds and var_target in vmap and var_ref in vmap
+                    1 for base_key, vmap in pairs_map.items()
+                    if base_key[0] == ds and var_target in vmap and var_ref in vmap
                     and is_optimal_status(vmap[var_target])
                     and is_optimal_status(vmap[var_ref])
                     and extract_repetition_solve_time(vmap[var_target]) is not None
@@ -1345,8 +1576,8 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
                 ratios = []
                 faster_count = 0
                 total_count = 0
-                for (d, seed), vmap in pairs_map.items():
-                    if d == ds and var_target in vmap and var_ref in vmap:
+                for base_key, vmap in pairs_map.items():
+                    if base_key[0] == ds and var_target in vmap and var_ref in vmap:
                         rec_t = vmap[var_target]
                         rec_r = vmap[var_ref]
                         if is_optimal_status(rec_t) and is_optimal_status(rec_r):

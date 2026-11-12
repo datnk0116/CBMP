@@ -19,7 +19,12 @@ logger = logging.getLogger("experiments")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from analysis.make_tables import normalize_status, validate_best_ub
+from analysis.make_tables import (
+    normalize_status,
+    validate_best_ub,
+    get_canonical_key,
+    is_optimal_status,
+)
 
 def get_dataset_info(filepath):
     """Quickly read N and M from MatrixMarket header without parsing entire matrix."""
@@ -155,58 +160,6 @@ def collect_environment_info(output_path="results_v2/env.json", timeout=None, co
 
     return info
 
-def get_canonical_key(record):
-    """
-    Extracts canonical (dataset, method, solver, flags, relabel_seed) tuple from a result dictionary.
-    """
-    dataset = record.get("dataset")
-    solver = str(record.get("solver", "")).lower()
-    cfg = record.get("config", {})
-    relabel_seed = record.get("relabel_seed")
-    if relabel_seed is None and isinstance(cfg, dict):
-        relabel_seed = cfg.get("relabel_seed", None)
-    if solver in ("cp_sat", "cpsat"):
-        method = "cpsat"
-        workers = cfg.get("num_workers", 1)
-        if "sb_rotation" in cfg:
-            sb_rot = bool(cfg["sb_rotation"])
-        elif "sb_rotation" in record:
-            sb_rot = bool(record["sb_rotation"])
-        else:
-            sb_rot = True
-        flags = (workers, sb_rot)
-    elif solver == "cplex":
-        method = "cplex"
-        if "sb_rotation" in cfg:
-            flags = (bool(cfg["sb_rotation"]),)
-        else:
-            flags = ()
-    elif solver in ("cplex_cp", "cpoptimizer"):
-        method = "cplex_cp"
-        if "sb_rotation" in cfg:
-            flags = (bool(cfg["sb_rotation"]),)
-        else:
-            flags = ()
-    elif solver in ("gurobi", "grb"):
-        method = "gurobi"
-        if "sb_rotation" in cfg:
-            flags = (bool(cfg["sb_rotation"]),)
-        else:
-            flags = ()
-    else:
-        method = "sat"
-        rot = bool(record.get("sb_rotation") if "sb_rotation" in record else cfg.get("sb_rotation", False))
-        ref = bool(record.get("sb_reflection") if "sb_reflection" in record else cfg.get("sb_reflection", False))
-        heur = bool(record.get("heuristic_ub") if "heuristic_ub" in record else cfg.get("heuristic_ub", False))
-        enc = str(record.get("encoding") or cfg.get("encoding", "order")).lower()
-        mode = str(record.get("solving_mode") or cfg.get("solving_mode", "incremental")).lower()
-        eo = str(record.get("eo_strategy") or cfg.get("eo_strategy", "commander")).lower()
-        if enc != "order" or mode != "incremental" or eo != "commander":
-            flags = (rot, ref, heur, enc, mode, eo)
-        else:
-            flags = (rot, ref, heur)
-    return (dataset, method, solver, flags, relabel_seed)
-
 def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool:
     """
     Determine whether an existing run record should be considered complete.
@@ -216,29 +169,39 @@ def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool
         All existing records in runs.jsonl are preserved and treated as completed.
     - Retry failed mode (retry_failed=True):
         * Complete proofs & hard bounds (NEVER retry):
-            - OPTIMAL: Optimality is proven mathematically.
+            - OPTIMAL: Optimality is proven mathematically with a valid best_ub and no validation_error.
             - INFEASIBLE: Problem/bound is proven infeasible.
             - SIZE_LIMIT: Graph size exceeded configuration limits.
         * Stable environment/license barriers (DO NOT retry in same environment):
             - UNAVAILABLE: Solver binary/engine is not installed.
             - LICENSE_ERROR: Commercial license is missing or invalid.
         * Incumbent preservation (PRESERVED):
-            - FEASIBLE with valid best_ub >= 0: Valid incumbent is preserved.
+            - FEASIBLE with valid best_ub >= 0 and no validation_error.
         * Retryable transient failures (RETRIED):
-            - TIMEOUT: Solver exceeded time limit.
-            - ERROR: Solver crashed, raised an unhandled exception, or failed validation.
-            - INTERRUPTED: Process killed or interrupted by external signal.
+            - TIMEOUT, MEMOUT, ERROR, INTERRUPTED, UNKNOWN.
             - FEASIBLE with missing or negative best_ub.
+            - Records with validation_error = True.
     """
     if not retry_failed:
         return True
+
+    if not isinstance(record, dict):
+        return False
+
+    if record.get("validation_error"):
+        return False
 
     status = normalize_status(record.get("status"))
     if not status:
         status = str(record.get("status", "")).strip().upper()
 
     # 1. Conclusive proofs and limits
-    if status in ("OPTIMAL", "INFEASIBLE", "SIZE_LIMIT"):
+    if status == "OPTIMAL":
+        if "best_ub" in record and record["best_ub"] is not None:
+            return validate_best_ub(record["best_ub"]) is not None
+        return True
+
+    if status in ("INFEASIBLE", "SIZE_LIMIT"):
         return True
 
     # 2. Solver installation / license unavailability
@@ -248,9 +211,7 @@ def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool
     # 3. Preserved feasible incumbents
     if status == "FEASIBLE":
         ub_val = validate_best_ub(record.get("best_ub"))
-        if ub_val is not None and not record.get("validation_error"):
-            return True
-        return False
+        return ub_val is not None
 
     # 4. Transient failures are retryable
     return False
@@ -278,8 +239,20 @@ def load_existing_runs(runs_jsonl_path, retry_failed=False):
                     key = get_canonical_key(data)
                     rep = int(data.get("rep", 1))
                     if is_run_completed(data, retry_failed=retry_failed):
-                        completed[(key, rep)] = data
-                        valid_count += 1
+                        existing = completed.get((key, rep))
+                        if existing is not None:
+                            st_old = normalize_status(existing.get("status"))
+                            st_new = normalize_status(data.get("status"))
+                            if st_old == "OPTIMAL" and st_new != "OPTIMAL":
+                                logger.warning(
+                                    "Duplicate run for %s rep=%d: preserving earlier OPTIMAL run, ignoring later %s run",
+                                    key, rep, st_new
+                                )
+                            else:
+                                completed[(key, rep)] = data
+                        else:
+                            completed[(key, rep)] = data
+                            valid_count += 1
                 except (json.JSONDecodeError, ValueError) as e:
                     skipped_count += 1
                     logger.warning("Corrupt or invalid JSON at %s:%d: %s (skipped)", runs_jsonl_path, line_no, e)
@@ -1080,9 +1053,9 @@ def run_experiments(
                 "config": task["config_dict"],
                 "solver": task["solver"],
                 "status": status,
-                "best_ub": -1,
+                "best_ub": None,
                 "encode_time": 0.0,
-                "solve_time": wall_time,
+                "solve_time": None,
                 "per_iter_times": [],
                 "num_iterations": 0,
                 "num_vars": 0,
@@ -1090,7 +1063,7 @@ def run_experiments(
                 "diagnostic": diagnostic,
             }
         elif record.get("best_ub") is None:
-            record["best_ub"] = -1
+            record["best_ub"] = None
 
         # Attach parent-measured wall_time, rep, groups, git_commit, git_dirty, relabel_seed
         record["groups"] = rep_groups

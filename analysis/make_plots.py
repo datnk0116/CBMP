@@ -18,6 +18,7 @@ from analysis.make_tables import (
     is_optimal_status,
     normalize_status,
     validate_best_ub,
+    get_canonical_key,
 )
 
 def setup_matplotlib():
@@ -122,7 +123,7 @@ def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename=
     if not ablation_recs:
         return
 
-    by_ds = {}
+    by_key = {}
     for r in ablation_recs:
         ds = r.get("dataset")
         if not ds:
@@ -136,14 +137,18 @@ def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename=
         if t is None or t <= 0:
             continue
 
+        sol = str(r.get("solver") or "").lower()
+        enc = str(r.get("encoding") or cfg.get("encoding", "order")).lower()
+        k = (ds, sol, enc)
+
         if not rot and not ref and not heur:
-            by_ds.setdefault(ds, {})["no_sb"] = t
+            by_key.setdefault(k, {})["no_sb"] = t
         elif rot and ref and heur:
-            by_ds.setdefault(ds, {})["with_sb"] = t
+            by_key.setdefault(k, {})["with_sb"] = t
 
     pairs = []
     labels = []
-    for ds, vals in by_ds.items():
+    for (ds, sol, enc), vals in by_key.items():
         if "no_sb" in vals and "with_sb" in vals:
             pairs.append((vals["no_sb"], vals["with_sb"]))
             labels.append(ds)
@@ -316,7 +321,10 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
         ds = r.get("dataset")
         seed = r.get("relabel_seed")
         var = get_var(r)
-        pairs_map.setdefault((ds, seed), {})[var] = r
+        sol = str(r.get("solver") or "").lower()
+        enc = str(r.get("encoding") or (r.get("config", {}).get("encoding", "order"))).lower()
+        base_key = (ds, sol, enc, seed)
+        pairs_map.setdefault(base_key, {})[var] = r
 
     variants = ["rotation", "rot_ref", "heur_ub", "all"]
     labels = ["Rotation", "Rot + Ref", "Heur UB", "All (SB+Heur)"]
@@ -324,7 +332,7 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
     data_n40 = [[] for _ in variants]
     data_n50 = [[] for _ in variants]
 
-    for (ds, seed), vmap in pairs_map.items():
+    for base_key, vmap in pairs_map.items():
         if "none" not in vmap or not is_optimal_status(vmap["none"]):
             continue
         t_none = validate_solve_time(vmap["none"].get("solve_time"))
