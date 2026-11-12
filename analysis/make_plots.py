@@ -2,10 +2,13 @@ import os
 import sys
 import json
 import math
+import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -113,37 +116,38 @@ def plot_cactus(records, group_name, category_key, title, base_filename, output_
 
     save_fig(fig, base_filename, output_dirs=output_dirs)
 
-def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename="scatter_sb_vs_nosb_small", title="Solve Time: No Symmetry Breaking vs With Symmetry Breaking (Small Graphs)", output_dirs=("results_v2/figures",)):
+def extract_scatter_pairs(records, group_name="ablation_small"):
     """
-    Log-log scatter plot comparing solve time with vs without symmetry breaking.
+    Extract paired (no_sb, with_sb) solve times for scatter plot.
+    Paired on composite key: (dataset, solver, encoding, solving_mode, eo_strategy, seed).
+    Both variants must be OPTIMAL with strictly positive finite solve_time.
+    If multiple repetitions exist, aggregates using np.median for exact determinism.
+    Returns: list of dict [{"dataset": ds, "key": k, "no_sb": t_no, "with_sb": t_with}, ...]
     """
-    if group_name:
+    if group_name is not None and any("groups" in r for r in records):
         ablation_recs = [
             r for r in records
             if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
             and is_optimal_status(r)
         ]
+        if not ablation_recs:
+            logger.warning("extract_scatter_pairs: no records found for group '%s'", group_name)
+            return []
     else:
-        ablation_recs = []
-
-    if not ablation_recs:
         ablation_recs = [r for r in records if is_optimal_status(r)]
-
-    if not ablation_recs:
-        return
 
     by_key = {}
     for r in ablation_recs:
         ds = r.get("dataset")
         if not ds:
             continue
-        cfg = r.get("config", {})
+        cfg = r.get("config", {}) if isinstance(r.get("config"), dict) else {}
         rot = cfg.get("sb_rotation", False)
         ref = cfg.get("sb_reflection", False)
         heur = cfg.get("heuristic_ub", False)
 
         t = extract_repetition_solve_time(r)
-        if t is None or t <= 0:
+        if t is None or not math.isfinite(t) or t <= 0:
             continue
 
         sol = normalize_solver_alias(r.get("solver"))
@@ -154,22 +158,33 @@ def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename=
         k = (ds, sol, enc, mode, eo, seed)
 
         if not rot and not ref and not heur:
-            by_key.setdefault(k, {})["no_sb"] = t
+            by_key.setdefault(k, {}).setdefault("no_sb", []).append(t)
         elif rot and ref and heur:
-            by_key.setdefault(k, {})["with_sb"] = t
+            by_key.setdefault(k, {}).setdefault("with_sb", []).append(t)
 
     pairs = []
-    labels = []
-    for (ds, sol, enc, mode, eo, seed), vals in by_key.items():
+    for k in sorted(by_key.keys(), key=lambda x: (str(x[0]), str(x[1]), str(x[2]), str(x[3]), str(x[4]), -1 if x[5] is None else x[5])):
+        vals = by_key[k]
         if "no_sb" in vals and "with_sb" in vals:
-            pairs.append((vals["no_sb"], vals["with_sb"]))
-            labels.append(ds)
+            t_no = float(np.median(vals["no_sb"]))
+            t_with = float(np.median(vals["with_sb"]))
+            if t_no > 0 and t_with > 0 and math.isfinite(t_no) and math.isfinite(t_with):
+                pairs.append({"dataset": k[0], "key": k, "no_sb": t_no, "with_sb": t_with})
 
+    return pairs
+
+def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename="scatter_sb_vs_nosb_small", title="Solve Time: No Symmetry Breaking vs With Symmetry Breaking (Small Graphs)", output_dirs=("results_v2/figures",)):
+    """
+    Log-log scatter plot comparing solve time with vs without symmetry breaking.
+    """
+    pairs = extract_scatter_pairs(records, group_name=group_name)
     if not pairs:
+        logger.warning("No paired records found for plot_scatter_sb_vs_nosb (group=%s)", group_name)
         return
 
-    x_vals = [p[0] for p in pairs]
-    y_vals = [p[1] for p in pairs]
+    x_vals = [p["no_sb"] for p in pairs]
+    y_vals = [p["with_sb"] for p in pairs]
+    labels = [p["dataset"] for p in pairs]
 
     fig, ax = plt.subplots(figsize=(6.5, 5.5))
     ax.scatter(x_vals, y_vals, color="#1f77b4", s=70, edgecolors="black", linewidth=1.2, zorder=5)
@@ -200,16 +215,16 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
     """
     Bar chart showing median solve time per configuration.
     """
-    if group_name:
+    if group_name is not None and any("groups" in r for r in records):
         ablation_recs = [
             r for r in records
             if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
             and is_optimal_status(r)
         ]
+        if not ablation_recs:
+            logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
+            return
     else:
-        ablation_recs = []
-
-    if not ablation_recs:
         ablation_recs = [r for r in records if is_optimal_status(r)]
 
     if not ablation_recs:
@@ -249,16 +264,16 @@ def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", bas
     """
     Plots number of SAT iterations and time spent on the final UNSAT iteration.
     """
-    if group_name:
+    if group_name is not None and any("groups" in r for r in records):
         ablation_recs = [
             r for r in records
             if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
             and is_optimal_status(r)
         ]
+        if not ablation_recs:
+            logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
+            return
     else:
-        ablation_recs = []
-
-    if not ablation_recs:
         ablation_recs = [r for r in records if is_optimal_status(r)]
 
     if not ablation_recs:

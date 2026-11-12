@@ -256,6 +256,10 @@ def load_existing_runs(runs_jsonl_path, retry_failed=False):
                     continue
                 try:
                     data = json.loads(line)
+                    if not isinstance(data, dict):
+                        skipped_count += 1
+                        logger.warning("Corrupt JSON at %s:%d: expected JSON object, got %s (skipped)", runs_jsonl_path, line_no, type(data).__name__)
+                        continue
                     if data.get("_type") == "metadata" or "dataset" not in data:
                         continue
                     key = get_canonical_key(data)
@@ -263,11 +267,22 @@ def load_existing_runs(runs_jsonl_path, retry_failed=False):
                         skipped_count += 1
                         logger.warning("Record at %s:%d has invalid canonical identity (skipped)", runs_jsonl_path, line_no)
                         continue
-                    raw_rep = data.get("rep") if data.get("rep") is not None else data.get("repetition", 1)
-                    rep = strict_positive_int(raw_rep)
+
+                    raw_rep = data.get("rep")
+                    raw_repetition = data.get("repetition")
+                    if raw_rep is not None and raw_repetition is not None:
+                        r1 = strict_positive_int(raw_rep)
+                        r2 = strict_positive_int(raw_repetition)
+                        if r1 is not None and r2 is not None and r1 != r2:
+                            skipped_count += 1
+                            logger.warning("Record at %s:%d has conflicting repetition fields: %r vs %r (skipped)", runs_jsonl_path, line_no, raw_rep, raw_repetition)
+                            continue
+
+                    raw_val = raw_rep if raw_rep is not None else (raw_repetition if raw_repetition is not None else 1)
+                    rep = strict_positive_int(raw_val)
                     if rep is None:
                         skipped_count += 1
-                        logger.warning("Record at %s:%d has invalid repetition %r (skipped)", runs_jsonl_path, line_no, raw_rep)
+                        logger.warning("Record at %s:%d has invalid repetition %r (skipped)", runs_jsonl_path, line_no, raw_val)
                         continue
 
                     if is_run_completed(data, retry_failed=retry_failed):
@@ -296,6 +311,11 @@ def load_existing_runs(runs_jsonl_path, retry_failed=False):
                                     key, rep, st_old
                                 )
                                 completed[(key, rep)] = data
+                            elif st_old == "OPTIMAL" and st_new == "OPTIMAL" and ub_old == ub_new:
+                                t_old = extract_repetition_solve_time(existing)
+                                t_new = extract_repetition_solve_time(data)
+                                if t_old is None and t_new is not None:
+                                    completed[(key, rep)] = data
                             else:
                                 pass
                         else:

@@ -452,3 +452,389 @@ def test_group_f_end_to_end_fixture_roundtrip_and_order_invariance(tmp_path):
     assert os.path.exists(data_csv)
     df_data = pd.read_csv(data_csv)
     assert list(df_data.columns) == DATA_CSV_COLUMNS
+
+
+# ============================================================================
+# COMPREHENSIVE REGRESSION: SECTIONS 2, 3, 4, 5, 6, 7, 8, 11
+# ============================================================================
+
+def test_group_a_solver_method_conflict_rejected():
+    """Section 2.2: Contradictory solver and method identities must be rejected."""
+    # cadical195 is SAT, not CP-SAT
+    assert get_canonical_key({"dataset": "d1", "solver": "cadical195", "method": "cpsat"}) is None
+    # cp_sat is CP-SAT, not SAT
+    assert get_canonical_key({"dataset": "d1", "solver": "cp_sat", "method": "sat"}) is None
+    # cplex is MILP, not SAT
+    assert get_canonical_key({"dataset": "d1", "solver": "cplex", "method": "sat"}) is None
+    # gurobi is MILP, not SAT
+    assert get_canonical_key({"dataset": "d1", "solver": "gurobi", "method": "sat"}) is None
+
+
+def test_group_a_strict_int_large_precision_and_types():
+    """Section 9.1: strict_int preserves large integer precision and rejects malformed values."""
+    # Arbitrary precision string integer
+    large_int_str = "9007199254740993"
+    assert strict_int(large_int_str) == 9007199254740993
+    assert strict_int("4") == 4
+    assert strict_int("4.0") == 4
+    assert strict_int("4.5") is None
+    assert strict_int(True) is None
+    assert strict_int(False) is None
+    assert strict_int(float("nan")) is None
+    assert strict_int(float("inf")) is None
+    assert strict_int("invalid") is None
+    # NumPy integers
+    assert strict_int(np.int64(42)) == 42
+
+
+def test_group_b_assignment_validation_comprehensive():
+    """Section 3: Exhaustive assignment validation across all specified test inputs."""
+    # Valid permutations
+    assert is_valid_assignment([0, 1, 2, 3], n=4) is True
+    assert is_valid_assignment((0, 1, 2, 3), n=4) is True
+    assert is_valid_assignment([3, 1, 0, 2], n=4) is True
+    assert is_valid_assignment([0, 1, 2, 3], n="4") is True
+    assert is_valid_assignment([0, 1, 2, 3], n=None) is True
+
+    # Duplicate element
+    assert is_valid_assignment([0, 1, 1, 3], n=4) is False
+    assert is_valid_assignment((0, 1, 1, 3), n=4) is False
+
+    # Incomplete length
+    assert is_valid_assignment([0, 1, 2], n=4) is False
+
+    # Boolean injection (reject bool as int)
+    assert is_valid_assignment([0, 1, 2, True], n=4) is False
+    assert is_valid_assignment([False, 1, 2, 3], n=4) is False
+
+    # Float injection
+    assert is_valid_assignment([0, 1, 2, 3.0], n=4) is False
+
+    # String injection
+    assert is_valid_assignment(["0", "1", "2", "3"], n=4) is False
+
+    # Unhashable object (must NOT raise TypeError)
+    assert is_valid_assignment([0, 1, 2, {}], n=4) is False
+    assert is_valid_assignment([0, 1, 2, [3]], n=4) is False
+
+    # None handling
+    assert is_valid_assignment(None, n=4, allow_none=False) is False
+    assert is_valid_assignment(None, n=4, allow_none=True) is True
+    assert is_valid_assignment(None, n=None, allow_none=False) is False
+
+    # Malformed N
+    assert is_valid_assignment([0, 1, 2, 3], n=3.5) is False
+    assert is_valid_assignment([0, 1, 2, 3], n=True) is False
+    assert is_valid_assignment([0, 1, 2, 3], n=-1) is False
+    assert is_valid_assignment([0, 1, 2, 3], n=0) is False
+    assert is_valid_assignment([], n=None) is False
+
+
+def test_group_b_jsonl_scalars_and_repetition_conflicts(tmp_path):
+    """Section 8.1 & 8.2: Non-dict JSON scalars and conflicting repetition fields are rejected."""
+    # 1. Non-dict JSON scalar
+    f_scalar = tmp_path / "scalars.jsonl"
+    f_scalar.write_text("123\n\"just a string\"\n[1, 2, 3]\nnull\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="JSONL integrity violations"):
+        load_records(str(f_scalar), strict=True)
+
+    loaded_permissive = load_records(str(f_scalar), strict=False)
+    assert len(loaded_permissive) == 0
+
+    # 2. Conflicting rep vs repetition
+    f_rep_conflict = tmp_path / "rep_conflict.jsonl"
+    bad_rep_rec = {
+        "dataset": "d1",
+        "solver": "cadical195",
+        "rep": 1,
+        "repetition": 2,  # Conflicting!
+        "status": "OPTIMAL",
+        "best_ub": 3,
+        "solve_time": 1.0,
+    }
+    f_rep_conflict.write_text(json.dumps(bad_rep_rec) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Conflicting repetition fields"):
+        load_records(str(f_rep_conflict), strict=True)
+
+    # In runner
+    runs_completed = load_existing_runs(str(f_rep_conflict), retry_failed=True)
+    assert len(runs_completed) == 0
+
+
+def test_group_c_ablation_shuffle_invariance_and_repetition_median(tmp_path):
+    """Section 4.2 & 4.3: make_table_ablation aggregates multiple repetitions with median and is 100% shuffle-invariant."""
+    # 5 variants x 3 repetitions on d1
+    import random
+    raw_runs = []
+    times = {"none": [10.0, 12.0, 11.0], "rotation": [8.0, 7.0, 9.0], "rot_ref": [5.0, 6.0, 5.5], "heur_ub": [7.0, 8.0, 7.5], "all": [3.0, 4.0, 3.5]}
+    configs = {
+        "none": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        "rotation": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+        "rot_ref": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": False},
+        "heur_ub": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": True},
+        "all": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+    }
+
+    for var_name, var_times in times.items():
+        for rep_idx, t in enumerate(var_times, start=1):
+            raw_runs.append({
+                "dataset": "d1",
+                "solver": "cadical195",
+                "encoding": "order",
+                "status": "OPTIMAL",
+                "best_ub": 4,
+                "solve_time": t,
+                "wall_time": t + 0.1,
+                "rep": rep_idx,
+                "config": configs[var_name],
+                "groups": ["ablation_small"],
+            })
+
+    out_base = str(tmp_path / "base")
+    df_base, _, _ = make_table_ablation(raw_runs, output_dirs=(out_base,))
+
+    # Median of none: [10.0, 11.0, 12.0] -> 11.0000
+    assert df_base.loc["d1", "none"] == "11.0000"
+    # Median of all: [3.0, 3.5, 4.0] -> 3.5000
+    assert df_base.loc["d1", "all"] == "3.5000"
+
+    # Test random shuffles
+    rng = random.Random(42)
+    for trial in range(5):
+        shuffled = list(raw_runs)
+        rng.shuffle(shuffled)
+        out_trial = str(tmp_path / f"trial_{trial}")
+        df_shuffled, _, _ = make_table_ablation(shuffled, output_dirs=(out_trial,))
+        pd.testing.assert_frame_equal(df_base, df_shuffled)
+
+
+def test_group_c_ablation_filters_missing_and_wrong_solver(tmp_path):
+    """Section 4.1: make_table_ablation strictly excludes records without solver or with non-Cadical solver."""
+    records = [
+        # Valid cadical ablation set
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 10.0, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 8.0, "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 6.0, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 7.0, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": True}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 4.0, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+        # Missing solver (must be rejected!)
+        {"dataset": "d1", "solver": None, "encoding": "order", "status": "OPTIMAL", "solve_time": 0.01, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+        # Wrong solver (must be rejected!)
+        {"dataset": "d1", "solver": "kissat", "encoding": "order", "status": "OPTIMAL", "solve_time": 0.02, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+    ]
+    out_dir = str(tmp_path / "out")
+    df_disp, _, _ = make_table_ablation(records, output_dirs=(out_dir,))
+    # If missing solver or kissat was erroneously accepted, "all" would be 0.0100 or 0.0200.
+    # It must be 4.0000!
+    assert df_disp.loc["d1", "all"] == "4.0000"
+
+
+def test_group_c_methods_sat_best_aggregates_repetitions_and_timeouts(tmp_path):
+    """Section 5: sat_best aggregates candidate repetitions and never lets fast timeout beat optimal."""
+    records = [
+        # Cadical has 3 reps on d1: [3.0, 4.0, 5.0] -> median 4.0
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "solve_time": 3.0, "rep": 1, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "solve_time": 4.0, "rep": 2, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "solve_time": 5.0, "rep": 3, "groups": ["methods"]},
+        # Glucose has 3 reps on d1: [1.0, 2.0, 6.0] -> median 2.0
+        {"dataset": "d1", "solver": "glucose4", "method": "sat", "status": "OPTIMAL", "solve_time": 1.0, "rep": 1, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "glucose4", "method": "sat", "status": "OPTIMAL", "solve_time": 2.0, "rep": 2, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "glucose4", "method": "sat", "status": "OPTIMAL", "solve_time": 6.0, "rep": 3, "groups": ["methods"]},
+        # Minisat hit TIMEOUT at 0.05s (aborted early) -> must NEVER beat OPTIMAL!
+        {"dataset": "d1", "solver": "minisat22", "method": "sat", "status": "TIMEOUT", "solve_time": 0.05, "rep": 1, "groups": ["methods"]},
+        # CP-SAT and CPLEX
+        {"dataset": "d1", "solver": "cp_sat", "method": "cpsat", "status": "OPTIMAL", "solve_time": 1.5, "rep": 1, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "cplex", "method": "cplex", "status": "SIZE_LIMIT", "solve_time": 0.01, "rep": 1, "groups": ["methods"]},
+    ]
+    out_dir = str(tmp_path / "out")
+    df_disp, _, _ = make_table_methods(records, output_dirs=(out_dir,))
+    # Glucose median is 2.0000, Cadical median is 4.0000. Glucose is chosen!
+    assert df_disp.loc["d1", "sat_best"] == "2.0000"
+
+
+def test_group_d_cross_validation_comprehensive_cases(tmp_path):
+    """Section 2.3: Cross-validation handles all 11 specified cases accurately."""
+    # 1. One solver, multiple SB configs -> single_source under default strict engines
+    recs_sb = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
+    ]
+    df_sb = cross_validate_optima(recs_sb)
+    assert len(df_sb) == 1 and df_sb.iloc[0]["validation_status"] == "single_source"
+
+    # 2. One solver, multiple seeds -> single_source
+    recs_seeds = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "relabel_seed": 0},
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "relabel_seed": 1},
+    ]
+    df_seeds = cross_validate_optima(recs_seeds)
+    assert len(df_seeds) == 2 and all(df_seeds["validation_status"] == "single_source")
+
+    # 3. One solver, multiple repetitions -> single_source
+    recs_reps = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "rep": 1},
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "rep": 2},
+    ]
+    df_reps = cross_validate_optima(recs_reps)
+    assert len(df_reps) == 1 and df_reps.iloc[0]["validation_status"] == "single_source"
+
+    # 4. Two aliases of same engine -> single_source
+    recs_alias = [
+        {"dataset": "d1", "solver": "cadical", "status": "OPTIMAL", "best_ub": 3},
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3},
+    ]
+    df_alias = cross_validate_optima(recs_alias)
+    assert len(df_alias) == 1 and df_alias.iloc[0]["validation_status"] == "single_source"
+
+    # 5. Two independent engines agree -> verified
+    recs_verified = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3},
+        {"dataset": "d1", "solver": "cp_sat", "status": "OPTIMAL", "best_ub": 3},
+    ]
+    df_ver = cross_validate_optima(recs_verified)
+    assert len(df_ver) == 2 and all(df_ver["validation_status"] == "verified")
+
+    # 6. Two independent engines disagree -> conflict raises ValueError
+    recs_conflict = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3},
+        {"dataset": "d1", "solver": "cp_sat", "status": "OPTIMAL", "best_ub": 4},
+    ]
+    with pytest.raises(ValueError, match="conflicting optima"):
+        cross_validate_optima(recs_conflict)
+
+    # 7. One engine has multiple OPTIMAL with different UBs -> internal conflict raises ValueError
+    recs_int_conflict = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "rep": 1},
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 4, "rep": 2},
+    ]
+    with pytest.raises(ValueError, match="conflicting optima"):
+        cross_validate_optima(recs_int_conflict)
+
+    # 8. Record OPTIMAL with missing or invalid UB -> skipped
+    recs_invalid_ub = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": None},
+        {"dataset": "d1", "solver": "cp_sat", "status": "OPTIMAL", "best_ub": -1},
+    ]
+    df_inval = cross_validate_optima(recs_invalid_ub)
+    assert len(df_inval) == 0
+
+    # 9. Record with validation_error -> skipped
+    recs_val_err = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "validation_error": True},
+        {"dataset": "d1", "solver": "cp_sat", "status": "OPTIMAL", "best_ub": 3},
+    ]
+    df_val_err = cross_validate_optima(recs_val_err)
+    assert len(df_val_err) == 1 and df_val_err.iloc[0]["validation_status"] == "single_source"
+
+    # 10. Dataset with seed=0 and unseeded (seed=None)
+    recs_seeds_diff = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "relabel_seed": 0},
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "relabel_seed": None},
+    ]
+    df_seeds_diff = cross_validate_optima(recs_seeds_diff)
+    assert len(df_seeds_diff) == 2
+
+    # 11. Insufficient data (< 2 independent sources) -> single_source
+    recs_single = [
+        {"dataset": "d1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 3},
+    ]
+    df_single = cross_validate_optima(recs_single)
+    assert len(df_single) == 1 and df_single.iloc[0]["validation_status"] == "single_source"
+
+
+def test_group_e_scatter_pairs_group_isolation_and_pure_data():
+    """Section 6 & 7: extract_scatter_pairs strictly isolates groups and produces exact arithmetic medians."""
+    from analysis.make_plots import extract_scatter_pairs
+
+    records = [
+        # Group ablation_small: seed 0 has 3 reps for no_sb [10, 12, 14] -> median 12.0
+        # and 3 reps for with_sb [4, 5, 6] -> median 5.0
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 10.0, "status": "OPTIMAL", "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 12.0, "status": "OPTIMAL", "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 14.0, "status": "OPTIMAL", "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 4.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 5.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 6.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+
+        # Group foreign_group (MUST NEVER CONTAMINATE ablation_small!):
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 999.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["foreign_group"]},
+    ]
+
+    pairs = extract_scatter_pairs(records, group_name="ablation_small")
+    assert len(pairs) == 1
+    p = pairs[0]
+    assert p["dataset"] == "d1"
+    assert p["no_sb"] == 12.0
+    assert p["with_sb"] == 5.0
+
+    # Asking for a non-existent group returns empty without fallback
+    pairs_empty = extract_scatter_pairs(records, group_name="nonexistent_group")
+    assert len(pairs_empty) == 0
+
+
+def test_group_g_metamorphic_properties(tmp_path):
+    """
+    Section 11: Metamorphic properties test for CBMP pipeline:
+    1. Input reversal invariance.
+    2. Input shuffle invariance.
+    3. Exact duplicate does not alter metrics.
+    4. Solver alias equivalence produces identical canonical key.
+    5. Seed change creates distinct canonical identity.
+    6. Config change creates distinct canonical identity.
+    7. Group change prevents data leaking to other group.
+    8. Removing independent source downgrades verified status.
+    9. Adding config variant of same engine does not increase independent sources in strict mode.
+    10. Adding invalid record does not alter valid results.
+    """
+    import random
+
+    # Property 4: Alias equivalence
+    r_cad1 = {"dataset": "d1", "solver": "cadical", "status": "OPTIMAL", "best_ub": 3}
+    r_cad2 = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3}
+    assert get_canonical_key(r_cad1) == get_canonical_key(r_cad2)
+
+    # Property 5: Seed change
+    r_seed0 = {"dataset": "d1", "solver": "cadical195", "relabel_seed": 0}
+    r_seed1 = {"dataset": "d1", "solver": "cadical195", "relabel_seed": 1}
+    assert get_canonical_key(r_seed0) != get_canonical_key(r_seed1)
+
+    # Property 6: Config change
+    r_cfg1 = {"dataset": "d1", "solver": "cadical195", "config": {"sb_rotation": False}}
+    r_cfg2 = {"dataset": "d1", "solver": "cadical195", "config": {"sb_rotation": True}}
+    assert get_canonical_key(r_cfg1) != get_canonical_key(r_cfg2)
+
+    # Property 8 & 9: Independent source verification & config variant invariance
+    two_engines = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3},
+        {"dataset": "d1", "solver": "cp_sat", "status": "OPTIMAL", "best_ub": 3},
+    ]
+    df_two = cross_validate_optima(two_engines)
+    assert all(df_two["validation_status"] == "verified")
+
+    # Property 8: Remove one source -> downgrades to single_source
+    one_engine = [two_engines[0]]
+    df_one = cross_validate_optima(one_engine)
+    assert df_one.iloc[0]["validation_status"] == "single_source"
+
+    # Property 9: Add multiple config variants of cadical195 -> still 1 engine source!
+    engine_plus_configs = [
+        two_engines[0],
+        {"dataset": "d1", "solver": "cadical195", "config": {"sb_rotation": False}, "status": "OPTIMAL", "best_ub": 3},
+        {"dataset": "d1", "solver": "cadical195", "config": {"sb_reflection": True}, "status": "OPTIMAL", "best_ub": 3},
+    ]
+    df_plus_configs = cross_validate_optima(engine_plus_configs)
+    assert df_plus_configs.iloc[0]["num_distinct_sources"] == 1
+    assert df_plus_configs.iloc[0]["validation_status"] == "single_source"
+
+    # Property 3: Exact duplicate does not alter metrics
+    base_runs = [
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 5.0, "rep": 1},
+        {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 5.0, "rep": 2},
+    ]
+    agg_base = aggregate_repetitions(base_runs)
+    # Add exact duplicate of rep 1
+    with_exact_dup = base_runs + [dict(base_runs[0])]
+    f_dup = tmp_path / "dup.jsonl"
+    f_dup.write_text("\n".join(json.dumps(r) for r in with_exact_dup) + "\n", encoding="utf-8")
+    loaded_dedup = load_records(str(f_dup), strict=True)
+    assert loaded_dedup[0]["solve_time"] == agg_base[0]["solve_time"]

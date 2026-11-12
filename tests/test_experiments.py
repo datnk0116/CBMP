@@ -275,7 +275,8 @@ def test_cross_validation_incumbent_smaller_than_opt_error():
         cross_validate_optima(records)
 
 def test_cross_validation_none_vs_all_two_keys(tmp_path):
-    # (e) none vs all with same cadical195 counted as 2 distinct keys
+    # Under strict engines (production default): same solver engine with different SB configs
+    # is 1 distinct engine source -> single_source
     out_dir = str(tmp_path / "tables")
     records = [
         {
@@ -294,9 +295,14 @@ def test_cross_validation_none_vs_all_two_keys(tmp_path):
         },
     ]
     df = cross_validate_optima(records, output_dir=out_dir)
-    assert len(df) == 2
-    assert df.iloc[0]["num_distinct_sources"] == 2
-    assert all(df["validation_status"] == "verified")
+    assert len(df) == 1
+    assert df.iloc[0]["num_distinct_sources"] == 1
+    assert df.iloc[0]["validation_status"] == "single_source"
+
+    # In exploratory non-strict mode: different configurations are tracked as distinct config keys
+    df_config = cross_validate_optima(records, output_dir=out_dir, strict_engines=False)
+    assert len(df_config) == 2
+    assert df_config.iloc[0]["num_distinct_sources"] == 2
 
 def test_cross_validation_cli_exit_code(tmp_path):
     import subprocess
