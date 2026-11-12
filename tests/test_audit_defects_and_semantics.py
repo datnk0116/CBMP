@@ -2839,8 +2839,18 @@ def test_is_run_completed_unified_validation():
 
     # retry_failed=True
     # Conclusive proofs and limits
-    for st in ["OPTIMAL", "optimal", "INFEASIBLE", "infeasible", "SIZE_LIMIT", "size_limit"]:
+    for st in ["INFEASIBLE", "infeasible", "SIZE_LIMIT", "size_limit"]:
         assert is_run_completed({"status": st}, retry_failed=True) is True
+
+    # OPTIMAL requires valid integer bounds
+    assert is_run_completed({"status": "OPTIMAL", "best_ub": 3}, retry_failed=True) is True
+    assert is_run_completed({"status": "optimal", "best_ub": 3.0}, retry_failed=True) is True
+    assert is_run_completed({"status": "OPTIMAL"}, retry_failed=True) is False
+    assert is_run_completed({"status": "OPTIMAL", "best_ub": None}, retry_failed=True) is False
+    assert is_run_completed({"status": "OPTIMAL", "best_ub": -1}, retry_failed=True) is False
+    assert is_run_completed({"status": "OPTIMAL", "best_ub": 3.7}, retry_failed=True) is False
+    assert is_run_completed({"status": "OPTIMAL", "best_ub": True}, retry_failed=True) is False
+    assert is_run_completed({"status": "OPTIMAL", "best_ub": 3, "validation_error": True}, retry_failed=True) is False
 
     # Environmental/license barriers
     for st in ["UNAVAILABLE", "unavailable", "LICENSE_ERROR", "license_error"]:

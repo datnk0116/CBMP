@@ -19,6 +19,8 @@ from analysis.make_tables import (
     normalize_status,
     validate_best_ub,
     get_canonical_key,
+    strict_int,
+    normalize_solver_alias,
 )
 
 def setup_matplotlib():
@@ -115,11 +117,18 @@ def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename=
     """
     Log-log scatter plot comparing solve time with vs without symmetry breaking.
     """
-    ablation_recs = [
-        r for r in records
-        if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
-        and is_optimal_status(r)
-    ]
+    if group_name:
+        ablation_recs = [
+            r for r in records
+            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+            and is_optimal_status(r)
+        ]
+    else:
+        ablation_recs = []
+
+    if not ablation_recs:
+        ablation_recs = [r for r in records if is_optimal_status(r)]
+
     if not ablation_recs:
         return
 
@@ -137,9 +146,12 @@ def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename=
         if t is None or t <= 0:
             continue
 
-        sol = str(r.get("solver") or "").lower()
-        enc = str(r.get("encoding") or cfg.get("encoding", "order")).lower()
-        k = (ds, sol, enc)
+        sol = normalize_solver_alias(r.get("solver"))
+        enc = str(r.get("encoding") or cfg.get("encoding", "order")).strip().lower()
+        mode = str(r.get("solving_mode") or cfg.get("solving_mode", "incremental")).strip().lower()
+        eo = str(r.get("eo_strategy") or cfg.get("eo_strategy", "commander")).strip().lower()
+        seed = strict_int(r.get("relabel_seed"), min_val=0)
+        k = (ds, sol, enc, mode, eo, seed)
 
         if not rot and not ref and not heur:
             by_key.setdefault(k, {})["no_sb"] = t
@@ -148,7 +160,7 @@ def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename=
 
     pairs = []
     labels = []
-    for (ds, sol, enc), vals in by_key.items():
+    for (ds, sol, enc, mode, eo, seed), vals in by_key.items():
         if "no_sb" in vals and "with_sb" in vals:
             pairs.append((vals["no_sb"], vals["with_sb"]))
             labels.append(ds)
@@ -188,11 +200,18 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
     """
     Bar chart showing median solve time per configuration.
     """
-    ablation_recs = [
-        r for r in records
-        if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
-        and is_optimal_status(r)
-    ]
+    if group_name:
+        ablation_recs = [
+            r for r in records
+            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+            and is_optimal_status(r)
+        ]
+    else:
+        ablation_recs = []
+
+    if not ablation_recs:
+        ablation_recs = [r for r in records if is_optimal_status(r)]
+
     if not ablation_recs:
         return
 
@@ -230,11 +249,18 @@ def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", bas
     """
     Plots number of SAT iterations and time spent on the final UNSAT iteration.
     """
-    ablation_recs = [
-        r for r in records
-        if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
-        and is_optimal_status(r)
-    ]
+    if group_name:
+        ablation_recs = [
+            r for r in records
+            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+            and is_optimal_status(r)
+        ]
+    else:
+        ablation_recs = []
+
+    if not ablation_recs:
+        ablation_recs = [r for r in records if is_optimal_status(r)]
+
     if not ablation_recs:
         return
 
@@ -319,11 +345,14 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
     pairs_map = {}
     for r in family_recs:
         ds = r.get("dataset")
-        seed = r.get("relabel_seed")
+        seed = strict_int(r.get("relabel_seed"), min_val=0)
         var = get_var(r)
-        sol = str(r.get("solver") or "").lower()
-        enc = str(r.get("encoding") or (r.get("config", {}).get("encoding", "order"))).lower()
-        base_key = (ds, sol, enc, seed)
+        sol = normalize_solver_alias(r.get("solver"))
+        cfg = r.get("config", {})
+        enc = str(r.get("encoding") or (cfg.get("encoding", "order"))).strip().lower()
+        mode = str(r.get("solving_mode") or (cfg.get("solving_mode", "incremental"))).strip().lower()
+        eo = str(r.get("eo_strategy") or (cfg.get("eo_strategy", "commander"))).strip().lower()
+        base_key = (ds, sol, enc, mode, eo, seed)
         pairs_map.setdefault(base_key, {})[var] = r
 
     variants = ["rotation", "rot_ref", "heur_ub", "all"]

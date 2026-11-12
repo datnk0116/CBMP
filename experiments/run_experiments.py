@@ -24,6 +24,9 @@ from analysis.make_tables import (
     validate_best_ub,
     get_canonical_key,
     is_optimal_status,
+    is_valid_assignment,
+    strict_positive_int,
+    normalize_solver_alias,
 )
 
 def get_dataset_info(filepath):
@@ -197,8 +200,14 @@ def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool
 
     # 1. Conclusive proofs and limits
     if status == "OPTIMAL":
-        if "best_ub" in record and record["best_ub"] is not None:
-            return validate_best_ub(record["best_ub"]) is not None
+        ub_val = validate_best_ub(record.get("best_ub"))
+        if ub_val is None:
+            return False
+        if record.get("validation_error"):
+            return False
+        if "assignment" in record and record.get("assignment") is not None:
+            if not is_valid_assignment(record["assignment"], n=record.get("N")):
+                return False
         return True
 
     if status in ("INFEASIBLE", "SIZE_LIMIT"):
@@ -211,15 +220,28 @@ def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool
     # 3. Preserved feasible incumbents
     if status == "FEASIBLE":
         ub_val = validate_best_ub(record.get("best_ub"))
-        return ub_val is not None
+        if ub_val is None:
+            return False
+        if record.get("validation_error"):
+            return False
+        if "assignment" in record and record.get("assignment") is not None:
+            if not is_valid_assignment(record["assignment"], n=record.get("N")):
+                return False
+        return True
 
     # 4. Transient failures are retryable
     return False
+
+class DuplicateConflictError(ValueError):
+    """Raised when duplicate runs have divergent OPTIMAL best_ub."""
+    pass
+
 
 def load_existing_runs(runs_jsonl_path, retry_failed=False):
     """
     Load runs already recorded in runs.jsonl mapping (canonical_key, rep) -> record.
     If retry_failed is True, completed runs are filtered via is_run_completed(..., retry_failed=True).
+    Strictly validates key and rep. Divergent duplicate OPTIMAL bounds raise DuplicateConflictError.
     """
     if not os.path.exists(runs_jsonl_path):
         return {}
@@ -237,28 +259,58 @@ def load_existing_runs(runs_jsonl_path, retry_failed=False):
                     if data.get("_type") == "metadata" or "dataset" not in data:
                         continue
                     key = get_canonical_key(data)
-                    rep = int(data.get("rep", 1))
+                    if key is None:
+                        skipped_count += 1
+                        logger.warning("Record at %s:%d has invalid canonical identity (skipped)", runs_jsonl_path, line_no)
+                        continue
+                    raw_rep = data.get("rep") if data.get("rep") is not None else data.get("repetition", 1)
+                    rep = strict_positive_int(raw_rep)
+                    if rep is None:
+                        skipped_count += 1
+                        logger.warning("Record at %s:%d has invalid repetition %r (skipped)", runs_jsonl_path, line_no, raw_rep)
+                        continue
+
                     if is_run_completed(data, retry_failed=retry_failed):
                         existing = completed.get((key, rep))
                         if existing is not None:
                             st_old = normalize_status(existing.get("status"))
                             st_new = normalize_status(data.get("status"))
-                            if st_old == "OPTIMAL" and st_new != "OPTIMAL":
+                            ub_old = validate_best_ub(existing.get("best_ub"))
+                            ub_new = validate_best_ub(data.get("best_ub"))
+
+                            # Critical conflict: both OPTIMAL with divergent UB
+                            if st_old == "OPTIMAL" and st_new == "OPTIMAL" and ub_old is not None and ub_new is not None and ub_old != ub_new:
+                                msg = f"Duplicate OPTIMAL conflict for {key} rep {rep}: best_ub {ub_old} vs {ub_new}"
+                                logger.error(msg)
+                                raise DuplicateConflictError(msg)
+
+                            # Preserve valid OPTIMAL over failure
+                            if st_old == "OPTIMAL" and ub_old is not None and (st_new != "OPTIMAL" or ub_new is None):
                                 logger.warning(
                                     "Duplicate run for %s rep=%d: preserving earlier OPTIMAL run, ignoring later %s run",
                                     key, rep, st_new
                                 )
-                            else:
+                            elif (st_old != "OPTIMAL" or ub_old is None) and st_new == "OPTIMAL" and ub_new is not None:
+                                logger.warning(
+                                    "Duplicate run for %s rep=%d: replacing earlier %s run with later valid OPTIMAL run",
+                                    key, rep, st_old
+                                )
                                 completed[(key, rep)] = data
+                            else:
+                                pass
                         else:
                             completed[(key, rep)] = data
                             valid_count += 1
+                except DuplicateConflictError:
+                    raise
                 except (json.JSONDecodeError, ValueError) as e:
                     skipped_count += 1
                     logger.warning("Corrupt or invalid JSON at %s:%d: %s (skipped)", runs_jsonl_path, line_no, e)
                 except Exception as e:
                     skipped_count += 1
                     logger.warning("Error processing record at %s:%d: %s (skipped)", runs_jsonl_path, line_no, e)
+    except DuplicateConflictError:
+        raise
     except Exception as e:
         logger.error("Could not read existing runs from %s: %s", runs_jsonl_path, e)
 
