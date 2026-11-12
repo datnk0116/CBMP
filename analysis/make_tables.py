@@ -11,12 +11,31 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 DATA_CSV_COLUMNS = [
-    "dataset", "column", "status", "termination_reason",
+    "dataset", "column", "status",
     "par2", "solve_time", "wall_time", "encode_time", "best_ub",
     "n_total", "n_algorithmic", "n_optimal", "n_timeout", "n_interrupted",
     "n_feasible", "n_infeasible", "n_error", "n_size_limit",
     "n_unavailable", "n_license_error", "n_unknown",
+    "termination_reason",
 ]
+
+def validate_best_ub(val):
+    """
+    Validates that best_ub is a genuine finite non-negative integer.
+    Rejects booleans (isinstance(val, bool)), None, negative numbers, NaN, inf,
+    and unparseable values.
+    Returns:
+        int if valid, else None.
+    """
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        f = float(val)
+        if math.isfinite(f) and f >= 0.0:
+            return int(f)
+        return None
+    except (ValueError, TypeError):
+        return None
 
 def validate_solve_time(val):
     """
@@ -51,15 +70,17 @@ def extract_repetition_solve_time(r):
 
 def extract_time_limit(record, default_timeout=600.0):
     """Safely extracts a validated positive numeric timeout from a record."""
+    if not isinstance(record, dict):
+        return float(default_timeout)
     val = record.get("time_limit")
     if val is None:
         val = record.get("timeout")
     if val is None and isinstance(record.get("config"), dict):
         val = record.get("config", {}).get("time_limit")
-    if val is not None:
+    if val is not None and not isinstance(val, bool):
         try:
             f_val = float(val)
-            if f_val > 0 and not math.isnan(f_val) and not math.isinf(f_val):
+            if f_val > 0 and math.isfinite(f_val):
                 return f_val
         except (ValueError, TypeError):
             pass
@@ -198,37 +219,36 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
         else:
             agg_status = "UNKNOWN"
 
+    def _safe_solve_key(r):
+        t = extract_repetition_solve_time(r)
+        return t if t is not None else float("inf")
+
+    def _safe_ub_key(r):
+        ub = validate_best_ub(r.get("best_ub"))
+        return ub if ub is not None else float("inf")
+
     # Select representative record to seed the aggregated dictionary
     if agg_status in ("OPTIMAL", "PARTIAL"):
         opt_reps = [r for r in reps if r["_cat"] == "OPTIMAL"]
-        reps_sorted = sorted(
-            opt_reps,
-            key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
-        )
+        reps_sorted = sorted(opt_reps, key=_safe_solve_key)
         rep_chosen = reps_sorted[len(reps_sorted) // 2]
-        solve_times = [r["solve_time"] for r in opt_reps if r.get("solve_time") is not None]
-        wall_times = [r["wall_time"] for r in opt_reps if r.get("wall_time") is not None]
+        solve_times = [extract_repetition_solve_time(r) for r in opt_reps if extract_repetition_solve_time(r) is not None]
+        wall_times = [validate_solve_time(r.get("wall_time")) for r in opt_reps if validate_solve_time(r.get("wall_time")) is not None]
     elif agg_status == "FEASIBLE":
         feas_reps = [r for r in reps if r["_cat"] == "FEASIBLE"]
-        reps_sorted = sorted(
-            feas_reps,
-            key=lambda x: (x.get("best_ub", float("inf")), x.get("solve_time", float("inf"))),
-        )
+        reps_sorted = sorted(feas_reps, key=lambda x: (_safe_ub_key(x), _safe_solve_key(x)))
         rep_chosen = reps_sorted[0]
-        solve_times = [r["solve_time"] for r in feas_reps if r.get("solve_time") is not None]
-        wall_times = [r["wall_time"] for r in feas_reps if r.get("wall_time") is not None]
+        solve_times = [extract_repetition_solve_time(r) for r in feas_reps if extract_repetition_solve_time(r) is not None]
+        wall_times = [validate_solve_time(r.get("wall_time")) for r in feas_reps if validate_solve_time(r.get("wall_time")) is not None]
     else:
         matching = [r for r in reps if r["_cat"] == agg_status]
         candidates = matching if matching else reps
-        reps_sorted = sorted(
-            candidates,
-            key=lambda x: x.get("solve_time") if x.get("solve_time") is not None else float("inf"),
-        )
+        reps_sorted = sorted(candidates, key=_safe_solve_key)
         rep_chosen = reps_sorted[len(reps_sorted) // 2]
-        solve_times = [r["solve_time"] for r in candidates if r.get("solve_time") is not None]
-        wall_times = [r["wall_time"] for r in candidates if r.get("wall_time") is not None]
+        solve_times = [extract_repetition_solve_time(r) for r in candidates if extract_repetition_solve_time(r) is not None]
+        wall_times = [validate_solve_time(r.get("wall_time")) for r in candidates if validate_solve_time(r.get("wall_time")) is not None]
 
-    encode_times = [r["encode_time"] for r in reps if r.get("encode_time") is not None]
+    encode_times = [validate_solve_time(r.get("encode_time")) for r in reps if validate_solve_time(r.get("encode_time")) is not None]
 
     agg = dict(rep_chosen)
     agg["status"] = agg_status
@@ -252,13 +272,19 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
 
     if solve_times:
         agg["solve_time"] = float(np.median(solve_times))
-    elif "solve_time" not in agg or agg["solve_time"] is None:
-        agg["solve_time"] = 0.0
+    else:
+        t_chosen = extract_repetition_solve_time(rep_chosen)
+        agg["solve_time"] = t_chosen
 
     if wall_times:
         agg["wall_time"] = float(np.median(wall_times))
+    else:
+        agg["wall_time"] = validate_solve_time(rep_chosen.get("wall_time"))
+
     if encode_times:
         agg["encode_time"] = float(np.median(encode_times))
+    else:
+        agg["encode_time"] = validate_solve_time(rep_chosen.get("encode_time"))
 
     par2_val = compute_repetition_par2(reps, default_timeout=default_timeout)
     if par2_val is not None:
@@ -269,6 +295,13 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
     if agg_status in ("ERROR", "NUMERIC_ERROR", "LICENSE_ERROR", "UNAVAILABLE", "SIZE_LIMIT", "INFEASIBLE", "UNKNOWN") or agg.get("validation_error"):
         agg["best_ub"] = -1
         agg["assignment"] = None
+    elif agg_status == "FEASIBLE":
+        ub_c = validate_best_ub(rep_chosen.get("best_ub"))
+        agg["best_ub"] = ub_c if ub_c is not None else -1
+    elif agg_status in ("OPTIMAL", "PARTIAL"):
+        ub_c = validate_best_ub(rep_chosen.get("best_ub"))
+        if ub_c is not None:
+            agg["best_ub"] = ub_c
 
     # Union of groups across reps
     all_groups = set()
@@ -538,29 +571,30 @@ def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_to
     if isinstance(status, dict):
         rec = status
         status = rec.get("status")
-        solve_time = rec.get("solve_time", 0.0)
+        solve_time = rec.get("solve_time")
         best_ub = rec.get("best_ub")
         n_optimal = rec.get("n_optimal")
         n_total = rec.get("n_total")
         n_algorithmic = rec.get("n_algorithmic")
 
-    if solve_time is None:
-        solve_time = 0.0
+    t_val = validate_solve_time(solve_time)
+    t_num = t_val if t_val is not None else 0.0
 
     st = str(status).upper() if status is not None else ""
+    ub_val = validate_best_ub(best_ub)
 
     if st == "OPTIMAL":
-        return f"{solve_time:.4f}"
+        return f"{t_num:.4f}"
     elif st == "PARTIAL":
         denom = n_total if (n_total is not None and n_total > 0) else n_algorithmic
         k_n = f"{n_optimal}/{denom}" if (n_optimal is not None and denom is not None) else "PARTIAL"
-        return f"{k_n} {solve_time:.4f}*"
+        return f"{k_n} {t_num:.4f}*"
     elif st == "FEASIBLE":
-        return f"FEAS({best_ub})" if best_ub is not None and best_ub >= 0 else "FEAS"
+        return f"FEAS({ub_val})" if ub_val is not None and ub_val >= 0 else "FEAS"
     elif st == "TIMEOUT":
-        return f"TO({best_ub})" if best_ub is not None and best_ub >= 0 else "TO"
+        return f"TO({ub_val})" if ub_val is not None and ub_val >= 0 else "TO"
     elif st == "INTERRUPTED":
-        return f"INT({best_ub})" if best_ub is not None and best_ub >= 0 else "INT"
+        return f"INT({ub_val})" if ub_val is not None and ub_val >= 0 else "INT"
     elif st == "SIZE_LIMIT":
         return "SL"
     elif st == "UNAVAILABLE":
@@ -598,7 +632,9 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
         for ds, row in df_raw.iterrows():
             rec = row.get(baseline_col)
             if rec and rec.get("status") == "OPTIMAL":
-                t_base = rec.get("solve_time", timeout)
+                t_base = validate_solve_time(rec.get("solve_time"))
+                if t_base is None:
+                    t_base = float(timeout)
                 if t_base >= 0.1:
                     baseline_times[ds] = t_base
 
@@ -613,7 +649,8 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             if not rec:
                 continue
             st = str(rec.get("status", "")).upper()
-            t = rec.get("solve_time", 0.0) or 0.0
+            t_raw = rec.get("solve_time")
+            t = validate_solve_time(t_raw)
             rec_timeout = extract_time_limit(rec, default_timeout=timeout)
 
             if st == "OPTIMAL":
@@ -640,7 +677,7 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
                         pass
                 if par2_val is not None:
                     par2_vals.append(par2_val)
-                if ds in baseline_times and t > 0:
+                if ds in baseline_times and t is not None and t > 0:
                     ratios.append(baseline_times[ds] / t)
             elif st == "PARTIAL":
                 p = validate_solve_time(rec.get("par2"))
@@ -739,7 +776,6 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("r
                                 "dataset": ds,
                                 "column": col,
                                 "status": cell.get("status"),
-                                "termination_reason": cell.get("termination_reason"),
                                 "par2": cell.get("par2"),
                                 "solve_time": cell.get("solve_time"),
                                 "wall_time": cell.get("wall_time"),
@@ -757,6 +793,7 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("r
                                 "n_unavailable": cell.get("n_unavailable"),
                                 "n_license_error": cell.get("n_license_error"),
                                 "n_unknown": cell.get("n_unknown"),
+                                "termination_reason": cell.get("termination_reason"),
                             })
             df_metrics = pd.DataFrame(raw_rows, columns=DATA_CSV_COLUMNS)
             metrics_csv_path = os.path.join(out_dir, f"{base_filename}_data.csv")

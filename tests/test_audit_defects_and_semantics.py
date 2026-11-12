@@ -1694,7 +1694,8 @@ def test_make_table_solvers_unification_with_canonical_par2(tmp_path):
 def test_data_csv_schema_and_termination_reason(tmp_path):
     """
     Test machine-readable CSV export schema:
-    - DATA_CSV_COLUMNS has 21 columns including termination_reason.
+    - DATA_CSV_COLUMNS has 21 columns with termination_reason at the end.
+    - Preserves all 20 legacy columns in their exact original order.
     - Records with termination_reason export it correctly.
     - Records without termination_reason export empty/NaN.
     """
@@ -1703,6 +1704,16 @@ def test_data_csv_schema_and_termination_reason(tmp_path):
 
     assert "termination_reason" in DATA_CSV_COLUMNS
     assert len(DATA_CSV_COLUMNS) == 21
+    assert DATA_CSV_COLUMNS[-1] == "termination_reason"
+
+    legacy_20 = [
+        "dataset", "column", "status",
+        "par2", "solve_time", "wall_time", "encode_time", "best_ub",
+        "n_total", "n_algorithmic", "n_optimal", "n_timeout", "n_interrupted",
+        "n_feasible", "n_infeasible", "n_error", "n_size_limit",
+        "n_unavailable", "n_license_error", "n_unknown",
+    ]
+    assert DATA_CSV_COLUMNS[:20] == legacy_20
 
     cell_gurobi_search = {
         "status": "ERROR",
@@ -1755,6 +1766,113 @@ def test_data_csv_schema_and_termination_reason(tmp_path):
 
     row_sat = df_read[(df_read["dataset"] == "ds1") & (df_read["column"] == "sat")].iloc[0]
     assert pd.isna(row_sat["termination_reason"])
+
+
+def test_data_csv_backward_compatibility_with_legacy_csv(tmp_path):
+    """
+    Test that reading a legacy 20-column CSV (created before termination_reason existed)
+    remains completely compatible and aligns with DATA_CSV_COLUMNS[:20].
+    """
+    import pandas as pd
+    from analysis.make_tables import DATA_CSV_COLUMNS
+
+    legacy_cols = DATA_CSV_COLUMNS[:20]
+    legacy_row = {col: 0 for col in legacy_cols}
+    legacy_row["dataset"] = "legacy_ds"
+    legacy_row["column"] = "cadical"
+    legacy_row["status"] = "OPTIMAL"
+    legacy_row["solve_time"] = 1.5
+
+    legacy_df = pd.DataFrame([legacy_row], columns=legacy_cols)
+    legacy_path = tmp_path / "legacy_data.csv"
+    legacy_df.to_csv(legacy_path, index=False)
+
+    df_loaded = pd.read_csv(legacy_path)
+    assert list(df_loaded.columns) == DATA_CSV_COLUMNS[:20]
+    assert "termination_reason" not in df_loaded.columns
+    assert df_loaded.iloc[0]["solve_time"] == 1.5
+
+
+def test_aggregate_repetition_group_robust_timing_and_sorting():
+    """
+    Test robust timing validation and representative selection in aggregate_repetition_group:
+    1. Repetitions with string, boolean, negative, NaN, inf, or None timing do NOT crash sorting or median.
+    2. Fallback from invalid solve_time to valid wall_time is applied cleanly.
+    3. Representative FEASIBLE selection with malformed best_ub (str, bool, None, negative) does NOT crash sorting.
+    4. encode_time with malformed values is validated and filtered before computing median.
+    5. Non-dict items in reps are safely ignored.
+    6. Invariant holds: n_algorithmic + n_size_limit + n_unavailable + n_license_error + n_unknown == n_total.
+    """
+    import math
+    from analysis.make_tables import aggregate_repetition_group
+
+    reps = [
+        # Rep 1: valid solve_time
+        {"status": "FEASIBLE", "best_ub": 6, "solve_time": 10.0, "wall_time": 10.2, "encode_time": 0.5, "time_limit": 300.0},
+        # Rep 2: solve_time is corrupted string, fallback to wall_time
+        {"status": "FEASIBLE", "best_ub": 4, "solve_time": "invalid_string", "wall_time": 8.0, "encode_time": True, "time_limit": 300.0},
+        # Rep 3: best_ub is None, solve_time is boolean False
+        {"status": "FEASIBLE", "best_ub": None, "solve_time": False, "wall_time": 15.0, "encode_time": float("nan"), "time_limit": 300.0},
+        # Rep 4: best_ub is negative string, solve_time is NaN
+        {"status": "FEASIBLE", "best_ub": "-5", "solve_time": float("nan"), "wall_time": 20.0, "encode_time": 0.3, "time_limit": 300.0},
+        # Rep 5: best_ub is float 3.0 (valid bound 3), solve_time is -1.0, wall_time is 5.0
+        {"status": "FEASIBLE", "best_ub": 3.0, "solve_time": -1.0, "wall_time": 5.0, "encode_time": 0.4, "time_limit": 300.0},
+        # Non-dict item (should be safely skipped)
+        "not_a_dict",
+        None,
+        42,
+    ]
+
+    agg = aggregate_repetition_group(reps, default_timeout=300.0)
+    assert agg is not None
+    assert agg["status"] == "FEASIBLE"
+    assert agg["n_total"] == 5
+    assert agg["n_feasible"] == 5
+    assert agg["n_algorithmic"] == 5
+    assert agg["n_size_limit"] == 0
+    assert agg["n_unavailable"] == 0
+    assert agg["n_license_error"] == 0
+    assert agg["n_unknown"] == 0
+
+    # Representative record: best valid best_ub is 3 from Rep 5
+    assert agg["best_ub"] == 3
+
+    # solve_times with fallback to wall_time:
+    # Rep 1: 10.0
+    # Rep 2: fallback to wall_time 8.0
+    # Rep 3: fallback to wall_time 15.0
+    # Rep 4: fallback to wall_time 20.0
+    # Rep 5: fallback to wall_time 5.0
+    # Sorted solve_times: [5.0, 8.0, 10.0, 15.0, 20.0] -> median is 10.0
+    assert abs(agg["solve_time"] - 10.0) < 1e-5
+
+    # wall_times: [10.2, 8.0, 15.0, 20.0, 5.0] -> sorted [5.0, 8.0, 10.2, 15.0, 20.0] -> median 10.2
+    assert abs(agg["wall_time"] - 10.2) < 1e-5
+
+    # encode_times: valid are 0.5 (Rep 1), 0.3 (Rep 4), 0.4 (Rep 5). (True and NaN filtered out).
+    # Sorted: [0.3, 0.4, 0.5] -> median is 0.4
+    assert abs(agg["encode_time"] - 0.4) < 1e-5
+
+
+def test_aggregate_repetition_group_all_timings_missing_does_not_inject_zero():
+    """
+    Test that when all repetitions lack valid timing, aggregate_repetition_group does NOT
+    arbitrarily inject 0.0 into solve_time, wall_time, or encode_time.
+    """
+    from analysis.make_tables import aggregate_repetition_group
+
+    reps = [
+        {"status": "TIMEOUT", "solve_time": None, "wall_time": None, "time_limit": 600.0},
+        {"status": "TIMEOUT", "solve_time": "none", "wall_time": -1.0, "time_limit": 600.0},
+    ]
+
+    agg = aggregate_repetition_group(reps, default_timeout=600.0)
+    assert agg is not None
+    assert agg["status"] == "TIMEOUT"
+    assert agg["solve_time"] is None
+    assert agg["wall_time"] is None
+    assert agg["encode_time"] is None
+    assert agg["par2"] == 1200.0  # TIMEOUT penalized as 2 * 600
 
 
 
