@@ -27,6 +27,11 @@ from analysis.make_tables import (
     is_valid_assignment,
     strict_positive_int,
     normalize_solver_alias,
+    normalize_method_alias,
+    DuplicateConflictError,
+    get_repetition_identity,
+    get_run_identity,
+    pick_better_record,
 )
 
 def get_dataset_info(filepath):
@@ -232,11 +237,6 @@ def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool
     # 4. Transient failures are retryable
     return False
 
-class DuplicateConflictError(ValueError):
-    """Raised when duplicate runs have divergent OPTIMAL best_ub."""
-    pass
-
-
 def load_existing_runs(runs_jsonl_path, retry_failed=False):
     """
     Load runs already recorded in runs.jsonl mapping (canonical_key, rep) -> record.
@@ -268,56 +268,16 @@ def load_existing_runs(runs_jsonl_path, retry_failed=False):
                         logger.warning("Record at %s:%d has invalid canonical identity (skipped)", runs_jsonl_path, line_no)
                         continue
 
-                    raw_rep = data.get("rep")
-                    raw_repetition = data.get("repetition")
-                    if raw_rep is not None and raw_repetition is not None:
-                        r1 = strict_positive_int(raw_rep)
-                        r2 = strict_positive_int(raw_repetition)
-                        if r1 is not None and r2 is not None and r1 != r2:
-                            skipped_count += 1
-                            logger.warning("Record at %s:%d has conflicting repetition fields: %r vs %r (skipped)", runs_jsonl_path, line_no, raw_rep, raw_repetition)
-                            continue
-
-                    raw_val = raw_rep if raw_rep is not None else (raw_repetition if raw_repetition is not None else 1)
-                    rep = strict_positive_int(raw_val)
+                    rep = get_repetition_identity(data)
                     if rep is None:
                         skipped_count += 1
-                        logger.warning("Record at %s:%d has invalid repetition %r (skipped)", runs_jsonl_path, line_no, raw_val)
+                        logger.warning("Record at %s:%d has invalid repetition (skipped)", runs_jsonl_path, line_no)
                         continue
 
                     if is_run_completed(data, retry_failed=retry_failed):
                         existing = completed.get((key, rep))
                         if existing is not None:
-                            st_old = normalize_status(existing.get("status"))
-                            st_new = normalize_status(data.get("status"))
-                            ub_old = validate_best_ub(existing.get("best_ub"))
-                            ub_new = validate_best_ub(data.get("best_ub"))
-
-                            # Critical conflict: both OPTIMAL with divergent UB
-                            if st_old == "OPTIMAL" and st_new == "OPTIMAL" and ub_old is not None and ub_new is not None and ub_old != ub_new:
-                                msg = f"Duplicate OPTIMAL conflict for {key} rep {rep}: best_ub {ub_old} vs {ub_new}"
-                                logger.error(msg)
-                                raise DuplicateConflictError(msg)
-
-                            # Preserve valid OPTIMAL over failure
-                            if st_old == "OPTIMAL" and ub_old is not None and (st_new != "OPTIMAL" or ub_new is None):
-                                logger.warning(
-                                    "Duplicate run for %s rep=%d: preserving earlier OPTIMAL run, ignoring later %s run",
-                                    key, rep, st_new
-                                )
-                            elif (st_old != "OPTIMAL" or ub_old is None) and st_new == "OPTIMAL" and ub_new is not None:
-                                logger.warning(
-                                    "Duplicate run for %s rep=%d: replacing earlier %s run with later valid OPTIMAL run",
-                                    key, rep, st_old
-                                )
-                                completed[(key, rep)] = data
-                            elif st_old == "OPTIMAL" and st_new == "OPTIMAL" and ub_old == ub_new:
-                                t_old = extract_repetition_solve_time(existing)
-                                t_new = extract_repetition_solve_time(data)
-                                if t_old is None and t_new is not None:
-                                    completed[(key, rep)] = data
-                            else:
-                                pass
+                            completed[(key, rep)] = pick_better_record(existing, data, strict=True)
                         else:
                             completed[(key, rep)] = data
                             valid_count += 1

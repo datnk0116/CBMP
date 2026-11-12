@@ -155,58 +155,110 @@ def strict_bool(val, default=None):
         return None
     return None
 
+EXACT_SOLVER_ALIASES = {
+    # SAT solvers
+    "cadical": "cadical195",
+    "cadical195": "cadical195",
+    "cadical_195": "cadical195",
+    "kissat": "kissat",
+    "glucose": "glucose4",
+    "glucose4": "glucose4",
+    "glucose_4": "glucose4",
+    "maple": "maplechrono",
+    "maplechrono": "maplechrono",
+    "minisat": "minisat22",
+    "minisat22": "minisat22",
+    "lingeling": "lingeling",
+    # CP-SAT
+    "cp_sat": "cp_sat",
+    "cpsat": "cp_sat",
+    "ortools": "cp_sat",
+    "ortools_cpsat": "cp_sat",
+    # CPLEX MILP
+    "cplex": "cplex",
+    "cplex_milp": "cplex",
+    "ibm_cplex": "cplex",
+    # CPLEX CP Optimizer
+    "cplex_cp": "cplex_cp",
+    "cpoptimizer": "cplex_cp",
+    "docplex_cp": "cplex_cp",
+    # Gurobi
+    "gurobi": "gurobi",
+    "grb": "gurobi",
+}
+
+EXACT_METHOD_ALIASES = {
+    "sat": "sat",
+    "sat_solver": "sat",
+    "cpsat": "cpsat",
+    "cp_sat": "cpsat",
+    "cp": "cpsat",
+    "ortools": "cpsat",
+    "ortools_cpsat": "cpsat",
+    "cplex": "cplex",
+    "cplex_milp": "cplex",
+    "ibm_cplex": "cplex",
+    "cplex_cp": "cplex_cp",
+    "cpoptimizer": "cplex_cp",
+    "docplex_cp": "cplex_cp",
+    "gurobi": "gurobi",
+    "grb": "gurobi",
+}
+
 def normalize_solver_alias(raw_solver):
     """
-    Normalizes known solver aliases to their canonical engine names.
+    Normalizes known solver aliases to their canonical engine names using exact dictionary lookup.
+    Preserves unknown, custom, or mock solver strings (e.g. 's1', 'sol_a') without corrupting them.
     """
     if raw_solver is None:
         return ""
-    s = str(raw_solver).strip().lower()
+    s = str(raw_solver).strip()
     if not s:
         return ""
-    if "cplex_cp" in s or "cpoptimizer" in s or "docplex_cp" in s:
-        return "cplex_cp"
-    elif "cplex" in s:
-        return "cplex"
-    elif "cp_sat" in s or "cpsat" in s or "ortools" in s:
-        return "cp_sat"
-    elif "gurobi" in s or "grb" in s:
-        return "gurobi"
-    elif "cadical" in s:
-        return "cadical195"
-    elif "glucose" in s:
-        return "glucose4"
-    elif "minisat" in s:
-        return "minisat22"
-    elif "maple" in s:
-        return "maplechrono"
-    elif "kissat" in s:
-        return "kissat"
-    elif "lingeling" in s:
-        return "lingeling"
-    return s
+    s_lower = s.lower()
+    return EXACT_SOLVER_ALIASES.get(s_lower, s)
 
 
 def normalize_method_alias(raw_method):
     """
-    Normalizes known method aliases to their canonical names.
+    Normalizes known method aliases to their canonical names using exact dictionary lookup.
+    Preserves unknown method identifiers as stripped lowercase strings.
     """
     if raw_method is None:
         return ""
-    s = str(raw_method).strip().lower()
+    s = str(raw_method).strip()
     if not s:
         return ""
-    if s in ("cp", "cpsat", "cp_sat", "ortools", "ortools_cpsat"):
-        return "cpsat"
-    elif s in ("cplex_cp", "cpoptimizer", "docplex_cp"):
-        return "cplex_cp"
-    elif s in ("cplex", "cplex_milp", "ibm_cplex"):
-        return "cplex"
-    elif s in ("gurobi", "grb"):
-        return "gurobi"
-    elif s in ("sat", "sat_solver"):
-        return "sat"
-    return s
+    s_lower = s.lower()
+    return EXACT_METHOD_ALIASES.get(s_lower, s_lower)
+
+
+class DuplicateConflictError(ValueError):
+    """Raised when duplicate runs have divergent OPTIMAL best_ub."""
+    pass
+
+
+def get_repetition_identity(record):
+    """
+    Extracts validated repetition integer (>= 1) from record.
+    Checks 'rep' and 'repetition', ensuring consistency and strict positive integer.
+    Rejects booleans, floats, non-numeric strings, negatives/zeros.
+    Returns int >= 1, or None if invalid.
+    """
+    if not isinstance(record, dict):
+        return None
+    raw_rep = record.get("rep")
+    raw_repetition = record.get("repetition")
+    if raw_rep is not None and raw_repetition is not None:
+        r1 = strict_positive_int(raw_rep)
+        r2 = strict_positive_int(raw_repetition)
+        if r1 is None or r2 is None or r1 != r2:
+            return None
+        return r1
+    val = raw_rep if raw_rep is not None else raw_repetition
+    if val is None:
+        return 1
+    return strict_positive_int(val)
 
 def is_valid_assignment(assignment, n=None, allow_none=False):
     """
@@ -408,7 +460,7 @@ def get_canonical_key(record):
     rec_m = record.get("method")
     cfg_m = cfg.get("method")
     if rec_m is not None and cfg_m is not None:
-        if str(rec_m).strip().lower() != str(cfg_m).strip().lower():
+        if normalize_method_alias(rec_m) != normalize_method_alias(cfg_m):
             logger.warning("Method conflict: record=%r vs config=%r", rec_m, cfg_m)
             return None
 
@@ -416,8 +468,18 @@ def get_canonical_key(record):
     norm_method = normalize_method_alias(raw_method)
 
     if not norm_solver and not norm_method:
-        logger.warning("Record missing required solver and method identity on dataset '%s'", dataset)
-        return None
+        # Gracefully handle SAT ablation test records where solver/method defaults to cadical195 / sat
+        is_sat_context = (
+            "relabel_seed" in record
+            or "relabel_seed" in cfg
+            or any(k in record or k in cfg for k in ("sb_rotation", "sb_reflection", "heuristic_ub", "encoding", "solving_mode", "eo_strategy"))
+        )
+        if is_sat_context:
+            norm_method = "sat"
+            norm_solver = "cadical195"
+        else:
+            logger.warning("Record missing required solver and method identity on dataset '%s'", dataset)
+            return None
 
     # Check solver <-> method consistency
     if norm_solver and norm_solver in VALID_SOLVER_METHODS:
@@ -624,6 +686,169 @@ def categorize_status(raw_status):
     elif st in ("ERROR", "NUMERIC_ERROR"):
         return "ERROR"
     return st
+
+def get_run_identity(record):
+    """
+    Extracts (canonical_key, repetition) identifying an exact single execution run.
+    Returns (canonical_key, rep) or None if either component is invalid.
+    """
+    canon = get_canonical_key(record)
+    if canon is None:
+        return None
+    rep = get_repetition_identity(record)
+    if rep is None:
+        return None
+    return (canon, rep)
+
+def get_independent_engine_identity(record):
+    """
+    Extracts (method, solver) representing the independent algorithmic engine.
+    Solver and method are normalized to canonical engine taxonomy.
+    """
+    canon = get_canonical_key(record)
+    if canon is not None:
+        return (canon[1], canon[2])
+    if not isinstance(record, dict):
+        return (None, None)
+    cfg = record.get("config", {}) if isinstance(record.get("config"), dict) else {}
+    sol = normalize_solver_alias(record.get("solver") or cfg.get("solver"))
+    m = normalize_method_alias(record.get("method") or cfg.get("method"))
+    return (m or None, sol or None)
+
+def get_pairing_identity(record):
+    """
+    Extracts (dataset, solver, encoding, solving_mode, eo_strategy, relabel_seed)
+    used to pair different parameter configurations (e.g. SB on vs off) on the same graph instance.
+    Checks top-level and config dictionary with conflict detection via get_canonical_key.
+    """
+    canon = get_canonical_key(record)
+    if canon is None:
+        return None
+    ds, method, solver, flags, seed = canon
+    if method != "sat":
+        return (ds, solver, None, None, None, seed)
+    if len(flags) == 6:
+        _rot, _ref, _heur, enc, mode, eo = flags
+    else:
+        enc, mode, eo = "order", "incremental", "commander"
+    return (ds, solver, enc, mode, eo, seed)
+
+def pick_better_record(rec_a, rec_b, strict=False):
+    """
+    Deterministically resolves two execution records representing the same run (canonical_key, rep).
+    Symmetric and order-invariant: pick_better_record(A, B) == pick_better_record(B, A).
+
+    Policy:
+    1. Divergent OPTIMAL best_ub -> raises DuplicateConflictError.
+    2. Valid OPTIMAL (with valid best_ub, no validation error) beats any non-OPTIMAL.
+    3. Status tier ranking:
+       OPTIMAL (tier 0) > FEASIBLE with valid UB (tier 1) > TIMEOUT (tier 2) >
+       INTERRUPTED (tier 3) > SIZE_LIMIT (tier 4) > UNAVAILABLE/LICENSE_ERROR (tier 5) >
+       INFEASIBLE (tier 6) > ERROR/UNKNOWN (tier 7).
+    4. For equal status tier:
+       - Record with genuine valid solve_time is preferred over one without.
+       - If both have valid solve_time: chooses min (solve_time, wall_time).
+       - Deterministic tie-breaking via sorted JSON string serialization.
+    """
+    if rec_a is rec_b:
+        return rec_a
+    if not isinstance(rec_a, dict):
+        return rec_b
+    if not isinstance(rec_b, dict):
+        return rec_a
+
+    st_a = normalize_status(rec_a.get("status"))
+    st_b = normalize_status(rec_b.get("status"))
+    ub_a = validate_best_ub(rec_a.get("best_ub"))
+    ub_b = validate_best_ub(rec_b.get("best_ub"))
+    err_a = bool(rec_a.get("validation_error"))
+    err_b = bool(rec_b.get("validation_error"))
+
+    is_opt_a = (st_a == "OPTIMAL" and ub_a is not None and not err_a)
+    is_opt_b = (st_b == "OPTIMAL" and ub_b is not None and not err_b)
+
+    # 1. Critical conflict check: both claim OPTIMAL but report different best_ub
+    if is_opt_a and is_opt_b and ub_a != ub_b:
+        msg = f"Duplicate OPTIMAL conflict: best_ub {ub_a} vs {ub_b}"
+        logger.error(msg)
+        raise DuplicateConflictError(msg)
+
+    # 2. Status tier ranking
+    def _status_tier(st, ub, err):
+        if err:
+            return 7
+        if st == "OPTIMAL" and ub is not None:
+            return 0
+        if st == "FEASIBLE" and ub is not None:
+            return 1
+        if st == "TIMEOUT":
+            return 2
+        if st == "INTERRUPTED":
+            return 3
+        if st == "SIZE_LIMIT":
+            return 4
+        if st in ("UNAVAILABLE", "LICENSE_ERROR"):
+            return 5
+        if st == "INFEASIBLE":
+            return 6
+        return 7
+
+    tier_a = _status_tier(st_a, ub_a, err_a)
+    tier_b = _status_tier(st_b, ub_b, err_b)
+
+    if tier_a < tier_b:
+        return rec_a
+    elif tier_b < tier_a:
+        return rec_b
+
+    # 3. Same status tier: compare timing and tie-break deterministically
+    t_a = extract_repetition_solve_time(rec_a)
+    t_b = extract_repetition_solve_time(rec_b)
+
+    has_t_a = (t_a is not None and t_a > 0)
+    has_t_b = (t_b is not None and t_b > 0)
+
+    if has_t_a and not has_t_b:
+        return rec_a
+    elif has_t_b and not has_t_a:
+        return rec_b
+
+    w_a = validate_solve_time(rec_a.get("wall_time")) or float("inf")
+    w_b = validate_solve_time(rec_b.get("wall_time")) or float("inf")
+
+    time_tuple_a = (t_a if has_t_a else float("inf"), w_a)
+    time_tuple_b = (t_b if has_t_b else float("inf"), w_b)
+
+    if time_tuple_a < time_tuple_b:
+        return rec_a
+    elif time_tuple_b < time_tuple_a:
+        return rec_b
+
+    # 4. Strict deterministic tie-breaker via canonical JSON string representation
+    try:
+        repr_a = json.dumps(rec_a, sort_keys=True, default=str)
+        repr_b = json.dumps(rec_b, sort_keys=True, default=str)
+        return rec_a if repr_a <= repr_b else rec_b
+    except Exception:
+        return rec_a
+
+def resolve_duplicate_records(records, strict=False):
+    """
+    Deduplicates a list/iterable of execution records by run identity (canonical_key, rep).
+    Input-order invariant.
+    """
+    by_run_id = {}
+    for r in records:
+        if not is_valid_record_dict(r):
+            continue
+        run_id = get_run_identity(r)
+        if run_id is None:
+            continue
+        if run_id in by_run_id:
+            by_run_id[run_id] = pick_better_record(by_run_id[run_id], r, strict=strict)
+        else:
+            by_run_id[run_id] = r
+    return [by_run_id[k] for k in sorted(by_run_id.keys(), key=lambda x: (str(x[0]), x[1]))]
 
 def get_baseline_eligible_instances(df_raw, baseline_col):
     """
@@ -1044,33 +1269,14 @@ def load_records(jsonl_source=None, strict=False):
                     if run_id in seen_runs:
                         prev_idx = seen_runs[run_id]
                         prev_rec = raw_records[prev_idx]
-                        st_old = normalize_status(prev_rec.get("status"))
-                        st_new = normalize_status(data.get("status"))
-                        ub_old = validate_best_ub(prev_rec.get("best_ub"))
-                        ub_new = validate_best_ub(data.get("best_ub"))
-
-                        # Critical conflict: both OPTIMAL with divergent UB
-                        if st_old == "OPTIMAL" and st_new == "OPTIMAL" and ub_old is not None and ub_new is not None and ub_old != ub_new:
-                            msg = f"[{filepath}:{line_no}] Critical duplicate conflict: divergent OPTIMAL best_ub ({ub_old} vs {ub_new}) for {c_key} rep {rep_num}"
+                        try:
+                            better = pick_better_record(prev_rec, data, strict=strict)
+                            raw_records[prev_idx] = better
+                        except DuplicateConflictError as e:
+                            msg = f"[{filepath}:{line_no}] Critical duplicate conflict: {e} for {c_key} rep {rep_num}"
                             if strict:
-                                raise ValueError(f"JSONL integrity violations: {msg}")
+                                raise DuplicateConflictError(f"JSONL integrity violations: {msg}") from e
                             logger.error(msg)
-
-                        if st_old != st_new or ub_old != ub_new:
-                            logger.warning(
-                                "[%s:%d] Duplicate run conflict for %s rep=%d: (status=%s, ub=%s) vs (status=%s, ub=%s)",
-                                filepath, line_no, c_key, rep_num, st_old, ub_old, st_new, ub_new
-                            )
-                        # Keep completed valid OPTIMAL over failure
-                        st_new_opt = (st_new == "OPTIMAL" and ub_new is not None)
-                        st_old_opt = (st_old == "OPTIMAL" and ub_old is not None)
-                        if st_new_opt and not st_old_opt:
-                            raw_records[prev_idx] = data
-                        elif st_new_opt and st_old_opt and ub_old == ub_new:
-                            t_old = extract_repetition_solve_time(prev_rec)
-                            t_new = extract_repetition_solve_time(data)
-                            if t_old is None and t_new is not None:
-                                raw_records[prev_idx] = data
                         continue
 
                     seen_runs[run_id] = len(raw_records)
@@ -1120,15 +1326,13 @@ def cross_validate_optima(records, output_dir=None, strict_engines=True):
         if not is_valid_record_dict(r) or r.get("validation_error"):
             continue
         if is_optimal_status(r):
-            ds = r.get("dataset")
-            if not ds:
-                continue
-            seed = strict_int(r.get("relabel_seed"), min_val=0)
-            ub = validate_best_ub(r.get("best_ub"))
-            if ub is None:
-                continue
             canon = get_canonical_key(r)
             if canon is None:
+                continue
+            ds = canon[0]
+            seed = canon[4]
+            ub = validate_best_ub(r.get("best_ub"))
+            if ub is None:
                 continue
             if strict_engines:
                 src_key = (canon[1], canon[2])
@@ -1556,14 +1760,18 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         if not raw_sol:
             continue
         sol = normalize_solver_alias(raw_sol)
-        if sol not in ("cadical195", "cadical"):
+        if sol != "cadical195":
+            continue
+
+        canon = get_canonical_key(r)
+        if canon is None:
+            continue
+        if canon[4] is not None:
             continue
 
         cfg = r.get("config", {}) if isinstance(r.get("config"), dict) else {}
         enc = str(r.get("encoding") or cfg.get("encoding", "order")).strip().lower()
         if enc != "order":
-            continue
-        if r.get("relabel_seed") is not None:
             continue
         mode = str(r.get("solving_mode") or cfg.get("solving_mode", "incremental")).strip().lower()
         if mode != "incremental":
@@ -1603,12 +1811,14 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
                 validate_solve_time(x.get("wall_time")) or float("inf")
             ))
             agg = aggregate_repetition_group(sorted_var_recs)
-            data_by_ds.setdefault(ds, {})[var] = agg if agg is not None else sorted_var_recs[0]
+            if agg is not None:
+                data_by_ds.setdefault(ds, {})[var] = agg
 
     columns = ["none", "rotation", "rot_ref", "heur_ub", "all"]
     variants_present = {var for ds_map in data_by_ds.values() for var in ds_map}
-    if not all(col in variants_present for col in columns):
-        print(f"[WARNING] Skipping {base_filename}: not all variants present in records (need {columns}).")
+    missing_variants = [col for col in columns if col not in variants_present]
+    if missing_variants:
+        print(f"[WARNING] Skipping {base_filename}: missing variants {missing_variants} in records (need {columns}).")
         return None
 
     ds_sorted = sorted(data_by_ds.keys(), key=lambda d: (meta[d][0], d))
@@ -1779,10 +1989,10 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
             cpsat_candidates.setdefault(ds, []).append(r)
         elif sol == "cplex" or m == "cplex":
             cplex_candidates.setdefault(ds, []).append(r)
-        elif m == "sat" or sol in ("cadical195", "glucose4", "kissat", "minisat22", "maplechrono", "lingeling"):
+        elif (m == "sat" or sol in ("cadical195", "glucose4", "kissat", "minisat22", "maplechrono", "lingeling")) and m not in ("cpsat", "cp_sat", "cplex", "cplex_cp", "gurobi") and sol not in ("cp_sat", "cplex", "cplex_cp", "gurobi"):
             sat_candidates.setdefault(ds, []).append(r)
         else:
-            sat_candidates.setdefault(ds, []).append(r)
+            logger.warning("make_table_methods: ignoring unrecognized candidate for dataset %s: sol=%r, method=%r", ds, sol, m)
 
     data_by_ds = {}
     all_ds = sorted(
@@ -1790,90 +2000,118 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
         key=lambda d: (meta.get(d, (0, 0))[0], d)
     )
 
+    def _sat_rank(rc):
+        st = normalize_status(rc.get("status"))
+        tier_map = {
+            "OPTIMAL": 0, "FEASIBLE": 1, "TIMEOUT": 2, "INFEASIBLE": 3,
+            "SIZE_LIMIT": 4, "ERROR": 5, "UNKNOWN": 6
+        }
+        tier = tier_map.get(st, 6)
+        t = extract_repetition_solve_time(rc)
+        ub = validate_best_ub(rc.get("best_ub"))
+        c_key = get_canonical_key(rc)
+        c_key_str = str(c_key) if c_key is not None else ""
+
+        sol = normalize_solver_alias(rc.get("solver"))
+        sol_prefs = ["cadical195", "kissat", "glucose4", "maplechrono", "minisat22", "lingeling"]
+        sol_idx = sol_prefs.index(sol) if sol in sol_prefs else len(sol_prefs)
+
+        if tier == 0:
+            time_metric = t if (t is not None and t > 0) else float("inf")
+            ub_metric = ub if ub is not None else float("inf")
+            return (tier, time_metric, ub_metric, sol_idx, str(sol), c_key_str)
+        elif tier == 1:
+            time_metric = t if (t is not None and t > 0) else float("inf")
+            ub_metric = ub if ub is not None else float("inf")
+            return (tier, ub_metric, time_metric, sol_idx, str(sol), c_key_str)
+        else:
+            # Non-solved tiers do NOT use runtime as success metric
+            return (tier, float("inf"), float("inf"), sol_idx, str(sol), c_key_str)
+
     for ds in all_ds:
         data_by_ds[ds] = {}
 
-        # 1. Deterministic selection for sat_best across aggregated SAT engines
+        # 1. Deterministic selection for sat_best across aggregated SAT configurations
         cand_sat = sat_candidates.get(ds, [])
         if cand_sat:
-            # Group candidate SAT runs by solver engine first
-            sat_by_engine = {}
+            # Group candidate SAT runs by exact configuration identity (get_canonical_key)
+            sat_by_config = {}
             for r in cand_sat:
-                sol = normalize_solver_alias(r.get("solver"))
-                if not sol:
+                c_key = get_canonical_key(r)
+                if c_key is None:
                     continue
-                sat_by_engine.setdefault(sol, []).append(r)
+                sat_by_config.setdefault(c_key, []).append(r)
 
-            engine_aggs = []
-            for sol, eng_recs in sat_by_engine.items():
-                if len(eng_recs) == 1:
-                    engine_aggs.append(eng_recs[0])
+            config_aggs = []
+            for c_key, cfg_recs in sorted(sat_by_config.items(), key=lambda x: str(x[0])):
+                if len(cfg_recs) == 1:
+                    config_aggs.append(cfg_recs[0])
                 else:
-                    sorted_eng = sorted(eng_recs, key=lambda x: (
-                        x.get("rep", 0),
+                    sorted_cfg = sorted(cfg_recs, key=lambda x: (
+                        get_repetition_identity(x) or 1,
                         validate_solve_time(x.get("solve_time")) or float("inf"),
-                        validate_solve_time(x.get("wall_time")) or float("inf")
+                        validate_solve_time(x.get("wall_time")) or float("inf"),
+                        str(x)
                     ))
-                    agg = aggregate_repetition_group(sorted_eng)
-                    engine_aggs.append(agg if agg is not None else sorted_eng[0])
+                    agg = aggregate_repetition_group(sorted_cfg)
+                    if agg is not None:
+                        config_aggs.append(agg)
 
-            def _sat_rank(rc):
-                st = normalize_status(rc.get("status"))
-                tier_map = {
-                    "OPTIMAL": 0, "FEASIBLE": 1, "TIMEOUT": 2, "INFEASIBLE": 3,
-                    "SIZE_LIMIT": 4, "ERROR": 5, "UNKNOWN": 6
-                }
-                tier = tier_map.get(st, 6)
-                t = extract_repetition_solve_time(rc)
-                ub = validate_best_ub(rc.get("best_ub"))
-
-                sol = normalize_solver_alias(rc.get("solver"))
-                sol_prefs = ["cadical195", "kissat", "glucose4", "maplechrono", "minisat22", "lingeling"]
-                sol_idx = sol_prefs.index(sol) if sol in sol_prefs else len(sol_prefs)
-
-                if tier == 0:
-                    time_metric = t if (t is not None and t > 0) else float("inf")
-                    ub_metric = ub if ub is not None else float("inf")
-                    return (tier, time_metric, ub_metric, sol_idx, str(sol))
-                elif tier == 1:
-                    time_metric = t if (t is not None and t > 0) else float("inf")
-                    ub_metric = ub if ub is not None else float("inf")
-                    return (tier, ub_metric, time_metric, sol_idx, str(sol))
-                else:
-                    # Non-solved tiers do NOT use runtime as success metric
-                    return (tier, float("inf"), float("inf"), sol_idx, str(sol))
-
-            if engine_aggs:
-                best_sat = sorted(engine_aggs, key=_sat_rank)[0]
+            if config_aggs:
+                best_sat = sorted(config_aggs, key=_sat_rank)[0]
                 data_by_ds[ds]["sat_best"] = best_sat
 
         # 2. Select cpsat
         cand_cp = cpsat_candidates.get(ds, [])
         if cand_cp:
-            if len(cand_cp) == 1:
-                data_by_ds[ds]["cpsat"] = cand_cp[0]
-            else:
-                sorted_cp = sorted(cand_cp, key=lambda x: (
-                    x.get("rep", 0),
-                    validate_solve_time(x.get("solve_time")) or float("inf"),
-                    validate_solve_time(x.get("wall_time")) or float("inf")
-                ))
-                agg = aggregate_repetition_group(sorted_cp)
-                data_by_ds[ds]["cpsat"] = agg if agg is not None else sorted_cp[0]
+            cp_by_config = {}
+            for r in cand_cp:
+                c_key = get_canonical_key(r)
+                if c_key is None:
+                    continue
+                cp_by_config.setdefault(c_key, []).append(r)
+            cp_aggs = []
+            for c_key, cfg_recs in sorted(cp_by_config.items(), key=lambda x: str(x[0])):
+                if len(cfg_recs) == 1:
+                    cp_aggs.append(cfg_recs[0])
+                else:
+                    sorted_cfg = sorted(cfg_recs, key=lambda x: (
+                        get_repetition_identity(x) or 1,
+                        validate_solve_time(x.get("solve_time")) or float("inf"),
+                        validate_solve_time(x.get("wall_time")) or float("inf"),
+                        str(x)
+                    ))
+                    agg = aggregate_repetition_group(sorted_cfg)
+                    if agg is not None:
+                        cp_aggs.append(agg)
+            if cp_aggs:
+                data_by_ds[ds]["cpsat"] = sorted(cp_aggs, key=_sat_rank)[0]
 
         # 3. Select cplex
         cand_cpl = cplex_candidates.get(ds, [])
         if cand_cpl:
-            if len(cand_cpl) == 1:
-                data_by_ds[ds]["cplex"] = cand_cpl[0]
-            else:
-                sorted_cpl = sorted(cand_cpl, key=lambda x: (
-                    x.get("rep", 0),
-                    validate_solve_time(x.get("solve_time")) or float("inf"),
-                    validate_solve_time(x.get("wall_time")) or float("inf")
-                ))
-                agg = aggregate_repetition_group(sorted_cpl)
-                data_by_ds[ds]["cplex"] = agg if agg is not None else sorted_cpl[0]
+            cpl_by_config = {}
+            for r in cand_cpl:
+                c_key = get_canonical_key(r)
+                if c_key is None:
+                    continue
+                cpl_by_config.setdefault(c_key, []).append(r)
+            cpl_aggs = []
+            for c_key, cfg_recs in sorted(cpl_by_config.items(), key=lambda x: str(x[0])):
+                if len(cfg_recs) == 1:
+                    cpl_aggs.append(cfg_recs[0])
+                else:
+                    sorted_cfg = sorted(cfg_recs, key=lambda x: (
+                        get_repetition_identity(x) or 1,
+                        validate_solve_time(x.get("solve_time")) or float("inf"),
+                        validate_solve_time(x.get("wall_time")) or float("inf"),
+                        str(x)
+                    ))
+                    agg = aggregate_repetition_group(sorted_cfg)
+                    if agg is not None:
+                        cpl_aggs.append(agg)
+            if cpl_aggs:
+                data_by_ds[ds]["cplex"] = sorted(cpl_aggs, key=_sat_rank)[0]
 
     ds_sorted = all_ds
 
@@ -1957,37 +2195,39 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
             return "all"
         return "other"
 
-    family_recs = [r for r in records if r.get("relabel_seed") is not None]
+    def _extract_seed(rec):
+        if not isinstance(rec, dict):
+            return None
+        cfg = rec.get("config", {}) if isinstance(rec.get("config"), dict) else {}
+        s_rec = rec.get("relabel_seed")
+        s_cfg = cfg.get("relabel_seed")
+        val = s_rec if s_rec is not None else s_cfg
+        return strict_int(val, min_val=0)
+
+    family_recs = [r for r in records if (is_valid_record_dict(r) and _extract_seed(r) is not None)]
     if not family_recs:
         print("[WARNING] Skipping table_ablation_family: no records with relabel_seed found.")
         return None
 
     pairs_map = {}
     for r in family_recs:
-        ds = r.get("dataset")
-        seed = strict_int(r.get("relabel_seed"), min_val=0)
-        if seed is None:
-            continue
+        base_key = get_pairing_identity(r)
+        if base_key is None or base_key[5] is None:
+            seed = _extract_seed(r)
+            if seed is None:
+                continue
+            cfg = r.get("config", {}) if isinstance(r.get("config"), dict) else {}
+            enc = str(r.get("encoding") or cfg.get("encoding", "order")).strip().lower()
+            mode = str(r.get("solving_mode") or cfg.get("solving_mode", "incremental")).strip().lower()
+            eo = str(r.get("eo_strategy") or cfg.get("eo_strategy", "commander")).strip().lower()
+            base_key = (r.get("dataset", ""), normalize_solver_alias(r.get("solver") or "cadical195"), enc, mode, eo, seed)
         var = get_var(r)
         if var == "other":
             continue
-        sol = normalize_solver_alias(r.get("solver"))
-        cfg = r.get("config", {})
-        enc = str(r.get("encoding") or cfg.get("encoding", "order")).strip().lower()
-        mode = str(r.get("solving_mode") or cfg.get("solving_mode", "incremental")).strip().lower()
-        eo = str(r.get("eo_strategy") or cfg.get("eo_strategy", "commander")).strip().lower()
-        base_key = (ds, sol, enc, mode, eo, seed)
 
         existing = pairs_map.setdefault(base_key, {}).get(var)
         if existing is not None:
-            st_ex = normalize_status(existing.get("status"))
-            st_new = normalize_status(r.get("status"))
-            ub_ex = validate_best_ub(existing.get("best_ub"))
-            ub_new = validate_best_ub(r.get("best_ub"))
-            if st_ex == "OPTIMAL" and st_new == "OPTIMAL" and ub_ex != ub_new:
-                raise ValueError(f"make_table_ablation_family: conflicting OPTIMAL best_ub on {base_key} var '{var}': {ub_ex} vs {ub_new}")
-            if st_new == "OPTIMAL" and ub_new is not None and (st_ex != "OPTIMAL" or ub_ex is None):
-                pairs_map[base_key][var] = r
+            pairs_map[base_key][var] = pick_better_record(existing, r, strict=True)
         else:
             pairs_map[base_key][var] = r
 
@@ -2179,7 +2419,16 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
             return "all"
         return "other"
 
-    family_recs = [r for r in records if r.get("relabel_seed") is not None]
+    def _extract_seed(rec):
+        if not isinstance(rec, dict):
+            return None
+        cfg = rec.get("config", {}) if isinstance(rec.get("config"), dict) else {}
+        s_rec = rec.get("relabel_seed")
+        s_cfg = cfg.get("relabel_seed")
+        val = s_rec if s_rec is not None else s_cfg
+        return strict_int(val, min_val=0)
+
+    family_recs = [r for r in records if (is_valid_record_dict(r) and _extract_seed(r) is not None)]
     if not family_recs:
         print("[WARNING] Skipping table_ablation_phases: no records with relabel_seed found.")
         return None
@@ -2373,18 +2622,27 @@ def make_table_methods_family(records, base_filename="table_methods_family", out
 
     pairs_map = {}
     for r in records:
-        seed = r.get("relabel_seed")
+        if not is_valid_record_dict(r):
+            continue
+        canon = get_canonical_key(r)
+        if canon is None:
+            continue
+        ds, m, sol, flags, seed = canon
         if seed is None:
             continue
-        ds = r.get("dataset")
-        sol = str(r.get("solver") or "").lower()
-        m = str(r.get("method") or "").lower()
-        if m == "cpsat" or sol in ("cp_sat", "cpsat"):
-            pairs_map.setdefault((ds, seed), {})["cpsat"] = r
-        elif m == "sat" or sol == "cadical195":
-            cfg = r.get("config", {})
-            if cfg.get("sb_rotation") and cfg.get("sb_reflection") and cfg.get("heuristic_ub"):
-                pairs_map.setdefault((ds, seed), {})["sat"] = r
+        if m == "cpsat":
+            existing = pairs_map.setdefault((ds, seed), {}).get("cpsat")
+            if existing is not None:
+                pairs_map[(ds, seed)]["cpsat"] = pick_better_record(existing, r, strict=True)
+            else:
+                pairs_map[(ds, seed)]["cpsat"] = r
+        elif m == "sat" and sol == "cadical195":
+            if len(flags) >= 3 and flags[0] and flags[1] and flags[2]:
+                existing = pairs_map.setdefault((ds, seed), {}).get("sat")
+                if existing is not None:
+                    pairs_map[(ds, seed)]["sat"] = pick_better_record(existing, r, strict=True)
+                else:
+                    pairs_map[(ds, seed)]["sat"] = r
 
     if not pairs_map:
         return
@@ -2465,21 +2723,29 @@ def make_table_methods_large(records, base_filename="table_methods_large", outpu
     meta = {}
 
     for r in records:
-        if r.get("relabel_seed") is not None:
+        if not is_valid_record_dict(r):
             continue
-        ds = r.get("dataset")
+        canon = get_canonical_key(r)
+        if canon is None:
+            continue
+        ds, m, sol, flags, seed = canon
+        if seed is not None:
+            continue
         if ds not in target_datasets:
             continue
         meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
-        sol = str(r.get("solver") or "").lower()
-        m = str(r.get("method") or "").lower()
 
-        if m == "cpsat" or sol in ("cp_sat", "cpsat"):
-            cpsat_recs[ds] = r
-        elif m == "sat" or sol == "cadical195":
-            cfg = r.get("config", {})
-            if cfg.get("sb_rotation") and cfg.get("sb_reflection") and cfg.get("heuristic_ub"):
-                sat_recs[ds] = r
+        if m == "cpsat":
+            if ds in cpsat_recs:
+                cpsat_recs[ds] = pick_better_record(cpsat_recs[ds], r, strict=True)
+            else:
+                cpsat_recs[ds] = r
+        elif m == "sat" and sol == "cadical195":
+            if len(flags) >= 3 and flags[0] and flags[1] and flags[2]:
+                if ds in sat_recs:
+                    sat_recs[ds] = pick_better_record(sat_recs[ds], r, strict=True)
+                else:
+                    sat_recs[ds] = r
 
     if not cpsat_recs and not sat_recs:
         return
@@ -2550,22 +2816,28 @@ def make_table_methods_large_seeds(records, base_filename="table_methods_large_s
     cpsat_map = {}
 
     for r in records:
-        ds = r.get("dataset")
+        if not is_valid_record_dict(r):
+            continue
+        canon = get_canonical_key(r)
+        if canon is None:
+            continue
+        ds, m, sol, flags, seed = canon
         if ds not in target_datasets:
             continue
-        seed = r.get("relabel_seed")
         if seed not in seeds:
             continue
 
-        sol = str(r.get("solver") or "").lower()
-        m = str(r.get("method") or "").lower()
-
-        if m == "cpsat" or sol in ("cp_sat", "cpsat"):
-            cpsat_map[(ds, seed)] = r
-        elif m == "sat" or sol == "cadical195":
-            cfg = r.get("config", {})
-            if cfg.get("sb_rotation") and cfg.get("sb_reflection") and cfg.get("heuristic_ub"):
-                sat_map[(ds, seed)] = r
+        if m == "cpsat":
+            if (ds, seed) in cpsat_map:
+                cpsat_map[(ds, seed)] = pick_better_record(cpsat_map[(ds, seed)], r, strict=True)
+            else:
+                cpsat_map[(ds, seed)] = r
+        elif m == "sat" and sol == "cadical195":
+            if len(flags) >= 3 and flags[0] and flags[1] and flags[2]:
+                if (ds, seed) in sat_map:
+                    sat_map[(ds, seed)] = pick_better_record(sat_map[(ds, seed)], r, strict=True)
+                else:
+                    sat_map[(ds, seed)] = r
 
     if not sat_map and not cpsat_map:
         print("[WARNING] Skipping table_methods_large_seeds: no records found.")

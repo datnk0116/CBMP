@@ -22,6 +22,7 @@ from analysis.make_tables import (
     normalize_status,
     validate_best_ub,
     get_canonical_key,
+    get_pairing_identity,
     strict_int,
     normalize_solver_alias,
 )
@@ -138,24 +139,21 @@ def extract_scatter_pairs(records, group_name="ablation_small"):
 
     by_key = {}
     for r in ablation_recs:
-        ds = r.get("dataset")
-        if not ds:
+        canon = get_canonical_key(r)
+        if canon is None:
             continue
-        cfg = r.get("config", {}) if isinstance(r.get("config"), dict) else {}
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
+        ds, m, sol, flags, seed = canon
+        if m != "sat":
+            continue
+        rot, ref, heur = flags[0], flags[1], flags[2]
 
         t = extract_repetition_solve_time(r)
         if t is None or not math.isfinite(t) or t <= 0:
             continue
 
-        sol = normalize_solver_alias(r.get("solver"))
-        enc = str(r.get("encoding") or cfg.get("encoding", "order")).strip().lower()
-        mode = str(r.get("solving_mode") or cfg.get("solving_mode", "incremental")).strip().lower()
-        eo = str(r.get("eo_strategy") or cfg.get("eo_strategy", "commander")).strip().lower()
-        seed = strict_int(r.get("relabel_seed"), min_val=0)
-        k = (ds, sol, enc, mode, eo, seed)
+        k = get_pairing_identity(r)
+        if k is None:
+            continue
 
         if not rot and not ref and not heur:
             by_key.setdefault(k, {}).setdefault("no_sb", []).append(t)
@@ -336,7 +334,7 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
     Separate panels for N=40 and N=50.
     Variants compared to none: rotation, rot+ref, heur_ub, all.
     """
-    family_recs = [r for r in records if r.get("relabel_seed") is not None]
+    family_recs = [r for r in records if (is_optimal_status(r) and get_canonical_key(r) is not None and get_canonical_key(r)[4] is not None)]
     if not family_recs:
         return
 
@@ -359,15 +357,12 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
 
     pairs_map = {}
     for r in family_recs:
-        ds = r.get("dataset")
-        seed = strict_int(r.get("relabel_seed"), min_val=0)
+        base_key = get_pairing_identity(r)
+        if base_key is None or base_key[5] is None:
+            continue
         var = get_var(r)
-        sol = normalize_solver_alias(r.get("solver"))
-        cfg = r.get("config", {})
-        enc = str(r.get("encoding") or (cfg.get("encoding", "order"))).strip().lower()
-        mode = str(r.get("solving_mode") or (cfg.get("solving_mode", "incremental"))).strip().lower()
-        eo = str(r.get("eo_strategy") or (cfg.get("eo_strategy", "commander"))).strip().lower()
-        base_key = (ds, sol, enc, mode, eo, seed)
+        if var == "other":
+            continue
         pairs_map.setdefault(base_key, {})[var] = r
 
     variants = ["rotation", "rot_ref", "heur_ub", "all"]
@@ -379,14 +374,14 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
     for base_key, vmap in pairs_map.items():
         if "none" not in vmap or not is_optimal_status(vmap["none"]):
             continue
-        t_none = validate_solve_time(vmap["none"].get("solve_time"))
+        t_none = extract_repetition_solve_time(vmap["none"])
         if t_none is None or t_none <= 0:
             continue
         n_val = vmap["none"].get("N", 0)
 
         for i, var in enumerate(variants):
             if var in vmap and is_optimal_status(vmap[var]):
-                t_var = validate_solve_time(vmap[var].get("solve_time"))
+                t_var = extract_repetition_solve_time(vmap[var])
                 if t_var is not None and t_var > 0:
                     ratio = t_var / t_none
                     if math.isfinite(ratio) and ratio > 0:

@@ -28,6 +28,16 @@ from analysis.make_tables import (
     strict_positive_int,
     strict_bool,
     normalize_solver_alias,
+    normalize_method_alias,
+    DuplicateConflictError,
+    get_run_identity,
+    get_repetition_identity,
+    get_independent_engine_identity,
+    get_pairing_identity,
+    pick_better_record,
+    resolve_duplicate_records,
+    EXACT_SOLVER_ALIASES,
+    EXACT_METHOD_ALIASES,
     is_valid_assignment,
     resolve_field_with_conflict_check,
     extract_time_limit,
@@ -52,6 +62,8 @@ from analysis.make_tables import (
     export_table,
     DATA_CSV_COLUMNS,
 )
+
+from analysis.make_plots import extract_scatter_pairs
 
 from experiments.run_experiments import (
     is_run_completed,
@@ -838,3 +850,205 @@ def test_group_g_metamorphic_properties(tmp_path):
     f_dup.write_text("\n".join(json.dumps(r) for r in with_exact_dup) + "\n", encoding="utf-8")
     loaded_dedup = load_records(str(f_dup), strict=True)
     assert loaded_dedup[0]["solve_time"] == agg_base[0]["solve_time"]
+
+
+# ============================================================================
+# 12 METAMORPHIC PROPERTY VERIFICATION TESTS
+# ============================================================================
+
+def test_mr1_permutation_of_jsonl_preserves_tables(tmp_path):
+    """MR1: Permutation (reversal, shuffling) of JSONL record lines preserves identical tables."""
+    records = [
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 1.5, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "cp_sat", "method": "cpsat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 0.8, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "cplex", "method": "cplex", "status": "OPTIMAL", "best_ub": 2, "solve_time": 3.2, "groups": ["methods"]},
+        {"dataset": "d2", "solver": "cadical195", "method": "sat", "status": "TIMEOUT", "solve_time": 600.0, "groups": ["methods"]},
+        {"dataset": "d2", "solver": "cp_sat", "method": "cpsat", "status": "OPTIMAL", "best_ub": 5, "solve_time": 4.1, "groups": ["methods"]},
+    ]
+    out1 = str(tmp_path / "mr1_fwd")
+    out2 = str(tmp_path / "mr1_rev")
+
+    df1, s1, _ = make_table_methods(records, output_dirs=(out1,))
+    df2, s2, _ = make_table_methods(list(reversed(records)), output_dirs=(out2,))
+
+    pd.testing.assert_frame_equal(df1, df2)
+    assert s1 == s2
+
+
+def test_mr2_duplicate_record_preserves_summary_stats(tmp_path):
+    """MR2: Injecting duplicate records for existing runs preserves exact summary statistics and PAR2."""
+    rec1 = {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 2.5, "rep": 1, "groups": ["methods"]}
+    rec2 = {"dataset": "d1", "solver": "cp_sat", "method": "cpsat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 1.2, "rep": 1, "groups": ["methods"]}
+    records_clean = [rec1, rec2]
+
+    # Duplicate rec1
+    records_with_dup = [rec1, rec2, dict(rec1)]
+
+    f1 = tmp_path / "clean.jsonl"
+    f2 = tmp_path / "dup.jsonl"
+    f1.write_text("\n".join(json.dumps(r) for r in records_clean) + "\n", encoding="utf-8")
+    f2.write_text("\n".join(json.dumps(r) for r in records_with_dup) + "\n", encoding="utf-8")
+
+    loaded_clean = load_records(str(f1), strict=True)
+    loaded_dup = load_records(str(f2), strict=True)
+
+    assert len(loaded_clean) == len(loaded_dup)
+    assert loaded_clean[0]["solve_time"] == loaded_dup[0]["solve_time"]
+
+
+def test_mr3_deduplication_tie_breaking_is_commutative():
+    """MR3: Deduplication tie-breaking is strictly commutative: pick_better_record(A, B) == pick_better_record(B, A)."""
+    # Case 1: OPTIMAL vs Failure
+    r_opt = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 5.0}
+    r_fail = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0}
+    assert pick_better_record(r_opt, r_fail) is r_opt
+    assert pick_better_record(r_fail, r_opt) is r_opt
+
+    # Case 2: Both OPTIMAL same UB, different solve times
+    r_fast = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 2.0}
+    r_slow = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 4.0}
+    assert pick_better_record(r_fast, r_slow) is r_fast
+    assert pick_better_record(r_slow, r_fast) is r_fast
+
+    # Case 3: Both TIMEOUT, one has valid timing, other is None
+    r_time = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0}
+    r_notime = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": None}
+    assert pick_better_record(r_time, r_notime) is r_time
+    assert pick_better_record(r_notime, r_time) is r_time
+
+
+def test_mr4_divergent_optimal_best_ub_raises_duplicate_conflict_error():
+    """MR4: Conflicting OPTIMAL best_ub on identical (config, rep) strictly raises DuplicateConflictError."""
+    r1 = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "rep": 1}
+    r2 = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 4, "rep": 1}
+
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r1, r2, strict=True)
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r2, r1, strict=True)
+
+
+def test_mr5_seed_extraction_from_canonical_identity():
+    """MR5: Seed extraction handles both top-level relabel_seed and config relabel_seed, rejecting conflicts."""
+    # Top-level seed
+    r_top = {"dataset": "d1", "solver": "cadical195", "relabel_seed": 5}
+    assert get_canonical_key(r_top)[4] == 5
+
+    # Config seed
+    r_cfg = {"dataset": "d1", "solver": "cadical195", "config": {"relabel_seed": 5}}
+    assert get_canonical_key(r_cfg)[4] == 5
+
+    # Matching both
+    r_both = {"dataset": "d1", "solver": "cadical195", "relabel_seed": 5, "config": {"relabel_seed": 5}}
+    assert get_canonical_key(r_both)[4] == 5
+
+    # Conflicting seed -> returns None
+    r_bad = {"dataset": "d1", "solver": "cadical195", "relabel_seed": 5, "config": {"relabel_seed": 7}}
+    assert get_canonical_key(r_bad) is None
+
+
+def test_mr6_exact_solver_alias_matching():
+    """MR6: Exact solver alias matching does not falsely match substrings."""
+    assert normalize_solver_alias("cadical") == "cadical195"
+    assert normalize_solver_alias("cadical195") == "cadical195"
+    assert normalize_solver_alias("cpsat") == "cp_sat"
+    assert normalize_solver_alias("cp_sat") == "cp_sat"
+    assert normalize_solver_alias("cplex") == "cplex"
+    assert normalize_solver_alias("cplex_cp") == "cplex_cp"
+
+    # Substrings that are NOT aliases must NOT be corrupted:
+    assert normalize_solver_alias("not_cadical") == "not_cadical"
+    assert normalize_solver_alias("custom_cplex_tool") == "custom_cplex_tool"
+    assert normalize_solver_alias("s1") == "s1"
+
+
+def test_mr7_exact_method_alias_matching():
+    """MR7: Exact method alias matching normalizes cp_sat/cpsat/cp/ortools consistently."""
+    assert normalize_method_alias("cp") == "cpsat"
+    assert normalize_method_alias("cpsat") == "cpsat"
+    assert normalize_method_alias("cp_sat") == "cpsat"
+    assert normalize_method_alias("ortools") == "cpsat"
+    assert normalize_method_alias("cplex") == "cplex"
+    assert normalize_method_alias("cplex_cp") == "cplex_cp"
+    assert normalize_method_alias("sat") == "sat"
+
+
+def test_mr8_make_table_methods_rejects_unknown_solvers(tmp_path):
+    """MR8: make_table_methods rejects unknown solvers from falling into sat_candidates."""
+    records = [
+        {"dataset": "d1", "solver": "unknown_third_party_engine", "method": "unknown_method", "status": "OPTIMAL", "solve_time": 0.01, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "solve_time": 2.0, "groups": ["methods"]},
+    ]
+    out_dir = str(tmp_path / "mr8")
+    df_disp, _, _ = make_table_methods(records, output_dirs=(out_dir,))
+    # sat_best must be cadical195 (2.0000), not the unknown solver!
+    assert df_disp.loc["d1", "sat_best"] == "2.0000"
+
+
+def test_mr9_sat_best_groups_by_canonical_config_before_aggregating_reps(tmp_path):
+    """MR9: sat_best aggregates repetitions within the same config before ranking across configs."""
+    # Config A (no SB): reps [10.0, 10.0] -> agg 10.0
+    # Config B (with SB): reps [2.0, 2.0] -> agg 2.0
+    records = [
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "status": "OPTIMAL", "solve_time": 10.0, "rep": 1, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "status": "OPTIMAL", "solve_time": 10.0, "rep": 2, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "status": "OPTIMAL", "solve_time": 2.0, "rep": 1, "groups": ["methods"]},
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "status": "OPTIMAL", "solve_time": 2.0, "rep": 2, "groups": ["methods"]},
+    ]
+    out_dir = str(tmp_path / "mr9")
+    df_disp, _, _ = make_table_methods(records, output_dirs=(out_dir,))
+    assert df_disp.loc["d1", "sat_best"] == "2.0000"
+
+
+def test_mr10_make_table_ablation_strict_cadical_and_no_unaggregated_fallback(tmp_path):
+    """MR10: make_table_ablation strictly checks CaDiCaL and does not fall back to raw record on failure."""
+    records = [
+        # glucose4 is NOT cadical195, must be excluded
+        {"dataset": "d1", "solver": "glucose4", "encoding": "order", "status": "OPTIMAL", "solve_time": 1.0, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 5.0, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 4.0, "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 3.0, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 3.5, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": True}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "status": "OPTIMAL", "solve_time": 2.0, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+    ]
+    out_dir = str(tmp_path / "mr10")
+    df_disp, _, _ = make_table_ablation(records, output_dirs=(out_dir,))
+    # 'none' variant must be 5.0000 from cadical195, NOT 1.0000 from glucose4
+    assert df_disp.loc["d1", "none"] == "5.0000"
+
+
+def test_mr11_extract_scatter_pairs_requires_identical_pairing_identity():
+    """MR11: extract_scatter_pairs pairs configurations with identical pairing identity."""
+    records = [
+        # d1 with seed 0: paired
+        {"dataset": "d1", "solver": "cadical195", "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 10.0, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 4.0, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+        # d1 with seed 1: only has with_sb -> CANNOT be paired!
+        {"dataset": "d1", "solver": "cadical195", "relabel_seed": 1, "status": "OPTIMAL", "solve_time": 3.0, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+    ]
+    pairs = extract_scatter_pairs(records, group_name="ablation_small")
+    assert len(pairs) == 1
+    assert pairs[0]["key"][5] == 0  # seed 0 paired
+    assert pairs[0]["no_sb"] == 10.0
+    assert pairs[0]["with_sb"] == 4.0
+
+
+def test_mr12_validation_bijection_rejects_invalid_assignments():
+    """MR12: Validation bijection strictly rejects invalid assignments (bools, floats, duplicates, out-of-range)."""
+    # Valid permutation
+    assert is_valid_assignment([0, 1, 2], n=3) is True
+
+    # Rejection of booleans
+    assert is_valid_assignment([True, False, 2], n=3) is False
+
+    # Rejection of floats
+    assert is_valid_assignment([0.0, 1.0, 2.0], n=3) is False
+
+    # Rejection of out of range
+    assert is_valid_assignment([0, 1, 3], n=3) is False
+
+    # Rejection of duplicates
+    assert is_valid_assignment([0, 1, 1], n=3) is False
+
+    # Rejection of non-lists
+    assert is_valid_assignment("012", n=3) is False
