@@ -1875,5 +1875,348 @@ def test_aggregate_repetition_group_all_timings_missing_does_not_inject_zero():
     assert agg["par2"] == 1200.0  # TIMEOUT penalized as 2 * 600
 
 
+def test_validate_best_ub_unit_cases():
+    """
+    Unit tests for validate_best_ub():
+    - Accepts non-negative integers, integral floats, integral NumPy types, integral strings, large ints.
+    - Rejects fractional floats (never truncates!), booleans, negative numbers, NaN, inf, malformed strings/types.
+    """
+    import numpy as np
+    from analysis.make_tables import validate_best_ub
+
+    # 1. Valid non-negative integers
+    assert validate_best_ub(0) == 0
+    assert validate_best_ub(1) == 1
+    assert validate_best_ub(3) == 3
+    assert validate_best_ub(100) == 100
+    assert validate_best_ub(10**25) == 10**25
+
+    # 2. Valid integral floats
+    assert validate_best_ub(0.0) == 0
+    assert validate_best_ub(3.0) == 3
+    assert validate_best_ub(100.0) == 100
+
+    # 3. Valid NumPy scalar types
+    assert validate_best_ub(np.int32(4)) == 4
+    assert validate_best_ub(np.int64(10)) == 10
+    assert validate_best_ub(np.uint16(7)) == 7
+    assert validate_best_ub(np.float64(5.0)) == 5
+    assert validate_best_ub(np.float32(8.0)) == 8
+
+    # 4. Valid strings representing integers
+    assert validate_best_ub("0") == 0
+    assert validate_best_ub("3") == 3
+    assert validate_best_ub("3.0") == 3
+    assert validate_best_ub("  15  ") == 15
+
+    # 5. REJECT fractional floats - must NEVER truncate or round!
+    assert validate_best_ub(3.7) is None
+    assert validate_best_ub(0.9) is None
+    assert validate_best_ub(0.0001) is None
+    assert validate_best_ub(1e-5) is None
+    assert validate_best_ub(np.float64(3.7)) is None
+    assert validate_best_ub(np.float32(0.9)) is None
+    assert validate_best_ub("3.7") is None
+    assert validate_best_ub("0.9") is None
+    assert validate_best_ub("1e-5") is None
+
+    # 6. REJECT booleans (bool is a subclass of int in Python)
+    assert validate_best_ub(True) is None
+    assert validate_best_ub(False) is None
+    assert validate_best_ub(np.bool_(True)) is None
+
+    # 7. REJECT negative values
+    assert validate_best_ub(-1) is None
+    assert validate_best_ub(-5.0) is None
+    assert validate_best_ub("-3") is None
+    assert validate_best_ub(np.int32(-2)) is None
+
+    # 8. REJECT non-finite numbers
+    assert validate_best_ub(float("nan")) is None
+    assert validate_best_ub(float("inf")) is None
+    assert validate_best_ub(float("-inf")) is None
+    assert validate_best_ub(np.nan) is None
+    assert validate_best_ub(np.inf) is None
+
+    # 9. REJECT malformed types and strings
+    assert validate_best_ub(None) is None
+    assert validate_best_ub("abc") is None
+    assert validate_best_ub("") is None
+    assert validate_best_ub("   ") is None
+    assert validate_best_ub([1]) is None
+    assert validate_best_ub({"ub": 1}) is None
+
+
+def test_format_cell_value_missing_and_invalid_timing():
+    """
+    Test format_cell_value() presentation:
+    - Timing missing or invalid does NOT display as 0.0000.
+    - OPTIMAL with invalid/missing timing displays '-'.
+    - OPTIMAL with valid 0.0 timing displays '0.0000'.
+    - PARTIAL with invalid/missing timing displays 'k/n -*'.
+    - PARTIAL with valid 0.0 timing displays 'k/n 0.0000*'.
+    - FEASIBLE/TIMEOUT/INTERRUPTED only format best_ub when it is a valid non-negative integer.
+    """
+    from analysis.make_tables import format_cell_value
+
+    # OPTIMAL cases
+    assert format_cell_value("OPTIMAL", solve_time=None) == "-"
+    assert format_cell_value("OPTIMAL", solve_time=-1.0) == "-"
+    assert format_cell_value("OPTIMAL", solve_time=float("nan")) == "-"
+    assert format_cell_value("OPTIMAL", solve_time=float("inf")) == "-"
+    assert format_cell_value("OPTIMAL", solve_time="invalid") == "-"
+    assert format_cell_value("OPTIMAL", solve_time=0.0) == "0.0000"
+    assert format_cell_value("OPTIMAL", solve_time=1.2345) == "1.2345"
+
+    # Dict-based OPTIMAL cases
+    assert format_cell_value({"status": "OPTIMAL", "solve_time": None, "wall_time": None}) == "-"
+    assert format_cell_value({"status": "OPTIMAL", "solve_time": 0.0}) == "0.0000"
+    assert format_cell_value({"status": "OPTIMAL", "solve_time": None, "wall_time": 2.5}) == "2.5000"
+
+    # PARTIAL cases
+    assert format_cell_value("PARTIAL", solve_time=None, n_optimal=2, n_total=4) == "2/4 -*"
+    assert format_cell_value("PARTIAL", solve_time=-5.0, n_optimal=2, n_total=4) == "2/4 -*"
+    assert format_cell_value("PARTIAL", solve_time=float("nan"), n_optimal=2, n_total=4) == "2/4 -*"
+    assert format_cell_value("PARTIAL", solve_time=0.0, n_optimal=2, n_total=4) == "2/4 0.0000*"
+    assert format_cell_value("PARTIAL", solve_time=1.5, n_optimal=2, n_total=4) == "2/4 1.5000*"
+
+    # FEASIBLE cases with valid and invalid best_ub
+    assert format_cell_value("FEASIBLE", best_ub=4) == "FEAS(4)"
+    assert format_cell_value("FEASIBLE", best_ub=4.0) == "FEAS(4)"
+    assert format_cell_value("FEASIBLE", best_ub="4") == "FEAS(4)"
+    assert format_cell_value("FEASIBLE", best_ub=0) == "FEAS(0)"
+    assert format_cell_value("FEASIBLE", best_ub=3.7) == "FEAS"   # fractional float rejected
+    assert format_cell_value("FEASIBLE", best_ub=-1) == "FEAS"
+    assert format_cell_value("FEASIBLE", best_ub=None) == "FEAS"
+    assert format_cell_value("FEASIBLE", best_ub="invalid") == "FEAS"
+    assert format_cell_value("FEASIBLE", best_ub=True) == "FEAS"
+
+    # TIMEOUT and INTERRUPTED cases
+    assert format_cell_value("TIMEOUT", best_ub=5) == "TO(5)"
+    assert format_cell_value("TIMEOUT", best_ub=5.7) == "TO"
+    assert format_cell_value("TIMEOUT", best_ub=-1) == "TO"
+    assert format_cell_value("INTERRUPTED", best_ub=6) == "INT(6)"
+    assert format_cell_value("INTERRUPTED", best_ub=None) == "INT"
+
+
+def test_speedup_calculation_symmetric_timing_and_corner_cases():
+    """
+    Test speedup calculation in compute_summary_stats across all 9 required scenarios:
+    1. Baseline and candidate both have valid solve_time.
+    2. Baseline lacks solve_time but has wall_time (symmetric fallback).
+    3. Candidate lacks solve_time but has wall_time (symmetric fallback).
+    4. Baseline lacks both solve_time and wall_time (instance excluded from baseline_times, no fake timeout).
+    5. Candidate lacks both solve_time and wall_time (speedup is NaN).
+    6. Candidate timing is 0.0 (no division by zero, speedup is NaN).
+    7. Candidate timing is negative, NaN, inf (speedup is NaN).
+    8. Geometric mean when one instance in eligible set has invalid ratio (speedup is NaN).
+    9. col == baseline_col (speedup is 1.00).
+    """
+    import math
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    # Scenario 1: Both have valid solve_time
+    df1 = pd.DataFrame({
+        "base": [{"status": "OPTIMAL", "solve_time": 10.0}],
+        "cand": [{"status": "OPTIMAL", "solve_time": 5.0}],
+    }, index=["ds1"])
+    _, _, _, sp1 = compute_summary_stats(df1, ["base", "cand"], baseline_col="base")
+    assert abs(sp1["base"] - 1.00) < 1e-5
+    assert abs(sp1["cand"] - 2.00) < 1e-5
+
+    # Scenario 2: Baseline lacks solve_time but has wall_time
+    df2 = pd.DataFrame({
+        "base": [{"status": "OPTIMAL", "solve_time": None, "wall_time": 10.0}],
+        "cand": [{"status": "OPTIMAL", "solve_time": 5.0}],
+    }, index=["ds1"])
+    _, _, _, sp2 = compute_summary_stats(df2, ["base", "cand"], baseline_col="base")
+    assert abs(sp2["cand"] - 2.00) < 1e-5
+
+    # Scenario 3: Candidate lacks solve_time but has wall_time
+    df3 = pd.DataFrame({
+        "base": [{"status": "OPTIMAL", "solve_time": 10.0}],
+        "cand": [{"status": "OPTIMAL", "solve_time": None, "wall_time": 5.0}],
+    }, index=["ds1"])
+    _, _, _, sp3 = compute_summary_stats(df3, ["base", "cand"], baseline_col="base")
+    assert abs(sp3["cand"] - 2.00) < 1e-5
+
+    # Scenario 4: Baseline lacks both solve_time and wall_time
+    df4 = pd.DataFrame({
+        "base": [{"status": "OPTIMAL", "solve_time": None, "wall_time": None}],
+        "cand": [{"status": "OPTIMAL", "solve_time": 5.0}],
+    }, index=["ds1"])
+    _, _, _, sp4 = compute_summary_stats(df4, ["base", "cand"], baseline_col="base", timeout=300.0)
+    assert math.isnan(sp4["base"])
+    assert math.isnan(sp4["cand"])  # No eligible baseline instance
+
+    # Scenario 5: Candidate lacks both solve_time and wall_time
+    df5 = pd.DataFrame({
+        "base": [{"status": "OPTIMAL", "solve_time": 10.0}],
+        "cand": [{"status": "OPTIMAL", "solve_time": None, "wall_time": None}],
+    }, index=["ds1"])
+    _, _, _, sp5 = compute_summary_stats(df5, ["base", "cand"], baseline_col="base")
+    assert math.isnan(sp5["cand"])
+
+    # Scenario 6: Candidate timing is 0.0
+    df6 = pd.DataFrame({
+        "base": [{"status": "OPTIMAL", "solve_time": 10.0}],
+        "cand": [{"status": "OPTIMAL", "solve_time": 0.0}],
+    }, index=["ds1"])
+    _, _, _, sp6 = compute_summary_stats(df6, ["base", "cand"], baseline_col="base")
+    assert math.isnan(sp6["cand"])  # No division by zero
+
+    # Scenario 7: Candidate timing is negative, NaN, inf
+    for bad_t in (-5.0, float("nan"), float("inf"), "invalid"):
+        df7 = pd.DataFrame({
+            "base": [{"status": "OPTIMAL", "solve_time": 10.0}],
+            "cand": [{"status": "OPTIMAL", "solve_time": bad_t}],
+        }, index=["ds1"])
+        _, _, _, sp7 = compute_summary_stats(df7, ["base", "cand"], baseline_col="base")
+        assert math.isnan(sp7["cand"])
+
+    # Scenario 8: Multiple eligible instances, one candidate timing is missing/invalid
+    # ds1: valid ratio 10.0 / 5.0 = 2.0; ds2: candidate missing timing -> candidate speedup is NaN
+    df8 = pd.DataFrame({
+        "base": [
+            {"status": "OPTIMAL", "solve_time": 10.0},
+            {"status": "OPTIMAL", "solve_time": 20.0},
+        ],
+        "cand": [
+            {"status": "OPTIMAL", "solve_time": 5.0},
+            {"status": "OPTIMAL", "solve_time": None, "wall_time": None},
+        ],
+    }, index=["ds1", "ds2"])
+    _, _, _, sp8 = compute_summary_stats(df8, ["base", "cand"], baseline_col="base")
+    assert math.isnan(sp8["cand"])
+
+    # Scenario 9: Multiple eligible instances, all candidate timings valid -> geometric mean
+    # ds1: 10.0 / 5.0 = 2.0; ds2: 20.0 / 2.5 = 8.0. Geo mean = sqrt(2.0 * 8.0) = 4.0
+    df9 = pd.DataFrame({
+        "base": [
+            {"status": "OPTIMAL", "solve_time": 10.0},
+            {"status": "OPTIMAL", "solve_time": 20.0},
+        ],
+        "cand": [
+            {"status": "OPTIMAL", "solve_time": 5.0},
+            {"status": "OPTIMAL", "solve_time": 2.5},
+        ],
+    }, index=["ds1", "ds2"])
+    _, _, _, sp9 = compute_summary_stats(df9, ["base", "cand"], baseline_col="base")
+    assert abs(sp9["cand"] - 4.00) < 1e-5
+
+
+def test_integration_optimal_solve_time_none_wall_time_valid(tmp_path):
+    """
+    Integration test for Section 5:
+    - Dataset with status OPTIMAL.
+    - solve_time = None, wall_time = 5.5s (valid).
+    - PAR2, speedup, and cell presentation follow canonical semantics.
+    - No fake '0.0000'.
+    - No timeout substitution in speedup.
+    - Export to CSV/LaTeX succeeds without exception.
+    """
+    import os
+    import pandas as pd
+    from analysis.make_tables import (
+        aggregate_repetition_group,
+        compute_summary_stats,
+        format_cell_value,
+        export_table,
+        DATA_CSV_COLUMNS,
+    )
+
+    reps = [
+        {"dataset": "ds_opt_wall", "solver": "cadical", "status": "OPTIMAL", "solve_time": None, "wall_time": 5.5, "time_limit": 300.0, "best_ub": 4},
+    ]
+
+    agg = aggregate_repetition_group(reps, default_timeout=300.0)
+    assert agg is not None
+    assert agg["status"] == "OPTIMAL"
+    assert agg["solve_time"] == 5.5
+    assert agg["wall_time"] == 5.5
+    assert abs(agg["par2"] - 5.5) < 1e-5
+
+    # Cell presentation must format 5.5000, not 0.0000 and not -
+    assert format_cell_value(agg) == "5.5000"
+
+    # Speedup: baseline cadical has 5.5s, candidate has 2.75s -> 2.0x
+    df_raw = pd.DataFrame({
+        "cadical": [agg],
+        "glucose": [{"status": "OPTIMAL", "solve_time": 2.75, "time_limit": 300.0}],
+    }, index=["ds_opt_wall"])
+
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["cadical", "glucose"], baseline_col="cadical", timeout=300.0)
+    assert solved["cadical"] == 1
+    assert solved["glucose"] == 1
+    assert abs(par2["cadical"] - 5.5) < 1e-5
+    assert abs(speedup["cadical"] - 1.00) < 1e-5
+    assert abs(speedup["glucose"] - 2.00) < 1e-5
+
+    # Export table to CSV and LaTeX
+    out_dir = str(tmp_path / "integration_export")
+    df_disp = pd.DataFrame({"cadical": ["5.5000"], "glucose": ["2.7500"]}, index=["ds_opt_wall"])
+    summary_rows = [("Solved", {"cadical": "1", "glucose": "1"})]
+
+    export_table(df_disp, summary_rows, title="Integration Test", base_filename="integ_table", output_dirs=(out_dir,), df_raw=df_raw)
+
+    csv_path = os.path.join(out_dir, "integ_table.csv")
+    data_csv_path = os.path.join(out_dir, "integ_table_data.csv")
+    tex_path = os.path.join(out_dir, "integ_table.tex")
+
+    assert os.path.exists(csv_path)
+    assert os.path.exists(data_csv_path)
+    assert os.path.exists(tex_path)
+
+    df_read = pd.read_csv(data_csv_path)
+    assert list(df_read.columns) == DATA_CSV_COLUMNS
+    assert df_read[df_read["column"] == "cadical"].iloc[0]["solve_time"] == 5.5
+
+
+def test_aggregate_repetition_interleaved_valid_and_invalid_timing():
+    """
+    Test aggregation of repetitions with interleaved valid and invalid timing:
+    - 2 OPTIMAL with valid solve_time (1.0, 3.0)
+    - 1 OPTIMAL with solve_time=None, wall_time=2.0 (fallback)
+    - 1 OPTIMAL with solve_time="corrupted", wall_time=4.0 (fallback)
+    - 1 TIMEOUT with solve_time=300.0
+    - 1 SIZE_LIMIT with solve_time=None
+    Invariant: n_algorithmic (5) + n_size_limit (1) + n_unavailable (0) + n_license_error (0) + n_unknown (0) == n_total (6).
+    Status: PARTIAL (4 optimal out of 6).
+    """
+    from analysis.make_tables import aggregate_repetition_group
+
+    reps = [
+        {"status": "OPTIMAL", "solve_time": 1.0, "time_limit": 300.0},
+        {"status": "OPTIMAL", "solve_time": 3.0, "time_limit": 300.0},
+        {"status": "OPTIMAL", "solve_time": None, "wall_time": 2.0, "time_limit": 300.0},
+        {"status": "OPTIMAL", "solve_time": "corrupted", "wall_time": 4.0, "time_limit": 300.0},
+        {"status": "TIMEOUT", "solve_time": 300.0, "time_limit": 300.0},
+        {"status": "SIZE_LIMIT", "solve_time": None, "time_limit": 300.0},
+    ]
+
+    agg = aggregate_repetition_group(reps, default_timeout=300.0)
+    assert agg is not None
+    assert agg["status"] == "PARTIAL"
+    assert agg["n_total"] == 6
+    assert agg["n_algorithmic"] == 5
+    assert agg["n_optimal"] == 4
+    assert agg["n_timeout"] == 1
+    assert agg["n_size_limit"] == 1
+    assert agg["n_unavailable"] == 0
+    assert agg["n_license_error"] == 0
+    assert agg["n_unknown"] == 0
+
+    # Invariant holds
+    assert agg["n_algorithmic"] + agg["n_size_limit"] + agg["n_unavailable"] + agg["n_license_error"] + agg["n_unknown"] == agg["n_total"]
+
+    # Optimal reps solve_times (with fallback): [1.0, 2.0, 3.0, 4.0] -> median is 2.5
+    assert abs(agg["solve_time"] - 2.5) < 1e-5
+
+    # PAR2: 4 optimal runs (1.0 + 3.0 + 2.0 + 4.0 = 10.0), 1 timeout (2 * 300 = 600.0), SIZE_LIMIT excluded
+    # Denominator: 5. Numerator: 610.0. PAR2 = 610 / 5 = 122.0
+    assert abs(agg["par2"] - 122.0) < 1e-5
+
+
 
 

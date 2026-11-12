@@ -22,20 +22,47 @@ DATA_CSV_COLUMNS = [
 def validate_best_ub(val):
     """
     Validates that best_ub is a genuine finite non-negative integer.
-    Rejects booleans (isinstance(val, bool)), None, negative numbers, NaN, inf,
-    and unparseable values.
+    Accepts:
+      - Python int (non-negative)
+      - NumPy integer types (non-negative)
+      - Python float or NumPy floating representing an exact integer (e.g. 3.0, np.float64(3.0))
+      - Strings representing an exact non-negative integer (e.g. "3", "3.0")
+    Rejects:
+      - Fractional floats (e.g. 3.7, 0.9) - NEVER truncates or rounds
+      - Booleans (bool is a subclass of int in Python)
+      - Negative values
+      - None, NaN, +inf, -inf
+      - Malformed strings, lists, dicts
     Returns:
         int if valid, else None.
     """
     if val is None or isinstance(val, bool):
         return None
-    try:
-        f = float(val)
-        if math.isfinite(f) and f >= 0.0:
-            return int(f)
-        return None
-    except (ValueError, TypeError):
-        return None
+    if isinstance(val, (int, np.integer)):
+        return int(val) if val >= 0 else None
+    if isinstance(val, (float, np.floating)):
+        try:
+            if math.isfinite(val) and val >= 0.0 and float(val).is_integer():
+                return int(val)
+            return None
+        except (ValueError, TypeError, OverflowError):
+            return None
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return None
+        try:
+            i = int(s)
+            return i if i >= 0 else None
+        except ValueError:
+            try:
+                f = float(s)
+                if math.isfinite(f) and f >= 0.0 and f.is_integer():
+                    return int(f)
+                return None
+            except (ValueError, TypeError, OverflowError):
+                return None
+    return None
 
 def validate_solve_time(val):
     """
@@ -553,11 +580,11 @@ def cross_validate_optima(records, output_dir=None):
 
     return df_cv
 
-def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_total=None, n_algorithmic=None):
+def format_cell_value(status, solve_time=None, best_ub=None, n_optimal=None, n_total=None, n_algorithmic=None):
     """
     Format single cell according to required status representations:
-      - OPTIMAL: solve_time in seconds (e.g. "0.0123")
-      - PARTIAL: "k/n time*" (e.g. "3/5 0.1234*")
+      - OPTIMAL: solve_time in seconds (e.g. "0.0123"), or "-" if timing is missing/invalid
+      - PARTIAL: "k/n time*" (e.g. "3/5 0.1234*"), or "k/n -*" if timing is missing/invalid
       - FEASIBLE: "FEAS(ub)" or "FEAS"
       - TIMEOUT: "TO(ub)" or "TO"
       - INTERRUPTED: "INT(ub)" or "INT"
@@ -571,24 +598,23 @@ def format_cell_value(status, solve_time=0.0, best_ub=None, n_optimal=None, n_to
     if isinstance(status, dict):
         rec = status
         status = rec.get("status")
-        solve_time = rec.get("solve_time")
+        solve_time = extract_repetition_solve_time(rec)
         best_ub = rec.get("best_ub")
         n_optimal = rec.get("n_optimal")
         n_total = rec.get("n_total")
         n_algorithmic = rec.get("n_algorithmic")
 
     t_val = validate_solve_time(solve_time)
-    t_num = t_val if t_val is not None else 0.0
-
     st = str(status).upper() if status is not None else ""
     ub_val = validate_best_ub(best_ub)
 
     if st == "OPTIMAL":
-        return f"{t_num:.4f}"
+        return f"{t_val:.4f}" if t_val is not None else "-"
     elif st == "PARTIAL":
         denom = n_total if (n_total is not None and n_total > 0) else n_algorithmic
         k_n = f"{n_optimal}/{denom}" if (n_optimal is not None and denom is not None) else "PARTIAL"
-        return f"{k_n} {t_num:.4f}*"
+        t_str = f"{t_val:.4f}*" if t_val is not None else "-*"
+        return f"{k_n} {t_str}"
     elif st == "FEASIBLE":
         return f"FEAS({ub_val})" if ub_val is not None and ub_val >= 0 else "FEAS"
     elif st == "TIMEOUT":
@@ -632,10 +658,8 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
         for ds, row in df_raw.iterrows():
             rec = row.get(baseline_col)
             if rec and rec.get("status") == "OPTIMAL":
-                t_base = validate_solve_time(rec.get("solve_time"))
-                if t_base is None:
-                    t_base = float(timeout)
-                if t_base >= 0.1:
+                t_base = extract_repetition_solve_time(rec)
+                if t_base is not None and t_base >= 0.1:
                     baseline_times[ds] = t_base
 
     for col in column_names:
@@ -649,8 +673,6 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             if not rec:
                 continue
             st = str(rec.get("status", "")).upper()
-            t_raw = rec.get("solve_time")
-            t = validate_solve_time(t_raw)
             rec_timeout = extract_time_limit(rec, default_timeout=timeout)
 
             if st == "OPTIMAL":
@@ -677,8 +699,12 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
                         pass
                 if par2_val is not None:
                     par2_vals.append(par2_val)
-                if ds in baseline_times and t is not None and t > 0:
-                    ratios.append(baseline_times[ds] / t)
+                if ds in baseline_times:
+                    t_cand = extract_repetition_solve_time(rec)
+                    if t_cand is not None and t_cand > 0:
+                        ratio = baseline_times[ds] / t_cand
+                        if math.isfinite(ratio) and ratio > 0:
+                            ratios.append(ratio)
             elif st == "PARTIAL":
                 p = validate_solve_time(rec.get("par2"))
                 if p is None and "reps" in rec and rec["reps"]:
@@ -860,7 +886,7 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         df_display[col] = col_vals
 
     solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, columns, baseline_col="none")
-    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("none") and row.get("none").get("status") == "OPTIMAL" and (row.get("none").get("solve_time") or 0.0) >= 0.1)
+    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("none") and row.get("none").get("status") == "OPTIMAL" and (extract_repetition_solve_time(row.get("none")) or 0.0) >= 0.1)
     n_total = len(df_raw)
 
     sum_solved = {"N": "-", "|E|": "-"}
@@ -945,7 +971,7 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
         df_display[sol] = col_vals
 
     solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, solvers, baseline_col="cadical195")
-    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("cadical195") and row.get("cadical195").get("status") == "OPTIMAL" and (row.get("cadical195").get("solve_time") or 0.0) >= 0.1)
+    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("cadical195") and row.get("cadical195").get("status") == "OPTIMAL" and (extract_repetition_solve_time(row.get("cadical195")) or 0.0) >= 0.1)
     n_total = len(df_raw)
 
     sum_solved = {"N": "-", "|E|": "-"}
@@ -1025,7 +1051,7 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
         df_display[m] = col_vals
 
     solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, methods, baseline_col="sat_best")
-    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("sat_best") and row.get("sat_best").get("status") == "OPTIMAL" and (row.get("sat_best").get("solve_time") or 0.0) >= 0.1)
+    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("sat_best") and row.get("sat_best").get("status") == "OPTIMAL" and (extract_repetition_solve_time(row.get("sat_best")) or 0.0) >= 0.1)
     n_total = len(df_raw)
 
     sum_solved = {"N": "-", "|E|": "-"}
