@@ -43,15 +43,14 @@ def build_gurobi_model(N: int, edges: list, sb_rotation: bool = True):
     """
     Build Gurobi MIP model for CBMP.
     Returns: (model, x, f, k)
+    Raises:
+        ImportError: if gurobipy is not installed or cannot be imported.
     """
     try:
         import gurobipy as gp
         from gurobipy import GRB
     except ImportError as e:
-        stats["status"] = "UNAVAILABLE"
-        stats["error"] = str(e)
-        stats["assignment"] = None
-        return SolveResult(-1, stats)
+        raise ImportError(f"Gurobi solver is not installed ('gurobipy' module not found): {e}") from e
 
     model = gp.Model("cbmp_gurobi")
 
@@ -210,6 +209,7 @@ def solve_gurobi(
 
     sol_count = getattr(model, "SolCount", 0)
     grb_status = getattr(model, "Status", -1)
+    stats["grb_status"] = grb_status
 
     valid_solution = False
     actual_bw = None
@@ -270,8 +270,9 @@ def solve_gurobi(
             status = "INTERRUPTED"
         elif grb_status == GRB.NUMERIC:
             status = "NUMERIC_ERROR"
-        elif grb_status in (GRB.NODE_LIMIT, GRB.ITERATION_LIMIT):
-            status = "TIMEOUT"
+        elif grb_status in (GRB.NODE_LIMIT, GRB.ITERATION_LIMIT, GRB.SOLUTION_LIMIT):
+            status = "ERROR"
+            stats["error"] = f"Gurobi terminated with search limit status {grb_status} without finding a solution"
         else:
             status = "ERROR"
 

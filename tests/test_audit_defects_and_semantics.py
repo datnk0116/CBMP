@@ -1210,5 +1210,149 @@ def test_export_table_data_csv_readback_and_population_counters(tmp_path):
     assert row_beta_m2["n_size_limit"] == 1
 
 
+# ============================================================================
+# 8. TIMING VALIDATION, FALLBACK, AND CSV SCHEMA CONTRACT TESTS
+# ============================================================================
+
+def test_validate_solve_time_helper():
+    """Unit tests for validate_solve_time and extract_repetition_solve_time helpers."""
+    import math
+    from analysis.make_tables import validate_solve_time, extract_repetition_solve_time
+
+    assert validate_solve_time(None) is None
+    assert validate_solve_time(True) is None  # boolean rejected
+    assert validate_solve_time(False) is None
+    assert validate_solve_time("invalid") is None
+    assert validate_solve_time(-1.0) is None
+    assert validate_solve_time(-0.0001) is None
+    assert validate_solve_time(float("nan")) is None
+    assert validate_solve_time(float("inf")) is None
+    assert validate_solve_time(float("-inf")) is None
+
+    assert validate_solve_time(0.0) == 0.0
+    assert validate_solve_time(12.345) == 12.345
+    assert validate_solve_time("42.5") == 42.5
+
+    # extract_repetition_solve_time checks solve_time, then wall_time
+    assert extract_repetition_solve_time({"solve_time": 5.0, "wall_time": 6.0}) == 5.0
+    assert extract_repetition_solve_time({"solve_time": None, "wall_time": 6.0}) == 6.0
+    assert extract_repetition_solve_time({"solve_time": "bad", "wall_time": 6.0}) == 6.0
+    assert extract_repetition_solve_time({"solve_time": -1, "wall_time": 6.0}) == 6.0
+    assert extract_repetition_solve_time({"solve_time": float("nan"), "wall_time": 6.0}) == 6.0
+    assert extract_repetition_solve_time({"solve_time": float("inf"), "wall_time": 6.0}) == 6.0
+    assert extract_repetition_solve_time({"solve_time": -1, "wall_time": "invalid"}) is None
+    assert extract_repetition_solve_time("not_a_dict") is None
+
+
+def test_par2_fallback_with_invalid_solve_times_and_wall_time_fallback():
+    """
+    Test compute_summary_stats with repetitions having invalid solve_time:
+    1. Valid wall_time fallback.
+    2. Both solve_time and wall_time invalid -> penalized as 2 * time_limit.
+    """
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    # Repetition 1: solve_time is 'invalid', wall_time is 4.0 -> uses 4.0
+    # Repetition 2: solve_time is NaN, wall_time is 8.0 -> uses 8.0
+    # Repetition 3: solve_time is -1, wall_time is -1 -> penalized as 2 * 300 = 600.0
+    # Repetition 4: TIMEOUT at 300 -> penalized as 2 * 300 = 600.0
+    # Exact PAR2 = (4.0 + 8.0 + 600.0 + 600.0) / 4 = 1212.0 / 4 = 303.0
+    rec_reps = {
+        "status": "PARTIAL",
+        "solve_time": 6.0,
+        "n_optimal": 3,
+        "n_timeout": 1,
+        "n_total": 4,
+        "n_algorithmic": 4,
+        "reps": [
+            {"status": "OPTIMAL", "solve_time": "invalid", "wall_time": 4.0, "time_limit": 300.0},
+            {"status": "OPTIMAL", "solve_time": float("nan"), "wall_time": 8.0, "time_limit": 300.0},
+            {"status": "OPTIMAL", "solve_time": -1.0, "wall_time": "bad", "time_limit": 300.0},
+            {"status": "TIMEOUT", "solve_time": 300.0, "time_limit": 300.0},
+        ],
+    }
+
+    df_raw = pd.DataFrame({"sol_test": [rec_reps]}, index=["ds_timing"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_test"], timeout=300.0)
+
+    expected_par2 = (4.0 + 8.0 + 600.0 + 600.0) / 4.0
+    assert abs(par2["sol_test"] - expected_par2) < 1e-5
+
+
+def test_gurobi_status_aggregation_and_par2_handling():
+    """
+    Test that Gurobi's search limit statuses (FEASIBLE with incumbent, ERROR without)
+    are aggregated and penalized according to unified taxonomy.
+    """
+    import pandas as pd
+    from analysis.make_tables import aggregate_repetitions, compute_summary_stats
+
+    records = [
+        # Gurobi with incumbent after node limit -> FEASIBLE
+        {"dataset": "ds_grb", "solver": "gurobi", "status": "FEASIBLE", "best_ub": 2, "solve_time": 50.0, "time_limit": 600.0, "rep": 1},
+        # Gurobi without incumbent after iteration limit -> ERROR
+        {"dataset": "ds_grb2", "solver": "gurobi", "status": "ERROR", "solve_time": 20.0, "time_limit": 600.0, "rep": 1},
+        # Gurobi numeric error without incumbent -> NUMERIC_ERROR (categorized as ERROR)
+        {"dataset": "ds_grb3", "solver": "gurobi", "status": "NUMERIC_ERROR", "solve_time": 5.0, "time_limit": 600.0, "rep": 1},
+    ]
+
+    agg = aggregate_repetitions(records)
+    agg_map = {r["dataset"]: r for r in agg}
+
+    assert agg_map["ds_grb"]["status"] == "FEASIBLE"
+    assert agg_map["ds_grb"]["par2"] == 1200.0  # 2 * 600
+    assert agg_map["ds_grb"]["n_feasible"] == 1
+
+    assert agg_map["ds_grb2"]["status"] == "ERROR"
+    assert agg_map["ds_grb2"]["par2"] == 1200.0
+    assert agg_map["ds_grb2"]["n_error"] == 1
+
+    assert agg_map["ds_grb3"]["status"] == "ERROR"
+    assert agg_map["ds_grb3"]["par2"] == 1200.0
+    assert agg_map["ds_grb3"]["n_error"] == 1
+
+
+def test_export_table_data_csv_schema_contract_when_empty_or_no_dict(tmp_path):
+    """
+    Contract requirement: export_table must create <base_filename>_data.csv
+    whenever df_raw is passed, even when df_raw is empty, has None cells, or has no dict cells.
+    Schema header must contain all 20 columns.
+    """
+    import pandas as pd
+    from analysis.make_tables import export_table, DATA_CSV_COLUMNS
+
+    df_disp = pd.DataFrame({"colA": ["1.0"]})
+    summary_rows = [("Solved", {"colA": "1"})]
+    out_dir = str(tmp_path / "csv_contracts")
+
+    # Case 1: Empty DataFrame
+    export_table(df_disp, summary_rows, title="Empty Test", base_filename="empty_test", output_dirs=(out_dir,), df_raw=pd.DataFrame())
+    p1 = f"{out_dir}/empty_test_data.csv"
+    assert os.path.exists(p1)
+    df1 = pd.read_csv(p1)
+    assert list(df1.columns) == DATA_CSV_COLUMNS
+    assert len(df1) == 0
+
+    # Case 2: DataFrame with None cells
+    df_none = pd.DataFrame({"colA": [None, None]}, index=["ds1", "ds2"])
+    export_table(df_disp, summary_rows, title="None Test", base_filename="none_test", output_dirs=(out_dir,), df_raw=df_none)
+    p2 = f"{out_dir}/none_test_data.csv"
+    assert os.path.exists(p2)
+    df2 = pd.read_csv(p2)
+    assert list(df2.columns) == DATA_CSV_COLUMNS
+    assert len(df2) == 0
+
+    # Case 3: DataFrame without dict cells (formatted strings only)
+    df_strings = pd.DataFrame({"colA": ["1.2345", "TO"]}, index=["ds1", "ds2"])
+    export_table(df_disp, summary_rows, title="Strings Test", base_filename="strings_test", output_dirs=(out_dir,), df_raw=df_strings)
+    p3 = f"{out_dir}/strings_test_data.csv"
+    assert os.path.exists(p3)
+    df3 = pd.read_csv(p3)
+    assert list(df3.columns) == DATA_CSV_COLUMNS
+    assert len(df3) == 0
+
+
+
 
 

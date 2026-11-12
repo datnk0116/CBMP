@@ -209,11 +209,29 @@ def solve_cplex_cp(
 
     stats["num_constraints"] = num_constraints
 
-    sol_status = str(sol.get_solve_status()) if sol and hasattr(sol, "get_solve_status") and sol.get_solve_status() is not None else ""
-    stop_cause = str(sol.get_stop_cause()) if sol and hasattr(sol, "get_stop_cause") and sol.get_stop_cause() is not None else ""
-    fail_status = str(sol.get_fail_status()) if sol and hasattr(sol, "get_fail_status") and sol.get_fail_status() is not None else ""
-    search_status = str(sol.get_search_status()) if sol and hasattr(sol, "get_search_status") and sol.get_search_status() is not None else ""
-    has_solution = sol.is_solution() if sol and hasattr(sol, "is_solution") else False
+    def _safe_sol_call(obj, method_name, default=None):
+        """Safely invokes a solver result method, guarding against missing methods or exceptions."""
+        if obj is None:
+            return default
+        try:
+            fn = getattr(obj, method_name, None)
+            if callable(fn):
+                res = fn()
+                return res if res is not None else default
+        except Exception:
+            return default
+        return default
+
+    raw_sol_status = _safe_sol_call(sol, "get_solve_status", default=None)
+    raw_stop_cause = _safe_sol_call(sol, "get_stop_cause", default=None)
+    raw_fail_status = _safe_sol_call(sol, "get_fail_status", default=None)
+    raw_search_status = _safe_sol_call(sol, "get_search_status", default=None)
+    has_solution = bool(_safe_sol_call(sol, "is_solution", default=False))
+
+    sol_status = str(raw_sol_status) if raw_sol_status is not None else ""
+    stop_cause = str(raw_stop_cause) if raw_stop_cause is not None else ""
+    fail_status = str(raw_fail_status) if raw_fail_status is not None else ""
+    search_status = str(raw_search_status) if raw_search_status is not None else ""
 
     # Preserve raw solver status fields for auditability
     stats["solve_status"] = sol_status
@@ -259,9 +277,8 @@ def solve_cplex_cp(
             assignment = None
 
     # Determine termination cause categories
-    is_optimal = (sol_status.lower() == "optimal") or (
-        sol is not None and hasattr(sol, "is_solution_optimal") and sol.is_solution_optimal()
-    )
+    is_solution_optimal = bool(_safe_sol_call(sol, "is_solution_optimal", default=False))
+    is_optimal = (sol_status.lower() == "optimal") or is_solution_optimal
 
     clean_stop_cause = stop_cause.lower().replace(" ", "").replace("_", "")
     clean_sol_status = sol_status.lower().replace(" ", "").replace("_", "")

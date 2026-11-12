@@ -10,6 +10,45 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+DATA_CSV_COLUMNS = [
+    "dataset", "column", "status",
+    "par2", "solve_time", "wall_time", "encode_time", "best_ub",
+    "n_total", "n_algorithmic", "n_optimal", "n_timeout", "n_interrupted",
+    "n_feasible", "n_infeasible", "n_error", "n_size_limit",
+    "n_unavailable", "n_license_error", "n_unknown",
+]
+
+def validate_solve_time(val):
+    """
+    Validates that a timing metric is a genuine finite, non-negative float.
+    Rejects booleans (since bool is a subclass of int), None, negatives, NaN, inf, -inf,
+    and unparseable/invalid strings.
+    Returns:
+        float if valid, else None.
+    """
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        f = float(val)
+        if math.isfinite(f) and f >= 0.0:
+            return f
+        return None
+    except (ValueError, TypeError):
+        return None
+
+def extract_repetition_solve_time(r):
+    """
+    Extracts a validated solve time from a repetition record.
+    Checks 'solve_time' first; if invalid or missing, falls back to 'wall_time'.
+    Returns validated non-negative finite float, or None if neither is valid.
+    """
+    if not isinstance(r, dict):
+        return None
+    t = validate_solve_time(r.get("solve_time"))
+    if t is not None:
+        return t
+    return validate_solve_time(r.get("wall_time"))
+
 def extract_time_limit(record, default_timeout=600.0):
     """Safely extracts a validated positive numeric timeout from a record."""
     val = record.get("time_limit")
@@ -137,20 +176,9 @@ def aggregate_repetitions(records):
         for r in reps:
             cat = r["_cat"]
             if cat == "OPTIMAL":
-                t = r.get("solve_time")
-                if t is None:
-                    t = r.get("wall_time")
+                t = extract_repetition_solve_time(r)
                 if t is not None:
-                    try:
-                        ft = float(t)
-                        if ft >= 0 and not math.isnan(ft) and not math.isinf(ft):
-                            rep_par2_vals.append(ft)
-                        else:
-                            t_lim = extract_time_limit(r)
-                            rep_par2_vals.append(2.0 * t_lim)
-                    except (ValueError, TypeError):
-                        t_lim = extract_time_limit(r)
-                        rep_par2_vals.append(2.0 * t_lim)
+                    rep_par2_vals.append(t)
                 else:
                     t_lim = extract_time_limit(r)
                     rep_par2_vals.append(2.0 * t_lim)
@@ -579,23 +607,29 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
 
             if st == "OPTIMAL":
                 solved += 1
-                par2_val = rec.get("par2") if ("par2" in rec and rec.get("par2") is not None) else t
+                par2_val = None
+                if "par2" in rec and rec.get("par2") is not None:
+                    par2_val = validate_solve_time(rec["par2"])
+                if par2_val is None:
+                    par2_val = extract_repetition_solve_time(rec)
+                if par2_val is None:
+                    par2_val = 2.0 * float(rec_timeout)
                 par2_vals.append(par2_val)
                 if ds in baseline_times and t > 0:
                     ratios.append(baseline_times[ds] / t)
             elif st == "PARTIAL":
                 if "par2" in rec and rec.get("par2") is not None:
-                    par2_vals.append(rec["par2"])
+                    p = validate_solve_time(rec["par2"])
+                    if p is not None:
+                        par2_vals.append(p)
                 elif "reps" in rec and rec["reps"]:
                     rep_par2s = []
                     for r_item in rec["reps"]:
                         r_cat = r_item.get("_cat") or categorize_status(r_item.get("status"))
                         if r_cat == "OPTIMAL":
-                            t_r = r_item.get("solve_time")
-                            if t_r is None:
-                                t_r = r_item.get("wall_time")
-                            if t_r is not None and float(t_r) >= 0:
-                                rep_par2s.append(float(t_r))
+                            t_r = extract_repetition_solve_time(r_item)
+                            if t_r is not None:
+                                rep_par2s.append(t_r)
                             else:
                                 t_lim = extract_time_limit(r_item, default_timeout=rec_timeout)
                                 rep_par2s.append(2.0 * t_lim)
@@ -615,7 +649,11 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
                 # Solver environment unavailability, missing license, or unknown status excluded from algorithmic PAR2
                 pass
             else:
-                par2_val = rec.get("par2") if ("par2" in rec and rec.get("par2") is not None) else (2.0 * float(rec_timeout))
+                par2_val = None
+                if "par2" in rec and rec.get("par2") is not None:
+                    par2_val = validate_solve_time(rec["par2"])
+                if par2_val is None:
+                    par2_val = 2.0 * float(rec_timeout)
                 par2_vals.append(par2_val)
 
         solved_counts[col] = solved
@@ -682,36 +720,36 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("r
         # Dedicated machine-readable aggregation export preserving exact population counters
         if df_raw is not None:
             raw_rows = []
-            for ds, row in df_raw.iterrows():
-                for col in df_raw.columns:
-                    cell = row.get(col)
-                    if isinstance(cell, dict):
-                        raw_rows.append({
-                            "dataset": ds,
-                            "column": col,
-                            "status": cell.get("status"),
-                            "par2": cell.get("par2"),
-                            "solve_time": cell.get("solve_time"),
-                            "wall_time": cell.get("wall_time"),
-                            "encode_time": cell.get("encode_time"),
-                            "best_ub": cell.get("best_ub"),
-                            "n_total": cell.get("n_total"),
-                            "n_algorithmic": cell.get("n_algorithmic"),
-                            "n_optimal": cell.get("n_optimal"),
-                            "n_timeout": cell.get("n_timeout"),
-                            "n_interrupted": cell.get("n_interrupted"),
-                            "n_feasible": cell.get("n_feasible"),
-                            "n_infeasible": cell.get("n_infeasible"),
-                            "n_error": cell.get("n_error"),
-                            "n_size_limit": cell.get("n_size_limit"),
-                            "n_unavailable": cell.get("n_unavailable"),
-                            "n_license_error": cell.get("n_license_error"),
-                            "n_unknown": cell.get("n_unknown"),
-                        })
-            if raw_rows:
-                df_metrics = pd.DataFrame(raw_rows)
-                metrics_csv_path = os.path.join(out_dir, f"{base_filename}_data.csv")
-                df_metrics.to_csv(metrics_csv_path, index=False)
+            if hasattr(df_raw, "iterrows") and hasattr(df_raw, "columns"):
+                for ds, row in df_raw.iterrows():
+                    for col in df_raw.columns:
+                        cell = row.get(col)
+                        if isinstance(cell, dict):
+                            raw_rows.append({
+                                "dataset": ds,
+                                "column": col,
+                                "status": cell.get("status"),
+                                "par2": cell.get("par2"),
+                                "solve_time": cell.get("solve_time"),
+                                "wall_time": cell.get("wall_time"),
+                                "encode_time": cell.get("encode_time"),
+                                "best_ub": cell.get("best_ub"),
+                                "n_total": cell.get("n_total"),
+                                "n_algorithmic": cell.get("n_algorithmic"),
+                                "n_optimal": cell.get("n_optimal"),
+                                "n_timeout": cell.get("n_timeout"),
+                                "n_interrupted": cell.get("n_interrupted"),
+                                "n_feasible": cell.get("n_feasible"),
+                                "n_infeasible": cell.get("n_infeasible"),
+                                "n_error": cell.get("n_error"),
+                                "n_size_limit": cell.get("n_size_limit"),
+                                "n_unavailable": cell.get("n_unavailable"),
+                                "n_license_error": cell.get("n_license_error"),
+                                "n_unknown": cell.get("n_unknown"),
+                            })
+            df_metrics = pd.DataFrame(raw_rows, columns=DATA_CSV_COLUMNS)
+            metrics_csv_path = os.path.join(out_dir, f"{base_filename}_data.csv")
+            df_metrics.to_csv(metrics_csv_path, index=False)
 
     print(f"Table saved: {base_filename}.csv and {base_filename}.tex in {output_dirs[0]}/")
     return full_df

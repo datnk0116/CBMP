@@ -50,6 +50,12 @@ class FakeCpoSolution:
     def get_solver_log(self):
         return self._solver_log
 
+    def get_value(self, var):
+        return self[var]
+
+    def get_objective_value(self):
+        return self._obj_val
+
     def __getitem__(self, var):
         name = getattr(var, "name", str(var))
         if "k" in name:
@@ -689,3 +695,306 @@ def test_baseline_empty_graph_contract(solver_fn):
     assert stats["assignment"] == [0, 1, 2, 3]
     assert stats["solve_time"] >= 0.0
     assert stats["encode_time"] >= 0.0
+
+
+# ============================================================================
+# 4. ADDITIONAL CPLEX CP API PROTECTION & STATUS REFINEMENT TESTS
+# ============================================================================
+
+def test_cplex_cp_api_missing_methods(mock_cpo_environment):
+    """CPLEX CP solve result missing all get_* status methods does not crash and defaults safely."""
+    class NakedSolution:
+        pass  # Has zero methods
+
+    naked_sol = NakedSolution()
+    with patch("docplex.cp.model.CpoModel.solve", return_value=naked_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_api_raising_exceptions(mock_cpo_environment):
+    """CPLEX CP solve result methods raising exceptions do not crash solve_cplex_cp."""
+    class BrokenSolution:
+        def is_solution(self):
+            raise RuntimeError("API failure in is_solution")
+        def get_solve_status(self):
+            raise RuntimeError("API failure in get_solve_status")
+        def get_stop_cause(self):
+            raise RuntimeError("API failure in get_stop_cause")
+        def get_fail_status(self):
+            raise RuntimeError("API failure in get_fail_status")
+        def get_search_status(self):
+            raise RuntimeError("API failure in get_search_status")
+        def is_solution_optimal(self):
+            raise RuntimeError("API failure in is_solution_optimal")
+
+    broken_sol = BrokenSolution()
+    with patch("docplex.cp.model.CpoModel.solve", return_value=broken_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_api_returning_none(mock_cpo_environment):
+    """CPLEX CP solve result methods returning None do not crash solve_cplex_cp."""
+    class NoneSolution:
+        def is_solution(self):
+            return None
+        def get_solve_status(self):
+            return None
+        def get_stop_cause(self):
+            return None
+        def get_fail_status(self):
+            return None
+        def get_search_status(self):
+            return None
+        def is_solution_optimal(self):
+            return None
+
+    none_sol = NoneSolution()
+    with patch("docplex.cp.model.CpoModel.solve", return_value=none_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_api_malformed_values(mock_cpo_environment):
+    """CPLEX CP solve result methods returning non-string/malformed values do not crash."""
+    class MalformedSolution:
+        def is_solution(self):
+            return "not_a_bool"
+        def get_solve_status(self):
+            return ["weird", 123]
+        def get_stop_cause(self):
+            return {"cause": "unknown"}
+        def get_fail_status(self):
+            return 999
+        def get_search_status(self):
+            return False
+
+    malformed_sol = MalformedSolution()
+    with patch("docplex.cp.model.CpoModel.solve", return_value=malformed_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+
+
+def test_cplex_cp_partial_apis_functional(mock_cpo_environment):
+    """When some APIs fail/raise, remaining working APIs allow proper classification."""
+    class PartiallyWorkingSolution:
+        def is_solution(self):
+            return True
+        def get_solve_status(self):
+            raise RuntimeError("solve_status unavailable")
+        def get_stop_cause(self):
+            return "SearchStoppedByLimit"
+        def get_fail_status(self):
+            return None
+        def get_search_status(self):
+            return "SearchStopped"
+        def get_solver_log(self):
+            return "! Time limit reached"
+        def is_solution_optimal(self):
+            return False
+        def __getitem__(self, var):
+            name = getattr(var, "name", str(var))
+            if "k" in name:
+                return 1
+            for u in range(3):
+                if f"f_{u}" in name:
+                    return u + 1
+            return 1
+
+    part_sol = PartiallyWorkingSolution()
+    with patch("docplex.cp.model.CpoModel.solve", return_value=part_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    # Has solution + time limit reached log -> TIMEOUT with incumbent preserved
+    assert stats["status"] == "TIMEOUT"
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] == [0, 1, 2]
+
+
+def test_cplex_cp_solution_unverifiable_yields_error(mock_cpo_environment):
+    """When is_solution is True but variable extraction raises exception, status must be ERROR."""
+    class BrokenVarSolution:
+        def is_solution(self):
+            return True
+        def is_solution_optimal(self):
+            return True
+        def get_solve_status(self):
+            return "Optimal"
+        def __getitem__(self, var):
+            raise RuntimeError("Variable value extraction failed")
+
+    broken_var_sol = BrokenVarSolution()
+    with patch("docplex.cp.model.CpoModel.solve", return_value=broken_var_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_real_docplex_raw_statuses(mock_cpo_environment):
+    """Test against actual Docplex CP Optimizer constant values."""
+    # STOP_CAUSE_LIMIT + SearchStopped without timelimit log -> FEASIBLE with incumbent
+    sol_feas = FakeCpoSolution(
+        solve_status="Feasible",
+        stop_cause="SearchStoppedByLimit",
+        has_solution=True,
+        assignment=[1, 2, 3],
+        obj_val=1,
+    )
+    with patch("docplex.cp.model.CpoModel.solve", return_value=sol_feas):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "FEASIBLE"
+    assert stats["best_ub"] == 1
+
+    # STOP_CAUSE_ABORT + JobAborted -> INTERRUPTED
+    sol_abort = FakeCpoSolution(
+        solve_status="JobAborted",
+        stop_cause="SearchStoppedByAbort",
+        has_solution=False,
+    )
+    with patch("docplex.cp.model.CpoModel.solve", return_value=sol_abort):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "INTERRUPTED"
+
+    # Infeasible -> INFEASIBLE
+    sol_infeas = FakeCpoSolution(
+        solve_status="Infeasible",
+        stop_cause="SearchCompleted",
+        has_solution=False,
+    )
+    with patch("docplex.cp.model.CpoModel.solve", return_value=sol_infeas):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "INFEASIBLE"
+
+
+# ============================================================================
+# 5. ADDITIONAL GUROBI TERMINATION CLASSIFICATION TESTS
+# ============================================================================
+
+def test_build_gurobi_model_without_gurobipy_raises_importerror(monkeypatch):
+    """Calling build_gurobi_model when gurobipy is not installed raises ImportError, not NameError."""
+    from baselines.gurobi_cbmp import build_gurobi_model
+
+    monkeypatch.setitem(sys.modules, "gurobipy", None)
+    with pytest.raises(ImportError) as exc_info:
+        build_gurobi_model(3, [(0, 1)])
+    assert "gurobipy" in str(exc_info.value).lower()
+
+
+def test_gurobi_node_limit_without_incumbent_is_error(monkeypatch, mock_gurobi_environment):
+    """Gurobi hits NODE_LIMIT (status 8) without finding an incumbent -> ERROR (NOT TIMEOUT)."""
+    fake_model = FakeGrbModel(status=8, sol_count=0)
+    monkeypatch.setattr(
+        "baselines.gurobi_cbmp.build_gurobi_model",
+        lambda N, edges, sb_rotation=True: (fake_model, {}, {}, FakeGrbVar(0.0)),
+    )
+    res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "ERROR"
+    assert stats["status"] != "TIMEOUT"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_gurobi_iteration_limit_without_incumbent_is_error(monkeypatch, mock_gurobi_environment):
+    """Gurobi hits ITERATION_LIMIT (status 7) without finding an incumbent -> ERROR (NOT TIMEOUT)."""
+    fake_model = FakeGrbModel(status=7, sol_count=0)
+    monkeypatch.setattr(
+        "baselines.gurobi_cbmp.build_gurobi_model",
+        lambda N, edges, sb_rotation=True: (fake_model, {}, {}, FakeGrbVar(0.0)),
+    )
+    res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "ERROR"
+    assert stats["status"] != "TIMEOUT"
+    assert stats["best_ub"] == -1
+
+
+def test_gurobi_solution_limit_without_incumbent_is_error(monkeypatch, mock_gurobi_environment):
+    """Gurobi hits SOLUTION_LIMIT (status 10) without finding an incumbent -> ERROR (NOT TIMEOUT)."""
+    fake_model = FakeGrbModel(status=10, sol_count=0)
+    monkeypatch.setattr(
+        "baselines.gurobi_cbmp.build_gurobi_model",
+        lambda N, edges, sb_rotation=True: (fake_model, {}, {}, FakeGrbVar(0.0)),
+    )
+    res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "ERROR"
+    assert stats["status"] != "TIMEOUT"
+    assert stats["best_ub"] == -1
+
+
+def test_gurobi_numeric_error_without_incumbent(monkeypatch, mock_gurobi_environment):
+    """Gurobi terminates due to NUMERIC error (status 12) without incumbent -> NUMERIC_ERROR."""
+    fake_model = FakeGrbModel(status=12, sol_count=0)
+    monkeypatch.setattr(
+        "baselines.gurobi_cbmp.build_gurobi_model",
+        lambda N, edges, sb_rotation=True: (fake_model, {}, {}, FakeGrbVar(0.0)),
+    )
+    res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "NUMERIC_ERROR"
+    assert stats["best_ub"] == -1
+
+
+def test_gurobi_interrupted_without_incumbent(monkeypatch, mock_gurobi_environment):
+    """Gurobi terminates due to INTERRUPTED (status 11) without incumbent -> INTERRUPTED."""
+    fake_model = FakeGrbModel(status=11, sol_count=0)
+    monkeypatch.setattr(
+        "baselines.gurobi_cbmp.build_gurobi_model",
+        lambda N, edges, sb_rotation=True: (fake_model, {}, {}, FakeGrbVar(0.0)),
+    )
+    res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "INTERRUPTED"
+    assert stats["best_ub"] == -1
+
+
+def test_gurobi_iteration_limit_with_incumbent_is_feasible(monkeypatch, mock_gurobi_environment):
+    """Gurobi terminates due to ITERATION_LIMIT (status 7) with incumbent -> FEASIBLE."""
+    fake_model = FakeGrbModel(status=7, sol_count=1, assignment_vals=[1.0, 2.0, 3.0], k_val=1, obj_bound=0.0)
+    fake_f = {u: FakeGrbVar(fake_model._assignment_vals[u]) for u in range(3)}
+    monkeypatch.setattr(
+        "baselines.gurobi_cbmp.build_gurobi_model",
+        lambda N, edges, sb_rotation=True: (fake_model, {}, fake_f, FakeGrbVar(1.0)),
+    )
+    res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "FEASIBLE"
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] == [0, 1, 2]
+
+
+def test_gurobi_solution_limit_with_incumbent_is_feasible(monkeypatch, mock_gurobi_environment):
+    """Gurobi terminates due to SOLUTION_LIMIT (status 10) with incumbent -> FEASIBLE."""
+    fake_model = FakeGrbModel(status=10, sol_count=1, assignment_vals=[1.0, 2.0, 3.0], k_val=1, obj_bound=0.0)
+    fake_f = {u: FakeGrbVar(fake_model._assignment_vals[u]) for u in range(3)}
+    monkeypatch.setattr(
+        "baselines.gurobi_cbmp.build_gurobi_model",
+        lambda N, edges, sb_rotation=True: (fake_model, {}, fake_f, FakeGrbVar(1.0)),
+    )
+    res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "FEASIBLE"
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] == [0, 1, 2]
+
+
+def test_gurobi_suboptimal_with_incumbent_is_feasible(monkeypatch, mock_gurobi_environment):
+    """Gurobi terminates due to SUBOPTIMAL (status 13) with incumbent -> FEASIBLE."""
+    fake_model = FakeGrbModel(status=13, sol_count=1, assignment_vals=[1.0, 2.0, 3.0], k_val=1, obj_bound=0.0)
+    fake_f = {u: FakeGrbVar(fake_model._assignment_vals[u]) for u in range(3)}
+    monkeypatch.setattr(
+        "baselines.gurobi_cbmp.build_gurobi_model",
+        lambda N, edges, sb_rotation=True: (fake_model, {}, fake_f, FakeGrbVar(1.0)),
+    )
+    res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "FEASIBLE"
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] == [0, 1, 2]
