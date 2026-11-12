@@ -2210,8 +2210,11 @@ def test_aggregate_repetition_interleaved_valid_and_invalid_timing():
     # Invariant holds
     assert agg["n_algorithmic"] + agg["n_size_limit"] + agg["n_unavailable"] + agg["n_license_error"] + agg["n_unknown"] == agg["n_total"]
 
-    # Optimal reps solve_times (with fallback): [1.0, 2.0, 3.0, 4.0] -> median is 2.5
-    assert abs(agg["solve_time"] - 2.5) < 1e-5
+    # Optimal reps genuine solve_times: [1.0, 3.0] -> median is 2.0 (no mixing with wall_time)
+    assert abs(agg["solve_time"] - 2.0) < 1e-5
+    assert agg["solve_time_source"] == "solve_time"
+    assert agg["timing_fallback"] is False
+    assert abs(agg["wall_time"] - 3.0) < 1e-5
 
     # PAR2: 4 optimal runs (1.0 + 3.0 + 2.0 + 4.0 = 10.0), 1 timeout (2 * 300 = 600.0), SIZE_LIMIT excluded
     # Denominator: 5. Numerator: 610.0. PAR2 = 610 / 5 = 122.0
@@ -2229,7 +2232,10 @@ def test_is_valid_record_dict_comprehensive():
     assert not is_valid_record_dict(None)
     assert not is_valid_record_dict(np.nan)
     assert not is_valid_record_dict(float("nan"))
+    assert not is_valid_record_dict(np.float32("nan"))
+    assert not is_valid_record_dict(np.float64("nan"))
     assert not is_valid_record_dict(pd.NA)
+    assert not is_valid_record_dict(pd.NaT)
     assert not is_valid_record_dict({})
     assert not is_valid_record_dict(True)
     assert not is_valid_record_dict(False)
@@ -2237,7 +2243,6 @@ def test_is_valid_record_dict_comprehensive():
     assert not is_valid_record_dict(0)
     assert not is_valid_record_dict("OPTIMAL")
     assert not is_valid_record_dict(["list"])
-    assert not is_valid_record_dict({"status": "OPTIMAL"} is None)
 
     # Valid non-empty dicts
     assert is_valid_record_dict({"status": "OPTIMAL"})
@@ -2515,4 +2520,299 @@ def test_export_table_with_missing_and_heterogeneous_solvers(tmp_path):
     assert df_data[df_data["dataset"] == "g1"].iloc[0]["column"] == "sat"
     assert df_data[df_data["dataset"] == "g1"].iloc[0]["termination_reason"] == "ALL_OPTIMAL"
 
+
+def test_make_table_per_dataset_validation_and_formatting(tmp_path):
+    """
+    Test Section 1 requirements for make_table_per_dataset:
+    1. OPTIMAL with valid solve_time.
+    2. OPTIMAL with solve_time=None.
+    3. OPTIMAL with solve_time=NaN.
+    4. TIMEOUT with wall_time=None.
+    5. Status lowercase or mixed case.
+    6. best_ub is valid int.
+    7. best_ub is fractional float, negative, NaN, None, or error string.
+    8. best_lb missing or invalid.
+    9. Export CSV succeeds and produces no fake 0.
+    """
+    import os
+    import math
+    import numpy as np
+    import pandas as pd
+    from analysis.make_tables import make_table_per_dataset
+
+    records = [
+        # 1. OPTIMAL with valid solve_time and valid int best_ub
+        {
+            "groups": ["per_dataset"],
+            "dataset": "ds_valid_opt",
+            "N": 14,
+            "num_edges": 20,
+            "status": "OPTIMAL",
+            "solve_time": 1.2345,
+            "wall_time": 1.5000,
+            "best_ub": 3,
+            "best_lb": 2,
+        },
+        # 2. OPTIMAL with solve_time=None, fractional best_ub (3.7) -> ub rejected, time is '-'
+        {
+            "groups": ["per_dataset"],
+            "dataset": "ds_opt_none_time",
+            "N": 20,
+            "num_edges": 30,
+            "status": "optimal",  # lowercase
+            "solve_time": None,
+            "wall_time": 2.5000,
+            "best_ub": 3.7,       # fractional -> '-'
+            "best_lb": None,
+        },
+        # 3. OPTIMAL with solve_time=NaN, negative best_ub (-1)
+        {
+            "groups": ["per_dataset"],
+            "dataset": "ds_opt_nan_time",
+            "N": 25,
+            "num_edges": 35,
+            "status": "Optimal",  # mixed case
+            "solve_time": float("nan"),
+            "wall_time": float("nan"),
+            "best_ub": -1,        # negative -> '-'
+            "best_lb": "corrupt", # unparseable -> '-'
+        },
+        # 4. TIMEOUT with wall_time=None, solve_time=600.0, valid best_ub=6
+        {
+            "groups": ["per_dataset"],
+            "dataset": "ds_to_none_wall",
+            "N": 30,
+            "num_edges": 45,
+            "status": "Timeout",  # mixed case
+            "solve_time": 600.0,
+            "wall_time": None,
+            "best_ub": 6,
+            "best_lb": 2,
+        },
+        # 5. TIMEOUT with corrupt best_ub ("invalid")
+        {
+            "groups": ["per_dataset"],
+            "dataset": "ds_to_bad_ub",
+            "N": 35,
+            "num_edges": 50,
+            "status": "TIMEOUT",
+            "solve_time": 600.0,
+            "wall_time": 600.5,
+            "best_ub": "invalid",
+            "best_lb": None,
+        },
+    ]
+
+    out_dir = str(tmp_path / "per_dataset_export")
+    df = make_table_per_dataset(records, base_filename="table_per_dataset_test", output_dirs=(out_dir,))
+    assert df is not None
+
+    csv_path = os.path.join(out_dir, "table_per_dataset_test.csv")
+    assert os.path.exists(csv_path)
+
+    df_read = pd.read_csv(csv_path)
+    rows_by_ds = {r["dataset"]: r for _, r in df_read.iterrows()}
+
+    # 1. ds_valid_opt: OPTIMAL, 1.2345, ub=3, ub_minus_lb="0"
+    r1 = rows_by_ds["ds_valid_opt"]
+    assert r1["status"] == "OPTIMAL"
+    assert r1["solve_time"] == "1.2345"
+    assert r1["wall_time"] == "1.5000"
+    assert str(r1["best_ub"]) == "3"
+    assert str(r1["ub_minus_lb"]) == "0"
+
+    # 2. ds_opt_none_time: optimal -> OPTIMAL, solve_time='-', best_ub='-', ub_minus_lb='0'
+    r2 = rows_by_ds["ds_opt_none_time"]
+    assert r2["status"] == "OPTIMAL"
+    assert r2["solve_time"] == "-"
+    assert r2["wall_time"] == "2.5000"
+    assert r2["best_ub"] == "-"
+    assert str(r2["ub_minus_lb"]) == "0"
+
+    # 3. ds_opt_nan_time: Optimal -> OPTIMAL, solve_time='-', wall_time='-', best_ub='-'
+    r3 = rows_by_ds["ds_opt_nan_time"]
+    assert r3["status"] == "OPTIMAL"
+    assert r3["solve_time"] == "-"
+    assert r3["wall_time"] == "-"
+    assert r3["best_ub"] == "-"
+    assert str(r3["ub_minus_lb"]) == "0"
+
+    # 4. ds_to_none_wall: Timeout -> TIMEOUT, solve_time="600.0000", wall_time='-', best_ub=6
+    r4 = rows_by_ds["ds_to_none_wall"]
+    assert r4["status"] == "TIMEOUT"
+    assert r4["solve_time"] == "600.0000"
+    assert r4["wall_time"] == "-"
+    assert str(r4["best_ub"]) == "6"
+    # lb = max(lb_deg(0), 2) = 2 -> ub_minus_lb = 6 - 2 = 4
+    assert str(r4["ub_minus_lb"]) == "4"
+
+    # 5. ds_to_bad_ub: TIMEOUT with invalid best_ub -> best_ub='-', ub_minus_lb='-'
+    r5 = rows_by_ds["ds_to_bad_ub"]
+    assert r5["status"] == "TIMEOUT"
+    assert r5["best_ub"] == "-"
+    assert r5["ub_minus_lb"] == "-"
+
+
+def test_ablation_family_and_methods_family_missing_timing_safety(tmp_path):
+    """
+    Test Section 2 requirements:
+    - Missing candidate/target timing does NOT become 0.0 or a false faster pair.
+    - Missing reference timing does NOT become ratio.
+    - Missing CP-SAT timing does NOT become ratio.
+    - Ratio only computed when BOTH sides have positive valid finite timing.
+    """
+    import os
+    import math
+    import pandas as pd
+    from analysis.make_tables import (
+        make_table_ablation_family,
+        make_table_methods_family,
+        make_table_ablation_phases,
+    )
+
+    out_dir = str(tmp_path / "family_export")
+
+    # Ablation family test with missing target timing and missing reference timing
+    records_ablation = [
+        # Pair (ds1, seed 0): both valid -> target=2.0, ref=4.0 -> ratio 0.5 (faster: 1/1)
+        {"dataset": "ds1", "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 2.0, "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "ds1", "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 4.0, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        # Pair (ds1, seed 1): target missing timing (None) -> MUST NOT become 0.0 and NOT be faster!
+        {"dataset": "ds1", "relabel_seed": 1, "status": "OPTIMAL", "solve_time": None, "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "ds1", "relabel_seed": 1, "status": "OPTIMAL", "solve_time": 3.0, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        # Pair (ds1, seed 2): reference missing timing (NaN) -> MUST NOT be in total_count
+        {"dataset": "ds1", "relabel_seed": 2, "status": "OPTIMAL", "solve_time": 2.0, "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "ds1", "relabel_seed": 2, "status": "OPTIMAL", "solve_time": float("nan"), "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+
+        # Need dummy valid pairs for the other 6 comparisons so table generation doesn't skip
+        # rotation_reflection vs none
+        {"dataset": "ds1", "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 1.0, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": False}},
+        # heuristic_ub vs none
+        {"dataset": "ds1", "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 3.0, "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": True}},
+        # all vs none
+        {"dataset": "ds1", "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 0.8, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
+    ]
+
+    df_ab = make_table_ablation_family(records_ablation, output_dirs=(out_dir,))
+    assert df_ab is not None
+
+    row_rot_vs_none = df_ab[(df_ab["comparison_group"] == "variant vs none") & (df_ab["variant"] == "rotation")].iloc[0]
+    # Exactly 1 valid pair (seed 0). Seed 1 and Seed 2 were excluded because of missing timing.
+    # Total count must be 1, faster count must be 1. (NOT 2/2 or 2/3!)
+    assert row_rot_vs_none["faster_pairs"] == "1/1"
+    assert abs(float(row_rot_vs_none["median_time_ratio"]) - 0.5000) < 1e-4
+
+    # Methods family test with missing CP-SAT timing and missing SAT timing
+    records_methods = [
+        # ds1, seed 0: valid cp (2.0) and sat (1.0) -> ratio 2.0
+        {"dataset": "ds1", "relabel_seed": 0, "method": "cpsat", "status": "OPTIMAL", "solve_time": 2.0},
+        {"dataset": "ds1", "relabel_seed": 0, "method": "sat", "solver": "cadical195", "status": "OPTIMAL", "solve_time": 1.0, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
+        # ds1, seed 1: cpsat missing timing (None) -> excluded from ratios
+        {"dataset": "ds1", "relabel_seed": 1, "method": "cpsat", "status": "OPTIMAL", "solve_time": None},
+        {"dataset": "ds1", "relabel_seed": 1, "method": "sat", "solver": "cadical195", "status": "OPTIMAL", "solve_time": 1.0, "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
+        # ds1, seed 2: sat missing timing (NaN) -> excluded from ratios
+        {"dataset": "ds1", "relabel_seed": 2, "method": "cpsat", "status": "OPTIMAL", "solve_time": 2.0},
+        {"dataset": "ds1", "relabel_seed": 2, "method": "sat", "solver": "cadical195", "status": "OPTIMAL", "solve_time": float("nan"), "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
+    ]
+
+    df_mf = make_table_methods_family(records_methods, output_dirs=(out_dir,))
+    assert df_mf is not None
+    row_ds1 = df_mf[df_mf["dataset"] == "ds1"].iloc[0]
+    # Only seed 0 is valid. Seeds 1 and 2 excluded.
+    assert row_ds1["faster_pairs"] == "0/1"
+    assert abs(float(row_ds1["median_cpsat_to_sat_ratio"]) - 2.0000) < 1e-4
+
+    # Phases ablation test with invalid / empty per_iter_times
+    records_phases = [
+        # Valid per_iter_times: [1.0, 2.0] -> last=2.0, prev=1.0, solve_time=3.0 -> ratio=2/3
+        {"N": 40, "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 3.0, "per_iter_times": [1.0, 2.0], "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        {"N": 40, "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 3.0, "per_iter_times": [1.0, 2.0], "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False}},
+        {"N": 40, "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 3.0, "per_iter_times": [1.0, 2.0], "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": False}},
+        {"N": 40, "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 3.0, "per_iter_times": [1.0, 2.0], "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": True}},
+        {"N": 40, "relabel_seed": 0, "status": "OPTIMAL", "solve_time": 3.0, "per_iter_times": [1.0, 2.0], "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
+        # Additional run with corrupt per_iter_times (empty, non-numeric, negative)
+        {"N": 40, "relabel_seed": 1, "status": "OPTIMAL", "solve_time": 3.0, "per_iter_times": [], "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        {"N": 40, "relabel_seed": 2, "status": "OPTIMAL", "solve_time": 3.0, "per_iter_times": [1.0, "corrupt"], "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+    ]
+    df_ph = make_table_ablation_phases(records_phases, output_dirs=(out_dir,))
+    assert df_ph is not None
+    row_none = df_ph[(df_ph["N"] == 40) & (df_ph["variant"] == "none")].iloc[0]
+    # Corrupt per_iter_times are excluded; only the valid seed 0 run contributes
+    assert abs(float(row_none["median_last_iter_time"]) - 2.0000) < 1e-4
+    assert abs(float(row_none["median_prev_iters_time"]) - 1.0000) < 1e-4
+
+
+def test_aggregation_solve_time_and_wall_time_provenance():
+    """
+    Test Section 3 requirements:
+    1. Pool with ONLY wall_time: solve_time_source="wall_time", timing_fallback=True.
+    2. Pool with neither solve_time nor wall_time: solve_time_source=None, solve_time=None, timing_fallback=False.
+    3. Pool with genuine solve_time: solve_time_source="solve_time", timing_fallback=False.
+    4. Wall time is always independently preserved.
+    """
+    from analysis.make_tables import aggregate_repetition_group
+
+    # 1. Pool with ONLY wall_time
+    reps_wall_only = [
+        {"status": "OPTIMAL", "solve_time": None, "wall_time": 5.0, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": None, "wall_time": 7.0, "time_limit": 600.0},
+    ]
+    agg1 = aggregate_repetition_group(reps_wall_only)
+    assert agg1["solve_time"] == 6.0
+    assert agg1["solve_time_source"] == "wall_time"
+    assert agg1["timing_fallback"] is True
+    assert agg1["wall_time"] == 6.0
+
+    # 2. Pool with neither solve_time nor wall_time
+    reps_none = [
+        {"status": "OPTIMAL", "solve_time": None, "wall_time": None, "time_limit": 600.0},
+    ]
+    agg2 = aggregate_repetition_group(reps_none)
+    assert agg2["solve_time"] is None
+    assert agg2["solve_time_source"] is None
+    assert agg2["timing_fallback"] is False
+    assert agg2["wall_time"] is None
+
+    # 3. Pool with genuine solve_time on all reps
+    reps_genuine = [
+        {"status": "OPTIMAL", "solve_time": 2.0, "wall_time": 2.5, "time_limit": 600.0},
+        {"status": "OPTIMAL", "solve_time": 4.0, "wall_time": 4.5, "time_limit": 600.0},
+    ]
+    agg3 = aggregate_repetition_group(reps_genuine)
+    assert agg3["solve_time"] == 3.0
+    assert agg3["solve_time_source"] == "solve_time"
+    assert agg3["timing_fallback"] is False
+    assert agg3["wall_time"] == 3.5
+
+
+def test_missing_value_types_edge_cases():
+    """
+    Test Section 4 requirements:
+    - np.float32("nan"), np.float64("nan"), pd.NaT across validation helpers.
+    - Consistency across normalize_status, is_optimal_status, categorize_status.
+    - Distinction between ERROR and NUMERIC_ERROR.
+    """
+    import numpy as np
+    import pandas as pd
+    from analysis.make_tables import (
+        validate_best_ub,
+        validate_solve_time,
+        normalize_status,
+        is_optimal_status,
+        categorize_status,
+    )
+
+    for nan_val in [np.float32("nan"), np.float64("nan"), float("nan"), pd.NA, pd.NaT]:
+        assert validate_best_ub(nan_val) is None
+        assert validate_solve_time(nan_val) is None
+        assert normalize_status(nan_val) is None
+        assert not is_optimal_status(nan_val)
+
+    # Status taxonomy distinctions
+    assert normalize_status("ERROR") == "ERROR"
+    assert normalize_status("NUMERIC_ERROR") == "NUMERIC_ERROR"
+    assert categorize_status("ERROR") == "ERROR"
+    assert categorize_status("NUMERIC_ERROR") == "ERROR"  # canonical category maps NUMERIC_ERROR to ERROR
+    assert normalize_status("error") == "ERROR"
+    assert normalize_status("numeric_error") == "NUMERIC_ERROR"
 

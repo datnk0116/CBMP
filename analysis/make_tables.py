@@ -31,12 +31,12 @@ def validate_best_ub(val):
       - Fractional floats (e.g. 3.7, 0.9) - NEVER truncates or rounds
       - Booleans (bool is a subclass of int in Python)
       - Negative values
-      - None, NaN, +inf, -inf
+      - None, NaN, +inf, -inf, pd.NA, pd.NaT
       - Malformed strings, lists, dicts
     Returns:
         int if valid, else None.
     """
-    if val is None or isinstance(val, bool):
+    if val is None or isinstance(val, bool) or val is pd.NA or val is pd.NaT:
         return None
     if isinstance(val, (int, np.integer)):
         return int(val) if val >= 0 else None
@@ -68,11 +68,11 @@ def validate_solve_time(val):
     """
     Validates that a timing metric is a genuine finite, non-negative float.
     Rejects booleans (since bool is a subclass of int), None, negatives, NaN, inf, -inf,
-    and unparseable/invalid strings.
+    pd.NA, pd.NaT, and unparseable/invalid strings.
     Returns:
         float if valid, else None.
     """
-    if val is None or isinstance(val, bool):
+    if val is None or isinstance(val, bool) or val is pd.NA or val is pd.NaT:
         return None
     try:
         f = float(val)
@@ -116,11 +116,11 @@ def extract_time_limit(record, default_timeout=600.0):
 def is_valid_record_dict(val):
     """
     Checks if val is a valid non-empty dictionary representing a result record.
-    Rejects None, NaN, pd.NA, scalars, empty dicts, booleans, and non-dict objects.
+    Rejects None, NaN, pd.NA, pd.NaT, scalars, empty dicts, booleans, and non-dict objects.
     """
-    if val is None or isinstance(val, bool) or val is pd.NA:
+    if val is None or isinstance(val, bool) or val is pd.NA or val is pd.NaT:
         return False
-    if isinstance(val, float) and math.isnan(val):
+    if isinstance(val, (float, np.floating)) and math.isnan(val):
         return False
     if not isinstance(val, dict):
         return False
@@ -134,15 +134,15 @@ def normalize_status(val):
       OPTIMAL, TIMEOUT, INTERRUPTED, FEASIBLE, SIZE_LIMIT, UNAVAILABLE,
       LICENSE_ERROR, INFEASIBLE, NUMERIC_ERROR, ERROR, PARTIAL, UNKNOWN.
     """
-    if val is None or isinstance(val, bool) or val is pd.NA:
+    if val is None or isinstance(val, bool) or val is pd.NA or val is pd.NaT:
         return None
-    if isinstance(val, float) and math.isnan(val):
+    if isinstance(val, (float, np.floating)) and math.isnan(val):
         return None
     if isinstance(val, dict):
         val = val.get("status")
-        if val is None or isinstance(val, bool) or val is pd.NA:
+        if val is None or isinstance(val, bool) or val is pd.NA or val is pd.NaT:
             return None
-        if isinstance(val, float) and math.isnan(val):
+        if isinstance(val, (float, np.floating)) and math.isnan(val):
             return None
 
     s = str(val).strip().upper()
@@ -350,10 +350,16 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
         reps_sorted = sorted(rep_pool, key=_safe_solve_key)
         rep_chosen = reps_sorted[len(reps_sorted) // 2]
 
-    solve_times = [extract_repetition_solve_time(r) for r in rep_pool if extract_repetition_solve_time(r) is not None]
-    wall_times = [validate_solve_time(r.get("wall_time")) for r in rep_pool if validate_solve_time(r.get("wall_time")) is not None]
-    has_fallback = any(validate_solve_time(r.get("solve_time")) is None and validate_solve_time(r.get("wall_time")) is not None for r in rep_pool)
-    has_genuine = any(validate_solve_time(r.get("solve_time")) is not None for r in rep_pool)
+    genuine_solve_times = [
+        validate_solve_time(r.get("solve_time"))
+        for r in rep_pool
+        if validate_solve_time(r.get("solve_time")) is not None
+    ]
+    wall_times = [
+        validate_solve_time(r.get("wall_time"))
+        for r in rep_pool
+        if validate_solve_time(r.get("wall_time")) is not None
+    ]
 
     encode_times = [validate_solve_time(r.get("encode_time")) for r in reps if validate_solve_time(r.get("encode_time")) is not None]
 
@@ -377,18 +383,16 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
     agg["n_license_error"] = n_license_error
     agg["n_unknown"] = n_unknown
 
-    if solve_times:
-        agg["solve_time"] = float(np.median(solve_times))
-        agg["timing_fallback"] = has_fallback
-        if has_fallback and has_genuine:
-            agg["solve_time_source"] = "mixed"
-        elif has_fallback:
-            agg["solve_time_source"] = "wall_time"
-        else:
-            agg["solve_time_source"] = "solve_time"
+    if genuine_solve_times:
+        agg["solve_time"] = float(np.median(genuine_solve_times))
+        agg["timing_fallback"] = False
+        agg["solve_time_source"] = "solve_time"
+    elif wall_times:
+        agg["solve_time"] = float(np.median(wall_times))
+        agg["timing_fallback"] = True
+        agg["solve_time_source"] = "wall_time"
     else:
-        t_chosen = extract_repetition_solve_time(rep_chosen)
-        agg["solve_time"] = t_chosen
+        agg["solve_time"] = None
         agg["timing_fallback"] = False
         agg["solve_time_source"] = None
 
@@ -1244,7 +1248,10 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
             if var_target in vmap and var_ref in vmap
             and is_optimal_status(vmap[var_target])
             and is_optimal_status(vmap[var_ref])
-            and (extract_repetition_solve_time(vmap[var_ref]) or 0.0) > 0
+            and extract_repetition_solve_time(vmap[var_target]) is not None
+            and extract_repetition_solve_time(vmap[var_target]) > 0
+            and extract_repetition_solve_time(vmap[var_ref]) is not None
+            and extract_repetition_solve_time(vmap[var_ref]) > 0
         )
         if n_pairs < 1:
             print(f"[WARNING] Skipping table_ablation_family: comparison '{var_target} vs {var_ref}' has 0 valid pairs (>=1 required).")
@@ -1260,14 +1267,18 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
                 rec_t = vmap[var_target]
                 rec_r = vmap[var_ref]
                 if is_optimal_status(rec_t) and is_optimal_status(rec_r):
-                    t_target = extract_repetition_solve_time(rec_t) or 0.0
-                    t_ref = extract_repetition_solve_time(rec_r) or 0.0
-                    if t_ref > 0:
+                    t_target = extract_repetition_solve_time(rec_t)
+                    t_ref = extract_repetition_solve_time(rec_r)
+                    if (
+                        t_target is not None and math.isfinite(t_target) and t_target > 0
+                        and t_ref is not None and math.isfinite(t_ref) and t_ref > 0
+                    ):
                         ratio = t_target / t_ref
-                        ratios.append(ratio)
-                        total_count += 1
-                        if t_target < t_ref:
-                            faster_count += 1
+                        if math.isfinite(ratio) and ratio > 0:
+                            ratios.append(ratio)
+                            total_count += 1
+                            if t_target < t_ref:
+                                faster_count += 1
 
         if ratios:
             med = float(np.median(ratios))
@@ -1313,7 +1324,10 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
                     if d == ds and var_target in vmap and var_ref in vmap
                     and is_optimal_status(vmap[var_target])
                     and is_optimal_status(vmap[var_ref])
-                    and (extract_repetition_solve_time(vmap[var_ref]) or 0.0) > 0
+                    and extract_repetition_solve_time(vmap[var_target]) is not None
+                    and extract_repetition_solve_time(vmap[var_target]) > 0
+                    and extract_repetition_solve_time(vmap[var_ref]) is not None
+                    and extract_repetition_solve_time(vmap[var_ref]) > 0
                 )
                 if count < 1:
                     can_generate_pg = False
@@ -1336,14 +1350,18 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
                         rec_t = vmap[var_target]
                         rec_r = vmap[var_ref]
                         if is_optimal_status(rec_t) and is_optimal_status(rec_r):
-                            t_target = extract_repetition_solve_time(rec_t) or 0.0
-                            t_ref = extract_repetition_solve_time(rec_r) or 0.0
-                            if t_ref > 0:
+                            t_target = extract_repetition_solve_time(rec_t)
+                            t_ref = extract_repetition_solve_time(rec_r)
+                            if (
+                                t_target is not None and math.isfinite(t_target) and t_target > 0
+                                and t_ref is not None and math.isfinite(t_ref) and t_ref > 0
+                            ):
                                 ratio = t_target / t_ref
-                                ratios.append(ratio)
-                                total_count += 1
-                                if t_target < t_ref:
-                                    faster_count += 1
+                                if math.isfinite(ratio) and ratio > 0:
+                                    ratios.append(ratio)
+                                    total_count += 1
+                                    if t_target < t_ref:
+                                        faster_count += 1
                 if ratios:
                     med = float(np.median(ratios))
                     min_r = float(np.min(ratios))
@@ -1412,11 +1430,27 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
         print("[WARNING] Skipping table_ablation_phases: no sizes found.")
         return None
 
-    # Condition: each (size, variant) must have >= 1 valid OPTIMAL record
+    def _clean_iter_times(r):
+        pit = r.get("per_iter_times")
+        if not isinstance(pit, (list, tuple)) or len(pit) == 0:
+            return None
+        cleaned = []
+        for x in pit:
+            xv = validate_solve_time(x)
+            if xv is None or not math.isfinite(xv):
+                return None
+            cleaned.append(xv)
+        return cleaned
+
+    # Condition: each (size, variant) must have >= 1 valid OPTIMAL record with valid per_iter_times
     can_generate_phases = True
     for n in sizes:
         for var in variants:
-            count = sum(1 for r in family_recs if r.get("N") == n and get_var(r) == var and is_optimal_status(r))
+            count = sum(
+                1 for r in family_recs
+                if r.get("N") == n and get_var(r) == var and is_optimal_status(r)
+                and _clean_iter_times(r) is not None
+            )
             if count < 1:
                 can_generate_phases = False
                 break
@@ -1436,18 +1470,17 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
 
             for r in family_recs:
                 if r.get("N") == n and get_var(r) == var and is_optimal_status(r):
-                    per_iter = r.get("per_iter_times", [])
-                    st = extract_repetition_solve_time(r) or 0.0
-                    if per_iter:
-                        last_t = per_iter[-1]
-                        prev_t = sum(per_iter[:-1])
-                    else:
-                        last_t = 0.0
-                        prev_t = 0.0
-                    last_times.append(last_t)
-                    prev_times.append(prev_t)
-                    if st > 0:
-                        ratios.append(last_t / st)
+                    cleaned_iter = _clean_iter_times(r)
+                    if cleaned_iter is not None and len(cleaned_iter) > 0:
+                        last_t = cleaned_iter[-1]
+                        prev_t = sum(cleaned_iter[:-1])
+                        last_times.append(last_t)
+                        prev_times.append(prev_t)
+                        st = extract_repetition_solve_time(r)
+                        if st is not None and math.isfinite(st) and st > 0:
+                            ratio = last_t / st
+                            if math.isfinite(ratio) and ratio >= 0:
+                                ratios.append(ratio)
 
             med_last = float(np.median(last_times)) if last_times else float("nan")
             med_prev = float(np.median(prev_times)) if prev_times else float("nan")
@@ -1517,20 +1550,31 @@ def make_table_per_dataset(records, base_filename="table_per_dataset", output_di
     rows = []
     for ds in ds_sorted:
         r = by_ds[ds]
-        st = r.get("status")
-        ub = r.get("best_ub")
-        solve_t = r.get("solve_time", 0.0)
-        wall_t = r.get("wall_time", 0.0)
+        st = normalize_status(r.get("status")) or (str(r.get("status")) if r.get("status") is not None else "-")
+        ub_val = validate_best_ub(r.get("best_ub"))
+        ub_str = str(ub_val) if ub_val is not None else "-"
+
+        solve_t_val = validate_solve_time(r.get("solve_time"))
+        solve_t_str = f"{solve_t_val:.4f}" if solve_t_val is not None else "-"
+
+        wall_t_val = validate_solve_time(r.get("wall_time"))
+        wall_t_str = f"{wall_t_val:.4f}" if wall_t_val is not None else "-"
+
         n_iters = r.get("num_iterations", len(r.get("per_iter_times", [])))
 
         lb_deg = get_lb_degree(ds)
-        best_lb = r.get("best_lb")
-        lb_solver = best_lb if best_lb is not None else "-"
-        lb = max(lb_deg, best_lb) if best_lb is not None else lb_deg
-        if st == "TIMEOUT":
-            ub_minus_lb_str = str(ub - lb) if (ub is not None and ub >= 0) else "-"
-        elif st == "OPTIMAL":
+        best_lb_raw = r.get("best_lb")
+        best_lb_val = validate_best_ub(best_lb_raw)
+        lb_solver = best_lb_val if best_lb_val is not None else "-"
+        lb = max(lb_deg, best_lb_val) if best_lb_val is not None else lb_deg
+
+        if st == "OPTIMAL":
             ub_minus_lb_str = "0"
+        elif st == "TIMEOUT":
+            if ub_val is not None and lb is not None:
+                ub_minus_lb_str = str(ub_val - lb)
+            else:
+                ub_minus_lb_str = "-"
         else:
             ub_minus_lb_str = "-"
 
@@ -1539,13 +1583,13 @@ def make_table_per_dataset(records, base_filename="table_per_dataset", output_di
             "N": r.get("N", 0),
             "|E|": r.get("num_edges", 0),
             "status": st,
-            "best_ub": ub if ub is not None else "-",
+            "best_ub": ub_str,
             "lb_degree": lb_deg,
             "lb_solver": lb_solver,
             "lb": lb,
             "ub_minus_lb": ub_minus_lb_str,
-            "solve_time": f"{solve_t:.4f}",
-            "wall_time": f"{wall_t:.4f}",
+            "solve_time": solve_t_str,
+            "wall_time": wall_t_str,
             "n_sat_iterations": n_iters,
         })
 
@@ -1596,14 +1640,18 @@ def make_table_methods_family(records, base_filename="table_methods_family", out
                 rec_cp = mmap["cpsat"]
                 rec_sat = mmap["sat"]
                 if is_optimal_status(rec_cp) and is_optimal_status(rec_sat):
-                    t_cp = extract_repetition_solve_time(rec_cp) or 0.0
-                    t_sat = extract_repetition_solve_time(rec_sat) or 0.0
-                    if t_sat > 0:
+                    t_cp = extract_repetition_solve_time(rec_cp)
+                    t_sat = extract_repetition_solve_time(rec_sat)
+                    if (
+                        t_cp is not None and math.isfinite(t_cp) and t_cp > 0
+                        and t_sat is not None and math.isfinite(t_sat) and t_sat > 0
+                    ):
                         ratio = t_cp / t_sat
-                        ratios.append(ratio)
-                        total_count += 1
-                        if t_cp < t_sat:
-                            faster_count += 1
+                        if math.isfinite(ratio) and ratio > 0:
+                            ratios.append(ratio)
+                            total_count += 1
+                            if t_cp < t_sat:
+                                faster_count += 1
         if ratios:
             med = float(np.median(ratios))
             min_r = float(np.min(ratios))
@@ -1682,20 +1730,25 @@ def make_table_methods_large(records, base_filename="table_methods_large", outpu
         lb_deg = get_lb_degree(ds)
 
         rec_sat = sat_recs.get(ds, {})
-        sat_st = rec_sat.get("status", "-")
-        sat_ub = rec_sat.get("best_ub", "-")
-        sat_time = f"{rec_sat.get('solve_time', 0.0):.4f}" if "solve_time" in rec_sat else "-"
+        sat_st = normalize_status(rec_sat.get("status")) or (str(rec_sat.get("status")) if rec_sat.get("status") is not None else "-")
+        sat_ub_val = validate_best_ub(rec_sat.get("best_ub"))
+        sat_ub = sat_ub_val if sat_ub_val is not None else "-"
+        sat_t = validate_solve_time(rec_sat.get("solve_time"))
+        sat_time = f"{sat_t:.4f}" if sat_t is not None else "-"
 
         rec_cp = cpsat_recs.get(ds, {})
-        cp_st = rec_cp.get("status", "-")
-        cp_ub = rec_cp.get("best_ub", "-")
+        cp_st = normalize_status(rec_cp.get("status")) or (str(rec_cp.get("status")) if rec_cp.get("status") is not None else "-")
+        cp_ub_val = validate_best_ub(rec_cp.get("best_ub"))
+        cp_ub = cp_ub_val if cp_ub_val is not None else "-"
         raw_cp_lb = rec_cp.get("best_lb")
-        cpsat_solver_lb = raw_cp_lb if raw_cp_lb is not None else "-"
-        if raw_cp_lb is not None:
-            lb_combined = max(lb_deg, raw_cp_lb)
+        val_cp_lb = validate_best_ub(raw_cp_lb)
+        cpsat_solver_lb = val_cp_lb if val_cp_lb is not None else "-"
+        if val_cp_lb is not None:
+            lb_combined = max(lb_deg, val_cp_lb)
         else:
             lb_combined = lb_deg if (cp_st != "-" or sat_st != "-") else "-"
-        cp_time = f"{rec_cp.get('solve_time', 0.0):.4f}" if "solve_time" in rec_cp else "-"
+        cp_t = validate_solve_time(rec_cp.get("solve_time"))
+        cp_time = f"{cp_t:.4f}" if cp_t is not None else "-"
 
         rows.append({
             "dataset": ds,
@@ -1762,14 +1815,18 @@ def make_table_methods_large_seeds(records, base_filename="table_methods_large_s
     for ds in target_datasets:
         for seed in seeds:
             rec_sat = sat_map.get((ds, seed), {})
-            sat_st = rec_sat.get("status", "-")
-            sat_ub = rec_sat.get("best_ub", "-")
-            sat_time = f"{rec_sat.get('solve_time', 0.0):.4f}" if "solve_time" in rec_sat else "-"
+            sat_st = normalize_status(rec_sat.get("status")) or (str(rec_sat.get("status")) if rec_sat.get("status") is not None else "-")
+            sat_ub_val = validate_best_ub(rec_sat.get("best_ub"))
+            sat_ub = sat_ub_val if sat_ub_val is not None else "-"
+            sat_t = validate_solve_time(rec_sat.get("solve_time"))
+            sat_time = f"{sat_t:.4f}" if sat_t is not None else "-"
 
             rec_cp = cpsat_map.get((ds, seed), {})
-            cp_st = rec_cp.get("status", "-")
-            cp_ub = rec_cp.get("best_ub", "-")
-            cp_time = f"{rec_cp.get('solve_time', 0.0):.4f}" if "solve_time" in rec_cp else "-"
+            cp_st = normalize_status(rec_cp.get("status")) or (str(rec_cp.get("status")) if rec_cp.get("status") is not None else "-")
+            cp_ub_val = validate_best_ub(rec_cp.get("best_ub"))
+            cp_ub = cp_ub_val if cp_ub_val is not None else "-"
+            cp_t = validate_solve_time(rec_cp.get("solve_time"))
+            cp_time = f"{cp_t:.4f}" if cp_t is not None else "-"
 
             seed_str = str(seed) if seed is not None else "original"
             rows.append({
