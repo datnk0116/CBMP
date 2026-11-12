@@ -1353,6 +1353,128 @@ def test_export_table_data_csv_schema_contract_when_empty_or_no_dict(tmp_path):
     assert len(df3) == 0
 
 
+@pytest.mark.parametrize("invalid_par2", [float("nan"), float("inf"), float("-inf"), -1.0, "invalid", [10.0]])
+def test_par2_partial_invalid_par2_falls_back_to_reps(invalid_par2):
+    """
+    When a PARTIAL record has an invalid par2 (NaN, inf, negative, string, list),
+    compute_summary_stats must fall back to recalculating exact PAR2 from individual reps.
+    """
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    # Reps: OPTIMAL with solve_time 10.0, TIMEOUT at 600.0 (penalty 1200.0)
+    # Exact PAR2 = (10.0 + 1200.0) / 2 = 605.0
+    rec = {
+        "status": "PARTIAL",
+        "par2": invalid_par2,
+        "solve_time": 10.0,
+        "n_optimal": 1,
+        "n_timeout": 1,
+        "n_total": 2,
+        "n_algorithmic": 2,
+        "reps": [
+            {"status": "OPTIMAL", "solve_time": 10.0, "time_limit": 600.0},
+            {"status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0},
+        ],
+    }
+
+    df_raw = pd.DataFrame({"sol_p": [rec]}, index=["ds_fallback"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_p"], timeout=600.0)
+
+    expected = (10.0 + 2.0 * 600.0) / 2.0  # 605.0
+    assert abs(par2["sol_p"] - expected) < 1e-5
+
+
+def test_par2_partial_valid_par2_prioritized_over_reps():
+    """
+    When a PARTIAL record already has a valid precomputed par2,
+    compute_summary_stats must preserve and prioritize that exact precomputed value.
+    """
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    rec = {
+        "status": "PARTIAL",
+        "par2": 777.888,
+        "solve_time": 5.0,
+        "n_optimal": 1,
+        "n_total": 2,
+        "n_algorithmic": 2,
+        "reps": [
+            {"status": "OPTIMAL", "solve_time": 10.0, "time_limit": 600.0},
+            {"status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0},
+        ],
+    }
+
+    df_raw = pd.DataFrame({"sol_prioritized": [rec]}, index=["ds_pri"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_prioritized"], timeout=600.0)
+    assert abs(par2["sol_prioritized"] - 777.888) < 1e-5
+
+
+def test_par2_partial_no_par2_no_reps_yields_nan():
+    """
+    When a PARTIAL record has neither valid par2 nor reps,
+    compute_summary_stats must NOT reconstruct fake PAR2 from median; PAR2 must be NaN.
+    """
+    import math
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    rec = {
+        "status": "PARTIAL",
+        "solve_time": 15.0,
+        "n_optimal": 1,
+        "n_total": 3,
+        "n_algorithmic": 3,
+    }
+
+    df_raw = pd.DataFrame({"sol_unrecoverable": [rec]}, index=["ds_unrec"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_unrecoverable"], timeout=600.0)
+    assert math.isnan(par2["sol_unrecoverable"])
+
+
+def test_par2_exact_numerator_and_denominator_with_exclusions():
+    """
+    Test exact calculation of PAR2 numerator and denominator across diverse repetition types:
+    - 2 OPTIMAL reps: 5.0s, 15.0s
+    - 1 FEASIBLE rep: penalized 2 * 300 = 600.0s
+    - 1 TIMEOUT rep: penalized 2 * 300 = 600.0s
+    - 1 SIZE_LIMIT rep: non-algorithmic, EXCLUDED from numerator and denominator
+    - 1 UNAVAILABLE rep: non-algorithmic, EXCLUDED from numerator and denominator
+    Denominator = 4 (only algorithmic runs).
+    Numerator = 5.0 + 15.0 + 600.0 + 600.0 = 1220.0
+    PAR2 = 1220.0 / 4 = 305.0
+    """
+    import pandas as pd
+    from analysis.make_tables import compute_summary_stats
+
+    rec = {
+        "status": "PARTIAL",
+        "solve_time": 10.0,
+        "n_optimal": 2,
+        "n_feasible": 1,
+        "n_timeout": 1,
+        "n_size_limit": 1,
+        "n_unavailable": 1,
+        "n_total": 6,
+        "n_algorithmic": 4,
+        "reps": [
+            {"status": "OPTIMAL", "solve_time": 5.0, "time_limit": 300.0},
+            {"status": "OPTIMAL", "solve_time": 15.0, "time_limit": 300.0},
+            {"status": "FEASIBLE", "best_ub": 3, "solve_time": 300.0, "time_limit": 300.0},
+            {"status": "TIMEOUT", "solve_time": 300.0, "time_limit": 300.0},
+            {"status": "SIZE_LIMIT", "solve_time": 0.01, "time_limit": 300.0},
+            {"status": "UNAVAILABLE", "solve_time": 0.0, "time_limit": 300.0},
+        ],
+    }
+
+    df_raw = pd.DataFrame({"sol_denom": [rec]}, index=["ds_denom"])
+    solved, sl, par2, speedup = compute_summary_stats(df_raw, ["sol_denom"], timeout=300.0)
+
+    expected_par2 = (5.0 + 15.0 + 600.0 + 600.0) / 4.0
+    assert abs(par2["sol_denom"] - expected_par2) < 1e-5
+    assert sl["sol_denom"] == 0  # rec status is PARTIAL, sl_count counts cell status == SIZE_LIMIT
+
 
 
 

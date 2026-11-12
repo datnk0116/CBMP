@@ -618,10 +618,9 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
                 if ds in baseline_times and t > 0:
                     ratios.append(baseline_times[ds] / t)
             elif st == "PARTIAL":
-                if "par2" in rec and rec.get("par2") is not None:
-                    p = validate_solve_time(rec["par2"])
-                    if p is not None:
-                        par2_vals.append(p)
+                p = validate_solve_time(rec.get("par2"))
+                if p is not None:
+                    par2_vals.append(p)
                 elif "reps" in rec and rec["reps"]:
                     rep_par2s = []
                     for r_item in rec["reps"]:

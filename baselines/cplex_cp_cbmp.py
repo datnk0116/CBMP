@@ -222,22 +222,33 @@ def solve_cplex_cp(
             return default
         return default
 
+    def _safe_bool_call(obj, method_name) -> bool:
+        """
+        Safely invokes a boolean solver result method.
+        Accepts only genuine boolean types (type(value) is bool).
+        Rejects None, strings (even 'true'/'false'), integers (0, 1), and other objects.
+        """
+        val = _safe_sol_call(obj, method_name, default=None)
+        if type(val) is bool:
+            return val
+        return False
+
     raw_sol_status = _safe_sol_call(sol, "get_solve_status", default=None)
     raw_stop_cause = _safe_sol_call(sol, "get_stop_cause", default=None)
     raw_fail_status = _safe_sol_call(sol, "get_fail_status", default=None)
     raw_search_status = _safe_sol_call(sol, "get_search_status", default=None)
-    has_solution = bool(_safe_sol_call(sol, "is_solution", default=False))
+    has_solution = _safe_bool_call(sol, "is_solution")
 
-    sol_status = str(raw_sol_status) if raw_sol_status is not None else ""
-    stop_cause = str(raw_stop_cause) if raw_stop_cause is not None else ""
-    fail_status = str(raw_fail_status) if raw_fail_status is not None else ""
-    search_status = str(raw_search_status) if raw_search_status is not None else ""
+    sol_status = raw_sol_status.strip() if isinstance(raw_sol_status, str) else ""
+    stop_cause = raw_stop_cause.strip() if isinstance(raw_stop_cause, str) else ""
+    fail_status = raw_fail_status.strip() if isinstance(raw_fail_status, str) else ""
+    search_status = raw_search_status.strip() if isinstance(raw_search_status, str) else ""
 
     # Preserve raw solver status fields for auditability
-    stats["solve_status"] = sol_status
-    stats["stop_cause"] = stop_cause
-    stats["fail_status"] = fail_status
-    stats["search_status"] = search_status
+    stats["solve_status"] = str(raw_sol_status) if raw_sol_status is not None else ""
+    stats["stop_cause"] = str(raw_stop_cause) if raw_stop_cause is not None else ""
+    stats["fail_status"] = str(raw_fail_status) if raw_fail_status is not None else ""
+    stats["search_status"] = str(raw_search_status) if raw_search_status is not None else ""
 
     # Extract lower bound if exposed
     best_lb = None
@@ -277,7 +288,7 @@ def solve_cplex_cp(
             assignment = None
 
     # Determine termination cause categories
-    is_solution_optimal = bool(_safe_sol_call(sol, "is_solution_optimal", default=False))
+    is_solution_optimal = _safe_bool_call(sol, "is_solution_optimal")
     is_optimal = (sol_status.lower() == "optimal") or is_solution_optimal
 
     clean_stop_cause = stop_cause.lower().replace(" ", "").replace("_", "")

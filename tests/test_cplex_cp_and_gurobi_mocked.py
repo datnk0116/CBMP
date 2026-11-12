@@ -778,6 +778,8 @@ def test_cplex_cp_api_malformed_values(mock_cpo_environment):
             return 999
         def get_search_status(self):
             return False
+        def __getitem__(self, var):
+            return 1
 
     malformed_sol = MalformedSolution()
     with patch("docplex.cp.model.CpoModel.solve", return_value=malformed_sol):
@@ -785,6 +787,138 @@ def test_cplex_cp_api_malformed_values(mock_cpo_environment):
 
     assert stats["status"] == "ERROR"
     assert stats["best_ub"] == -1
+
+
+def test_cplex_cp_is_solution_string_truthy_not_accepted(mock_cpo_environment):
+    """
+    CPLEX CP is_solution() returns 'false' or 'not_a_bool' (truthy strings).
+    Even with valid assignment retrievable via __getitem__, string truthiness must NOT be
+    accepted as boolean True.
+    """
+    class StringSolution:
+        def is_solution(self):
+            return "false"
+        def get_solve_status(self):
+            return "Feasible"
+        def __getitem__(self, var):
+            name = getattr(var, "name", str(var))
+            if "k" in name:
+                return 1
+            for u in range(3):
+                if f"f_{u}" in name:
+                    return u + 1
+            return 1
+
+    str_sol = StringSolution()
+    with patch("docplex.cp.model.CpoModel.solve", return_value=str_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_is_solution_not_a_bool_with_valid_assignment(mock_cpo_environment):
+    """is_solution() returns 'not_a_bool' with valid assignment -> not accepted as solution."""
+    class NonBoolSolution:
+        def is_solution(self):
+            return "not_a_bool"
+        def __getitem__(self, var):
+            name = getattr(var, "name", str(var))
+            if "k" in name:
+                return 1
+            for u in range(3):
+                if f"f_{u}" in name:
+                    return u + 1
+            return 1
+
+    with patch("docplex.cp.model.CpoModel.solve", return_value=NonBoolSolution()):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+
+
+@pytest.mark.parametrize("malformed_optimal", ["false", "not_a_bool", 1, 0, None, [True]])
+def test_cplex_cp_is_solution_optimal_malformed_not_accepted(mock_cpo_environment, malformed_optimal):
+    """
+    When is_solution() is genuine True and assignment is valid,
+    malformed is_solution_optimal() (strings like 'false', numbers 1/0, None, list)
+    must NOT be classified as OPTIMAL.
+    """
+    class ValidIncumbentMalformedOptimal:
+        def is_solution(self):
+            return True
+        def is_solution_optimal(self):
+            return malformed_optimal
+        def get_solve_status(self):
+            return "Feasible"
+        def __getitem__(self, var):
+            name = getattr(var, "name", str(var))
+            if "k" in name:
+                return 1
+            for u in range(3):
+                if f"f_{u}" in name:
+                    return u + 1
+            return 1
+
+    sol = ValidIncumbentMalformedOptimal()
+    with patch("docplex.cp.model.CpoModel.solve", return_value=sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    # Valid incumbent preserved, but NOT optimal
+    assert stats["status"] == "FEASIBLE"
+    assert stats["status"] != "OPTIMAL"
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] == [0, 1, 2]
+
+
+def test_cplex_cp_is_solution_optimal_true_but_invalid_assignment(mock_cpo_environment):
+    """
+    is_solution_optimal() returns True, but assignment has duplicate labels -> ERROR.
+    """
+    class BrokenAssignmentOptimal:
+        def is_solution(self):
+            return True
+        def is_solution_optimal(self):
+            return True
+        def get_solve_status(self):
+            return "Optimal"
+        def __getitem__(self, var):
+            name = getattr(var, "name", str(var))
+            if "k" in name:
+                return 1
+            # Invalid non-permutation: duplicate position 1
+            return 1
+
+    broken_sol = BrokenAssignmentOptimal()
+    with patch("docplex.cp.model.CpoModel.solve", return_value=broken_sol):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "ERROR"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None
+
+
+def test_cplex_cp_genuine_booleans_work(mock_cpo_environment):
+    """True and False booleans operate as expected."""
+    # Case 1: True + True -> OPTIMAL
+    sol_opt = FakeCpoSolution(solve_status="Optimal", has_solution=True, assignment=[1, 2, 3], obj_val=1)
+    with patch("docplex.cp.model.CpoModel.solve", return_value=sol_opt):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "OPTIMAL"
+
+    # Case 2: True + False -> FEASIBLE
+    sol_feas = FakeCpoSolution(solve_status="Feasible", has_solution=True, assignment=[1, 2, 3], obj_val=1)
+    with patch("docplex.cp.model.CpoModel.solve", return_value=sol_feas):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "FEASIBLE"
+
+    # Case 3: False -> ERROR (no solution)
+    sol_no = FakeCpoSolution(solve_status="Unknown", has_solution=False)
+    with patch("docplex.cp.model.CpoModel.solve", return_value=sol_no):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "ERROR"
 
 
 def test_cplex_cp_partial_apis_functional(mock_cpo_environment):
@@ -904,6 +1038,7 @@ def test_gurobi_node_limit_without_incumbent_is_error(monkeypatch, mock_gurobi_e
     res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
     assert stats["status"] == "ERROR"
     assert stats["status"] != "TIMEOUT"
+    assert stats["termination_reason"] == "search_limit"
     assert stats["best_ub"] == -1
     assert stats["assignment"] is None
 
@@ -918,6 +1053,7 @@ def test_gurobi_iteration_limit_without_incumbent_is_error(monkeypatch, mock_gur
     res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
     assert stats["status"] == "ERROR"
     assert stats["status"] != "TIMEOUT"
+    assert stats["termination_reason"] == "search_limit"
     assert stats["best_ub"] == -1
 
 
@@ -931,6 +1067,7 @@ def test_gurobi_solution_limit_without_incumbent_is_error(monkeypatch, mock_guro
     res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
     assert stats["status"] == "ERROR"
     assert stats["status"] != "TIMEOUT"
+    assert stats["termination_reason"] == "search_limit"
     assert stats["best_ub"] == -1
 
 
@@ -943,6 +1080,7 @@ def test_gurobi_numeric_error_without_incumbent(monkeypatch, mock_gurobi_environ
     )
     res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
     assert stats["status"] == "NUMERIC_ERROR"
+    assert stats["termination_reason"] == "numeric_error"
     assert stats["best_ub"] == -1
 
 
@@ -955,6 +1093,7 @@ def test_gurobi_interrupted_without_incumbent(monkeypatch, mock_gurobi_environme
     )
     res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
     assert stats["status"] == "INTERRUPTED"
+    assert stats["termination_reason"] == "interrupted"
     assert stats["best_ub"] == -1
 
 
@@ -968,6 +1107,7 @@ def test_gurobi_iteration_limit_with_incumbent_is_feasible(monkeypatch, mock_gur
     )
     res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
     assert stats["status"] == "FEASIBLE"
+    assert stats["termination_reason"] == "search_limit"
     assert stats["best_ub"] == 1
     assert stats["assignment"] == [0, 1, 2]
 
@@ -982,6 +1122,7 @@ def test_gurobi_solution_limit_with_incumbent_is_feasible(monkeypatch, mock_guro
     )
     res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
     assert stats["status"] == "FEASIBLE"
+    assert stats["termination_reason"] == "search_limit"
     assert stats["best_ub"] == 1
     assert stats["assignment"] == [0, 1, 2]
 
@@ -996,5 +1137,21 @@ def test_gurobi_suboptimal_with_incumbent_is_feasible(monkeypatch, mock_gurobi_e
     )
     res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
     assert stats["status"] == "FEASIBLE"
+    assert stats["termination_reason"] == "search_limit"
     assert stats["best_ub"] == 1
     assert stats["assignment"] == [0, 1, 2]
+
+
+def test_gurobi_optimal_with_invalid_assignment_yields_error(monkeypatch, mock_gurobi_environment):
+    """Gurobi reports GRB.OPTIMAL but assignment fails validation -> ERROR."""
+    fake_model = FakeGrbModel(status=2, sol_count=1, assignment_vals=[1.0, 1.0, 3.0], k_val=1)
+    fake_f = {u: FakeGrbVar(fake_model._assignment_vals[u]) for u in range(3)}
+    monkeypatch.setattr(
+        "baselines.gurobi_cbmp.build_gurobi_model",
+        lambda N, edges, sb_rotation=True: (fake_model, {}, fake_f, FakeGrbVar(1.0)),
+    )
+    res, stats = solve_gurobi(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+    assert stats["status"] == "ERROR"
+    assert stats["termination_reason"] == "validation_error"
+    assert stats["best_ub"] == -1
+    assert stats["assignment"] is None

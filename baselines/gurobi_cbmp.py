@@ -237,44 +237,58 @@ def solve_gurobi(
             status = "OPTIMAL"
             best_ub = actual_bw
             stats["assignment"] = assignment
+            stats["termination_reason"] = "optimal"
         else:
             status = "ERROR"
             best_ub = -1
             stats["assignment"] = None
+            stats["termination_reason"] = "validation_error"
     elif valid_solution:
         # Feasible incumbent found, but optimality not proven
         best_ub = actual_bw
         stats["assignment"] = assignment
         if grb_status == GRB.TIME_LIMIT:
             status = "TIMEOUT"
+            stats["termination_reason"] = "time_limit"
         elif grb_status == GRB.INTERRUPTED:
             status = "INTERRUPTED"
+            stats["termination_reason"] = "interrupted"
         elif grb_status in (GRB.NODE_LIMIT, GRB.ITERATION_LIMIT, GRB.SOLUTION_LIMIT, GRB.SUBOPTIMAL):
             status = "FEASIBLE"
+            stats["termination_reason"] = "search_limit"
         else:
             status = "FEASIBLE"
+            stats["termination_reason"] = "feasible_incumbent"
     elif sol_count > 0 and not valid_solution:
         # Candidate solution rejected by independent validation or objective mismatch
         status = "ERROR"
         best_ub = -1
         stats["assignment"] = None
+        stats["termination_reason"] = "validation_error"
     else:
         # No solution (sol_count == 0)
         best_ub = -1
         stats["assignment"] = None
         if grb_status == GRB.TIME_LIMIT:
             status = "TIMEOUT"
+            stats["termination_reason"] = "time_limit"
         elif grb_status in (GRB.INFEASIBLE, GRB.INF_OR_UNBD):
             status = "INFEASIBLE"
+            stats["termination_reason"] = "infeasible"
         elif grb_status == GRB.INTERRUPTED:
             status = "INTERRUPTED"
+            stats["termination_reason"] = "interrupted"
         elif grb_status == GRB.NUMERIC:
             status = "NUMERIC_ERROR"
+            stats["termination_reason"] = "numeric_error"
         elif grb_status in (GRB.NODE_LIMIT, GRB.ITERATION_LIMIT, GRB.SOLUTION_LIMIT):
             status = "ERROR"
-            stats["error"] = f"Gurobi terminated with search limit status {grb_status} without finding a solution"
+            stats["termination_reason"] = "search_limit"
+            stats["error"] = f"Gurobi reached search limit (status {grb_status}) without finding a feasible solution"
         else:
             status = "ERROR"
+            stats["termination_reason"] = "unknown_error"
+            stats["error"] = f"Gurobi terminated with unclassified status {grb_status} without solution"
 
     if status == "OPTIMAL" and best_lb is None:
         best_lb = best_ub
