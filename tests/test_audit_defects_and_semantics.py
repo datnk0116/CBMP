@@ -2218,5 +2218,301 @@ def test_aggregate_repetition_interleaved_valid_and_invalid_timing():
     assert abs(agg["par2"] - 122.0) < 1e-5
 
 
+def test_is_valid_record_dict_comprehensive():
+    """Verify is_valid_record_dict safely filters missing values, scalars, booleans, and empty dicts."""
+    import math
+    import numpy as np
+    import pandas as pd
+    from analysis.make_tables import is_valid_record_dict
+
+    # Invalid values
+    assert not is_valid_record_dict(None)
+    assert not is_valid_record_dict(np.nan)
+    assert not is_valid_record_dict(float("nan"))
+    assert not is_valid_record_dict(pd.NA)
+    assert not is_valid_record_dict({})
+    assert not is_valid_record_dict(True)
+    assert not is_valid_record_dict(False)
+    assert not is_valid_record_dict(123)
+    assert not is_valid_record_dict(0)
+    assert not is_valid_record_dict("OPTIMAL")
+    assert not is_valid_record_dict(["list"])
+    assert not is_valid_record_dict({"status": "OPTIMAL"} is None)
+
+    # Valid non-empty dicts
+    assert is_valid_record_dict({"status": "OPTIMAL"})
+    assert is_valid_record_dict({"status": "TIMEOUT", "solve_time": 600.0})
+    assert is_valid_record_dict({"any_key": "any_value"})
+
+
+def test_status_normalization_and_casing():
+    """Verify normalize_status and is_optimal_status handle casing, invalid strings, and missing values uniformly."""
+    import math
+    import numpy as np
+    import pandas as pd
+    from analysis.make_tables import (
+        normalize_status,
+        is_optimal_status,
+        categorize_status,
+        compute_summary_stats,
+    )
+
+    # Casing variations for OPTIMAL
+    for opt_input in ["OPTIMAL", "optimal", "Optimal", "oPtImAL", "  OPTIMAL  "]:
+        assert normalize_status(opt_input) == "OPTIMAL"
+        assert is_optimal_status(opt_input)
+        assert categorize_status(opt_input) == "OPTIMAL"
+        assert is_optimal_status({"status": opt_input})
+
+    # Casing variations for other statuses
+    assert normalize_status("timeout") == "TIMEOUT"
+    assert normalize_status("Timeout") == "TIMEOUT"
+    assert normalize_status("partial") == "PARTIAL"
+    assert normalize_status("Partial") == "PARTIAL"
+    assert normalize_status("size_limit") == "SIZE_LIMIT"
+    assert normalize_status("Size_Limit") == "SIZE_LIMIT"
+    assert normalize_status("unavailable") == "UNAVAILABLE"
+    assert normalize_status("license_error") == "LICENSE_ERROR"
+    assert normalize_status("infeasible") == "INFEASIBLE"
+    assert normalize_status("unsat") == "INFEASIBLE"
+    assert normalize_status("numeric_error") == "NUMERIC_ERROR"
+    assert normalize_status("error") == "ERROR"
+
+    # Missing / invalid inputs return None from normalize_status and False from is_optimal_status
+    for inv in [None, np.nan, float("nan"), pd.NA, "", "   ", "NONE", "NAN", "<NA>", "NULL", "-", True, False]:
+        assert normalize_status(inv) is None
+        assert not is_optimal_status(inv)
+        assert not is_optimal_status({"status": inv})
+
+    # Unknown statuses
+    assert normalize_status("weird_unknown_status") == "UNKNOWN"
+    assert categorize_status("weird_unknown_status") == "UNKNOWN"
+
+    # Verify that different casing of OPTIMAL yields identical summary statistics
+    df_casing = pd.DataFrame({
+        "mixed_opt": [
+            {"status": "optimal", "solve_time": 1.0, "time_limit": 600.0},
+            {"status": "Optimal", "solve_time": 2.0, "time_limit": 600.0},
+            {"status": "OPTIMAL", "solve_time": 3.0, "time_limit": 600.0},
+        ],
+        "upper_opt": [
+            {"status": "OPTIMAL", "solve_time": 1.0, "time_limit": 600.0},
+            {"status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0},
+            {"status": "OPTIMAL", "solve_time": 3.0, "time_limit": 600.0},
+        ],
+    }, index=["ds1", "ds2", "ds3"])
+
+    solved, sl, par2, speedup = compute_summary_stats(df_casing, ["mixed_opt", "upper_opt"], baseline_col="upper_opt")
+    assert solved["mixed_opt"] == 3
+    assert solved["upper_opt"] == 3
+    assert abs(par2["mixed_opt"] - 2.0) < 1e-5
+    assert abs(par2["upper_opt"] - 2.0) < 1e-5
+    assert abs(speedup["mixed_opt"] - 1.00) < 1e-5
+    assert abs(speedup["upper_opt"] - 1.00) < 1e-5
+
+
+def test_dataframe_missing_values_and_non_uniform_solvers():
+    """
+    Test Section 1 requirements:
+    1. Dataset A has baseline and solver X, but lacks solver Y (NaN).
+    2. Dataset B has solver Y but lacks baseline (NaN) and lacks solver X (None).
+    3. Column with record None.
+    4. Column with record NaN.
+    5. Column with empty dict.
+    6. DataFrame with heterogeneous solvers across datasets.
+    Verify: no crash, no missing record counted as result, correct solved, PAR2, and speedup.
+    """
+    import math
+    import numpy as np
+    import pandas as pd
+    from analysis.make_tables import (
+        compute_summary_stats,
+        get_baseline_eligible_instances,
+        format_cell_value,
+    )
+
+    # Construct DataFrame with NaN, None, pd.NA, and empty dicts
+    df_raw = pd.DataFrame({
+        "baseline": [
+            {"status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0},  # ds_A
+            np.nan,                                                         # ds_B: lacks baseline
+            {"status": "OPTIMAL", "solve_time": 5.0, "time_limit": 600.0},  # ds_C
+            {"status": "OPTIMAL", "solve_time": 10.0, "time_limit": 600.0}, # ds_D
+        ],
+        "solver_x": [
+            {"status": "OPTIMAL", "solve_time": 1.0, "time_limit": 600.0},  # ds_A: 2x speedup
+            None,                                                           # ds_B: None
+            pd.NA,                                                          # ds_C: pd.NA
+            {"status": "OPTIMAL", "solve_time": 5.0, "time_limit": 600.0},  # ds_D: 2x speedup
+        ],
+        "solver_y": [
+            np.nan,                                                         # ds_A: lacks solver Y
+            {"status": "OPTIMAL", "solve_time": 4.0, "time_limit": 600.0},  # ds_B: solved on ds_B
+            {},                                                             # ds_C: empty dict
+            {"status": "OPTIMAL", "solve_time": 2.5, "time_limit": 600.0},  # ds_D: solved on ds_D
+        ],
+    }, index=["ds_A", "ds_B", "ds_C", "ds_D"])
+
+    # Baseline eligible instances: ds_A (2.0s), ds_C (5.0s), ds_D (10.0s). ds_B has NaN. Total: 3.
+    base_insts = get_baseline_eligible_instances(df_raw, "baseline")
+    assert set(base_insts.keys()) == {"ds_A", "ds_C", "ds_D"}
+    assert len(base_insts) == 3
+
+    # Compute summary stats without crash
+    solved, sl, par2, speedup = compute_summary_stats(
+        df_raw, ["baseline", "solver_x", "solver_y"], baseline_col="baseline", timeout=600.0
+    )
+
+    # Solved counts
+    assert solved["baseline"] == 3
+    assert solved["solver_x"] == 2  # solved on ds_A, ds_D
+    assert solved["solver_y"] == 2  # solved on ds_B, ds_D
+
+    # SL counts
+    assert sl["baseline"] == 0
+    assert sl["solver_x"] == 0
+    assert sl["solver_y"] == 0
+
+    # PAR2: computed over non-missing algorithmic runs
+    # baseline: (2.0 + 5.0 + 10.0) / 3 = 17 / 3 ≈ 5.6667
+    assert abs(par2["baseline"] - (17.0 / 3.0)) < 1e-4
+    # solver_x: (1.0 + 5.0) / 2 = 3.0
+    assert abs(par2["solver_x"] - 3.0) < 1e-4
+    # solver_y: (4.0 + 2.5) / 2 = 3.25
+    assert abs(par2["solver_y"] - 3.25) < 1e-4
+
+    # Speedup:
+    # baseline is 1.00
+    assert abs(speedup["baseline"] - 1.00) < 1e-5
+    # solver_x is missing on ds_C (eligible instance) -> len(ratios) == 2 != 3 -> speedup is NaN
+    assert math.isnan(speedup["solver_x"])
+    # solver_y is missing on ds_A and ds_C (eligible instances) -> len(ratios) == 1 != 3 -> speedup is NaN
+    assert math.isnan(speedup["solver_y"])
+
+    # Check cell formatting for missing values
+    assert format_cell_value(np.nan) == "-"
+    assert format_cell_value(pd.NA) == "-"
+    assert format_cell_value(None) == "-"
+    assert format_cell_value({}) == "-"
+
+
+def test_speedup_and_n_used_synchronization():
+    """
+    Test Section 4:
+    - Baseline eligible helper get_baseline_eligible_instances.
+    - Uniform conditions: status OPTIMAL, valid timing, timing >= 0.1s.
+    - Synchronized [n_used/n_total] and speedup instance set.
+    - Candidate with wall_time fallback on eligible instance.
+    - Candidate missing timing on eligible instance yields NaN speedup.
+    - Non-OPTIMAL statuses never eligible for baseline.
+    """
+    import math
+    import pandas as pd
+    from analysis.make_tables import (
+        get_baseline_eligible_instances,
+        compute_summary_stats,
+    )
+
+    df_raw = pd.DataFrame({
+        "baseline": [
+            {"status": "OPTIMAL", "solve_time": 0.05, "time_limit": 600.0},       # ds1: timing < 0.1s -> NOT eligible
+            {"status": "OPTIMAL", "solve_time": None, "wall_time": 2.0, "time_limit": 600.0}, # ds2: fallback wall_time 2.0s -> eligible
+            {"status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0},      # ds3: TIMEOUT -> NOT eligible
+            {"status": "FEASIBLE", "solve_time": 10.0, "time_limit": 600.0},     # ds4: FEASIBLE -> NOT eligible
+            {"status": "PARTIAL", "solve_time": 5.0, "time_limit": 600.0},       # ds5: PARTIAL -> NOT eligible
+            {"status": "OPTIMAL", "solve_time": 4.0, "time_limit": 600.0},       # ds6: OPTIMAL 4.0s -> eligible
+        ],
+        "cand_all_valid": [
+            {"status": "OPTIMAL", "solve_time": 0.01, "time_limit": 600.0},      # ds1
+            {"status": "OPTIMAL", "solve_time": 1.0, "time_limit": 600.0},       # ds2: ratio 2.0/1.0 = 2.0
+            {"status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0},      # ds3
+            {"status": "OPTIMAL", "solve_time": 5.0, "time_limit": 600.0},       # ds4
+            {"status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0},       # ds5
+            {"status": "OPTIMAL", "solve_time": None, "wall_time": 2.0, "time_limit": 600.0}, # ds6: fallback wall_time 2.0s -> ratio 4.0/2.0 = 2.0
+        ],
+        "cand_missing_one": [
+            {"status": "OPTIMAL", "solve_time": 0.01, "time_limit": 600.0},      # ds1
+            {"status": "OPTIMAL", "solve_time": 1.0, "time_limit": 600.0},       # ds2: ratio 2.0
+            {"status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0},      # ds3
+            {"status": "OPTIMAL", "solve_time": 5.0, "time_limit": 600.0},       # ds4
+            {"status": "OPTIMAL", "solve_time": 2.0, "time_limit": 600.0},       # ds5
+            {"status": "TIMEOUT", "solve_time": 600.0, "time_limit": 600.0},      # ds6: TIMEOUT on eligible instance!
+        ],
+    }, index=["ds1", "ds2", "ds3", "ds4", "ds5", "ds6"])
+
+    base_insts = get_baseline_eligible_instances(df_raw, "baseline")
+    assert set(base_insts.keys()) == {"ds2", "ds6"}
+    assert len(base_insts) == 2
+    assert abs(base_insts["ds2"] - 2.0) < 1e-5
+    assert abs(base_insts["ds6"] - 4.0) < 1e-5
+
+    solved, sl, par2, speedup = compute_summary_stats(
+        df_raw, ["baseline", "cand_all_valid", "cand_missing_one"], baseline_col="baseline", timeout=600.0
+    )
+
+    # cand_all_valid solved both eligible instances (ds2 ratio=2.0, ds6 ratio=2.0) -> geom mean = 2.0
+    assert abs(speedup["cand_all_valid"] - 2.00) < 1e-5
+
+    # cand_missing_one is TIMEOUT on ds6 (eligible) -> ratio missing -> speedup is NaN
+    assert math.isnan(speedup["cand_missing_one"])
+
+
+def test_export_table_with_missing_and_heterogeneous_solvers(tmp_path):
+    """
+    Test Section 5:
+    - Export CSV and LaTeX when solvers have missing records (None, NaN, pd.NA, empty dict).
+    - Machine-readable data CSV has 21 columns in exact order.
+    - Missing timing does not format as 0.
+    """
+    import os
+    import numpy as np
+    import pandas as pd
+    from analysis.make_tables import export_table, DATA_CSV_COLUMNS
+
+    df_raw = pd.DataFrame({
+        "sat": [
+            {"dataset": "g1", "column": "sat", "status": "OPTIMAL", "solve_time": 1.5, "wall_time": 1.6, "time_limit": 600.0, "n_total": 1, "n_algorithmic": 1, "n_optimal": 1, "termination_reason": "ALL_OPTIMAL"},
+            {"dataset": "g2", "column": "sat", "status": "TIMEOUT", "solve_time": 600.0, "wall_time": 600.1, "time_limit": 600.0, "n_total": 1, "n_algorithmic": 1, "n_timeout": 1, "termination_reason": "TIME_LIMIT"},
+        ],
+        "cpsat": [
+            np.nan,  # missing on g1
+            {"dataset": "g2", "column": "cpsat", "status": "OPTIMAL", "solve_time": 2.5, "wall_time": 2.6, "time_limit": 600.0, "n_total": 1, "n_algorithmic": 1, "n_optimal": 1, "termination_reason": "ALL_OPTIMAL"},
+        ],
+    }, index=["g1", "g2"])
+
+    df_disp = pd.DataFrame({
+        "sat": ["1.5000", "TO"],
+        "cpsat": ["-", "2.5000"],
+    }, index=["g1", "g2"])
+
+    summary_rows = [
+        ("Solved", {"sat": "1", "cpsat": "1"}),
+        ("PAR2 (s)", {"sat": "600.750", "cpsat": "2.500"}),
+    ]
+
+    out_dir = str(tmp_path / "export_missing_test")
+    export_table(df_disp, summary_rows, title="Test Heterogeneous Export", base_filename="table_hetero", output_dirs=(out_dir,), df_raw=df_raw)
+
+    csv_path = os.path.join(out_dir, "table_hetero.csv")
+    data_csv_path = os.path.join(out_dir, "table_hetero_data.csv")
+    tex_path = os.path.join(out_dir, "table_hetero.tex")
+
+    assert os.path.exists(csv_path)
+    assert os.path.exists(data_csv_path)
+    assert os.path.exists(tex_path)
+
+    # Validate LaTeX content
+    with open(tex_path, "r", encoding="utf-8") as f:
+        tex_content = f.read()
+    assert "\\begin{table}" in tex_content
+    assert "g1 & 1.5000 & -" in tex_content
+
+    # Validate data CSV schema and content
+    df_data = pd.read_csv(data_csv_path)
+    assert list(df_data.columns) == DATA_CSV_COLUMNS
+    assert len(df_data) == 3  # g1/sat, g2/sat, g2/cpsat (g1/cpsat was NaN so excluded)
+    assert set(df_data["dataset"]) == {"g1", "g2"}
+    assert df_data[df_data["dataset"] == "g1"].iloc[0]["column"] == "sat"
+    assert df_data[df_data["dataset"] == "g1"].iloc[0]["termination_reason"] == "ALL_OPTIMAL"
 
 

@@ -113,29 +113,110 @@ def extract_time_limit(record, default_timeout=600.0):
             pass
     return float(default_timeout)
 
+def is_valid_record_dict(val):
+    """
+    Checks if val is a valid non-empty dictionary representing a result record.
+    Rejects None, NaN, pd.NA, scalars, empty dicts, booleans, and non-dict objects.
+    """
+    if val is None or isinstance(val, bool) or val is pd.NA:
+        return False
+    if isinstance(val, float) and math.isnan(val):
+        return False
+    if not isinstance(val, dict):
+        return False
+    return len(val) > 0
+
+def normalize_status(val):
+    """
+    Normalizes a status string or record dict to uppercase canonical status taxonomy.
+    Returns canonical status string, or None if missing/invalid/empty.
+    Preserves taxonomy:
+      OPTIMAL, TIMEOUT, INTERRUPTED, FEASIBLE, SIZE_LIMIT, UNAVAILABLE,
+      LICENSE_ERROR, INFEASIBLE, NUMERIC_ERROR, ERROR, PARTIAL, UNKNOWN.
+    """
+    if val is None or isinstance(val, bool) or val is pd.NA:
+        return None
+    if isinstance(val, float) and math.isnan(val):
+        return None
+    if isinstance(val, dict):
+        val = val.get("status")
+        if val is None or isinstance(val, bool) or val is pd.NA:
+            return None
+        if isinstance(val, float) and math.isnan(val):
+            return None
+
+    s = str(val).strip().upper()
+    if not s or s in ("NONE", "NAN", "<NA>", "NULL", "-"):
+        return None
+
+    if s == "OPTIMAL":
+        return "OPTIMAL"
+    elif s == "TIMEOUT":
+        return "TIMEOUT"
+    elif s == "INTERRUPTED":
+        return "INTERRUPTED"
+    elif s == "FEASIBLE":
+        return "FEASIBLE"
+    elif s == "SIZE_LIMIT":
+        return "SIZE_LIMIT"
+    elif s == "UNAVAILABLE":
+        return "UNAVAILABLE"
+    elif s == "LICENSE_ERROR":
+        return "LICENSE_ERROR"
+    elif s in ("INFEASIBLE", "UNSAT"):
+        return "INFEASIBLE"
+    elif s in ("ERROR",):
+        return "ERROR"
+    elif s in ("NUMERIC_ERROR",):
+        return "NUMERIC_ERROR"
+    elif s == "PARTIAL":
+        return "PARTIAL"
+    elif s in ("UNKNOWN", "UNK"):
+        return "UNKNOWN"
+    else:
+        return "UNKNOWN"
+
+def is_optimal_status(val):
+    """Returns True iff val (record dict or status string) represents an OPTIMAL status."""
+    return normalize_status(val) == "OPTIMAL"
+
 def categorize_status(raw_status):
     """Maps any status string to an explicit canonical status category."""
-    st = str(raw_status).strip().upper() if raw_status is not None else ""
-    if st == "OPTIMAL":
-        return "OPTIMAL"
-    elif st == "TIMEOUT":
-        return "TIMEOUT"
-    elif st == "INTERRUPTED":
-        return "INTERRUPTED"
-    elif st == "FEASIBLE":
-        return "FEASIBLE"
-    elif st in ("INFEASIBLE", "UNSAT"):
+    st = normalize_status(raw_status)
+    if st is None or st == "UNKNOWN":
+        return "UNKNOWN"
+    if st in ("INFEASIBLE", "UNSAT"):
         return "INFEASIBLE"
     elif st in ("ERROR", "NUMERIC_ERROR"):
         return "ERROR"
-    elif st == "SIZE_LIMIT":
-        return "SIZE_LIMIT"
-    elif st == "UNAVAILABLE":
-        return "UNAVAILABLE"
-    elif st == "LICENSE_ERROR":
-        return "LICENSE_ERROR"
-    else:
-        return "UNKNOWN"
+    return st
+
+def get_baseline_eligible_instances(df_raw, baseline_col):
+    """
+    Identifies baseline eligible instances from df_raw for baseline_col.
+    Criteria for eligibility:
+      - Valid non-empty record dict
+      - Normalized status is strictly OPTIMAL
+      - Valid finite positive timing (via extract_repetition_solve_time)
+      - Timing >= 0.1 seconds
+    Returns:
+      dict mapping dataset_name -> validated baseline timing (float)
+    """
+    baseline_times = {}
+    if not baseline_col or df_raw is None or not hasattr(df_raw, "iterrows") or baseline_col not in df_raw.columns:
+        return baseline_times
+
+    for ds, row in df_raw.iterrows():
+        rec = row.get(baseline_col)
+        if not is_valid_record_dict(rec):
+            continue
+        if not is_optimal_status(rec):
+            continue
+        t_base = extract_repetition_solve_time(rec)
+        if t_base is not None and math.isfinite(t_base) and t_base >= 0.1:
+            baseline_times[ds] = float(t_base)
+
+    return baseline_times
 
 def compute_repetition_par2(reps, default_timeout=600.0):
     """
@@ -256,24 +337,23 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
 
     # Select representative record to seed the aggregated dictionary
     if agg_status in ("OPTIMAL", "PARTIAL"):
-        opt_reps = [r for r in reps if r["_cat"] == "OPTIMAL"]
-        reps_sorted = sorted(opt_reps, key=_safe_solve_key)
+        rep_pool = [r for r in reps if r["_cat"] == "OPTIMAL"]
+        reps_sorted = sorted(rep_pool, key=_safe_solve_key)
         rep_chosen = reps_sorted[len(reps_sorted) // 2]
-        solve_times = [extract_repetition_solve_time(r) for r in opt_reps if extract_repetition_solve_time(r) is not None]
-        wall_times = [validate_solve_time(r.get("wall_time")) for r in opt_reps if validate_solve_time(r.get("wall_time")) is not None]
     elif agg_status == "FEASIBLE":
-        feas_reps = [r for r in reps if r["_cat"] == "FEASIBLE"]
-        reps_sorted = sorted(feas_reps, key=lambda x: (_safe_ub_key(x), _safe_solve_key(x)))
+        rep_pool = [r for r in reps if r["_cat"] == "FEASIBLE"]
+        reps_sorted = sorted(rep_pool, key=lambda x: (_safe_ub_key(x), _safe_solve_key(x)))
         rep_chosen = reps_sorted[0]
-        solve_times = [extract_repetition_solve_time(r) for r in feas_reps if extract_repetition_solve_time(r) is not None]
-        wall_times = [validate_solve_time(r.get("wall_time")) for r in feas_reps if validate_solve_time(r.get("wall_time")) is not None]
     else:
         matching = [r for r in reps if r["_cat"] == agg_status]
-        candidates = matching if matching else reps
-        reps_sorted = sorted(candidates, key=_safe_solve_key)
+        rep_pool = matching if matching else reps
+        reps_sorted = sorted(rep_pool, key=_safe_solve_key)
         rep_chosen = reps_sorted[len(reps_sorted) // 2]
-        solve_times = [extract_repetition_solve_time(r) for r in candidates if extract_repetition_solve_time(r) is not None]
-        wall_times = [validate_solve_time(r.get("wall_time")) for r in candidates if validate_solve_time(r.get("wall_time")) is not None]
+
+    solve_times = [extract_repetition_solve_time(r) for r in rep_pool if extract_repetition_solve_time(r) is not None]
+    wall_times = [validate_solve_time(r.get("wall_time")) for r in rep_pool if validate_solve_time(r.get("wall_time")) is not None]
+    has_fallback = any(validate_solve_time(r.get("solve_time")) is None and validate_solve_time(r.get("wall_time")) is not None for r in rep_pool)
+    has_genuine = any(validate_solve_time(r.get("solve_time")) is not None for r in rep_pool)
 
     encode_times = [validate_solve_time(r.get("encode_time")) for r in reps if validate_solve_time(r.get("encode_time")) is not None]
 
@@ -299,9 +379,18 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
 
     if solve_times:
         agg["solve_time"] = float(np.median(solve_times))
+        agg["timing_fallback"] = has_fallback
+        if has_fallback and has_genuine:
+            agg["solve_time_source"] = "mixed"
+        elif has_fallback:
+            agg["solve_time_source"] = "wall_time"
+        else:
+            agg["solve_time_source"] = "solve_time"
     else:
         t_chosen = extract_repetition_solve_time(rep_chosen)
         agg["solve_time"] = t_chosen
+        agg["timing_fallback"] = False
+        agg["solve_time_source"] = None
 
     if wall_times:
         agg["wall_time"] = float(np.median(wall_times))
@@ -456,7 +545,7 @@ def cross_validate_optima(records, output_dir=None):
     """
     optimal_by_inst = {}
     for r in records:
-        if r.get("status") == "OPTIMAL":
+        if is_optimal_status(r):
             ds = r.get("dataset")
             seed = r.get("relabel_seed")
             ub = r.get("best_ub")
@@ -596,6 +685,8 @@ def format_cell_value(status, solve_time=None, best_ub=None, n_optimal=None, n_t
       - ERROR: "ERR"
     """
     if isinstance(status, dict):
+        if not status:
+            return "-"
         rec = status
         status = rec.get("status")
         solve_time = extract_repetition_solve_time(rec)
@@ -604,8 +695,11 @@ def format_cell_value(status, solve_time=None, best_ub=None, n_optimal=None, n_t
         n_total = rec.get("n_total")
         n_algorithmic = rec.get("n_algorithmic")
 
+    st = normalize_status(status)
+    if st is None:
+        return "-"
+
     t_val = validate_solve_time(solve_time)
-    st = str(status).upper() if status is not None else ""
     ub_val = validate_best_ub(best_ub)
 
     if st == "OPTIMAL":
@@ -635,8 +729,6 @@ def format_cell_value(status, solve_time=None, best_ub=None, n_optimal=None, n_t
         return "ERR"
     elif st == "UNKNOWN":
         return "UNK"
-    elif not st or st == "NONE":
-        return "-"
     else:
         return str(status)
 
@@ -653,14 +745,7 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
     par2_scores = {}
     speedups = {}
 
-    baseline_times = {}
-    if baseline_col and baseline_col in df_raw:
-        for ds, row in df_raw.iterrows():
-            rec = row.get(baseline_col)
-            if rec and rec.get("status") == "OPTIMAL":
-                t_base = extract_repetition_solve_time(rec)
-                if t_base is not None and t_base >= 0.1:
-                    baseline_times[ds] = t_base
+    baseline_times = get_baseline_eligible_instances(df_raw, baseline_col)
 
     for col in column_names:
         solved = 0
@@ -670,9 +755,9 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
 
         for ds, row in df_raw.iterrows():
             rec = row.get(col)
-            if not rec:
+            if not is_valid_record_dict(rec):
                 continue
-            st = str(rec.get("status", "")).upper()
+            st = normalize_status(rec)
             rec_timeout = extract_time_limit(rec, default_timeout=timeout)
 
             if st == "OPTIMAL":
@@ -718,7 +803,7 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             elif st == "SIZE_LIMIT":
                 sl_count += 1
                 # SIZE_LIMIT is reported separately in SL and not penalized in PAR2 as timeout
-            elif st in ("UNAVAILABLE", "LICENSE_ERROR", "UNKNOWN"):
+            elif st in ("UNAVAILABLE", "LICENSE_ERROR", "UNKNOWN") or st is None:
                 # Solver environment unavailability, missing license, or unknown status excluded from algorithmic PAR2
                 pass
             else:
@@ -756,7 +841,13 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("r
     for out_dir in output_dirs:
         os.makedirs(out_dir, exist_ok=True)
         csv_path = os.path.join(out_dir, f"{base_filename}.csv")
-        full_df.to_csv(csv_path, index=True)
+        clean_display_df = full_df.copy()
+        for c in clean_display_df.columns:
+            clean_display_df[c] = [
+                "-" if (v is None or v is pd.NA or (isinstance(v, float) and math.isnan(v))) else v
+                for v in clean_display_df[c]
+            ]
+        clean_display_df.to_csv(csv_path, index=True)
 
         tex_path = os.path.join(out_dir, f"{base_filename}.tex")
         with open(tex_path, "w", encoding="utf-8") as f:
@@ -774,13 +865,23 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("r
 
             for idx, row in df_display.iterrows():
                 idx_escaped = str(idx).replace("_", "\\_")
-                row_vals = [str(v).replace("_", "\\_") for v in row]
+                row_vals = [
+                    "-" if (v is None or v is pd.NA or (isinstance(v, float) and math.isnan(v)))
+                    else str(v).replace("_", "\\_")
+                    for v in row
+                ]
                 f.write(f"{idx_escaped} & " + " & ".join(row_vals) + " \\\\\n")
 
             f.write("\\midrule\n")
             for rname, rdata in summary_rows:
                 rname_escaped = f"\\textbf{{{rname.replace('_', ' ')}}}"
-                vals = [str(rdata[c]).replace("_", "\\_") for c in full_df.columns]
+                vals = []
+                for c in full_df.columns:
+                    v = rdata.get(c, "-") if isinstance(rdata, dict) else "-"
+                    if v is None or v is pd.NA or (isinstance(v, float) and math.isnan(v)):
+                        vals.append("-")
+                    else:
+                        vals.append(str(v).replace("_", "\\_"))
                 f.write(f"{rname_escaped} & " + " & ".join(vals) + " \\\\\n")
 
             f.write("\\bottomrule\n")
@@ -797,7 +898,7 @@ def export_table(df_display, summary_rows, title, base_filename, output_dirs=("r
                 for ds, row in df_raw.iterrows():
                     for col in df_raw.columns:
                         cell = row.get(col)
-                        if isinstance(cell, dict):
+                        if is_valid_record_dict(cell):
                             raw_rows.append({
                                 "dataset": ds,
                                 "column": col,
@@ -879,14 +980,14 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         col_vals = []
         for ds in ds_sorted:
             rec = data_by_ds[ds].get(col)
-            if rec:
+            if is_valid_record_dict(rec):
                 col_vals.append(format_cell_value(rec))
             else:
                 col_vals.append("-")
         df_display[col] = col_vals
 
     solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, columns, baseline_col="none")
-    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("none") and row.get("none").get("status") == "OPTIMAL" and (extract_repetition_solve_time(row.get("none")) or 0.0) >= 0.1)
+    n_used = len(get_baseline_eligible_instances(df_raw, "none"))
     n_total = len(df_raw)
 
     sum_solved = {"N": "-", "|E|": "-"}
@@ -964,14 +1065,14 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
         col_vals = []
         for ds in ds_sorted:
             rec = data_by_ds[ds].get(sol)
-            if rec:
+            if is_valid_record_dict(rec):
                 col_vals.append(format_cell_value(rec))
             else:
                 col_vals.append("-")
         df_display[sol] = col_vals
 
     solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, solvers, baseline_col="cadical195")
-    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("cadical195") and row.get("cadical195").get("status") == "OPTIMAL" and (extract_repetition_solve_time(row.get("cadical195")) or 0.0) >= 0.1)
+    n_used = len(get_baseline_eligible_instances(df_raw, "cadical195"))
     n_total = len(df_raw)
 
     sum_solved = {"N": "-", "|E|": "-"}
@@ -1044,14 +1145,14 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
         col_vals = []
         for ds in ds_sorted:
             rec = data_by_ds[ds].get(m)
-            if rec:
+            if is_valid_record_dict(rec):
                 col_vals.append(format_cell_value(rec))
             else:
                 col_vals.append("-")
         df_display[m] = col_vals
 
     solved_cnt, sl_cnt, par2_val, spdups = compute_summary_stats(df_raw, methods, baseline_col="sat_best")
-    n_used = sum(1 for ds, row in df_raw.iterrows() if row.get("sat_best") and row.get("sat_best").get("status") == "OPTIMAL" and (extract_repetition_solve_time(row.get("sat_best")) or 0.0) >= 0.1)
+    n_used = len(get_baseline_eligible_instances(df_raw, "sat_best"))
     n_total = len(df_raw)
 
     sum_solved = {"N": "-", "|E|": "-"}
@@ -1141,9 +1242,9 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
         n_pairs = sum(
             1 for (ds, seed), vmap in pairs_map.items()
             if var_target in vmap and var_ref in vmap
-            and vmap[var_target].get("status") == "OPTIMAL"
-            and vmap[var_ref].get("status") == "OPTIMAL"
-            and vmap[var_ref].get("solve_time", 0.0) > 0
+            and is_optimal_status(vmap[var_target])
+            and is_optimal_status(vmap[var_ref])
+            and (extract_repetition_solve_time(vmap[var_ref]) or 0.0) > 0
         )
         if n_pairs < 1:
             print(f"[WARNING] Skipping table_ablation_family: comparison '{var_target} vs {var_ref}' has 0 valid pairs (>=1 required).")
@@ -1158,9 +1259,9 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
             if var_target in vmap and var_ref in vmap:
                 rec_t = vmap[var_target]
                 rec_r = vmap[var_ref]
-                if rec_t.get("status") == "OPTIMAL" and rec_r.get("status") == "OPTIMAL":
-                    t_target = rec_t.get("solve_time", 0.0)
-                    t_ref = rec_r.get("solve_time", 0.0)
+                if is_optimal_status(rec_t) and is_optimal_status(rec_r):
+                    t_target = extract_repetition_solve_time(rec_t) or 0.0
+                    t_ref = extract_repetition_solve_time(rec_r) or 0.0
                     if t_ref > 0:
                         ratio = t_target / t_ref
                         ratios.append(ratio)
@@ -1210,9 +1311,9 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
                 count = sum(
                     1 for (d, seed), vmap in pairs_map.items()
                     if d == ds and var_target in vmap and var_ref in vmap
-                    and vmap[var_target].get("status") == "OPTIMAL"
-                    and vmap[var_ref].get("status") == "OPTIMAL"
-                    and vmap[var_ref].get("solve_time", 0.0) > 0
+                    and is_optimal_status(vmap[var_target])
+                    and is_optimal_status(vmap[var_ref])
+                    and (extract_repetition_solve_time(vmap[var_ref]) or 0.0) > 0
                 )
                 if count < 1:
                     can_generate_pg = False
@@ -1234,9 +1335,9 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
                     if d == ds and var_target in vmap and var_ref in vmap:
                         rec_t = vmap[var_target]
                         rec_r = vmap[var_ref]
-                        if rec_t.get("status") == "OPTIMAL" and rec_r.get("status") == "OPTIMAL":
-                            t_target = rec_t.get("solve_time", 0.0)
-                            t_ref = rec_r.get("solve_time", 0.0)
+                        if is_optimal_status(rec_t) and is_optimal_status(rec_r):
+                            t_target = extract_repetition_solve_time(rec_t) or 0.0
+                            t_ref = extract_repetition_solve_time(rec_r) or 0.0
                             if t_ref > 0:
                                 ratio = t_target / t_ref
                                 ratios.append(ratio)
@@ -1315,7 +1416,7 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     can_generate_phases = True
     for n in sizes:
         for var in variants:
-            count = sum(1 for r in family_recs if r.get("N") == n and get_var(r) == var and r.get("status") == "OPTIMAL")
+            count = sum(1 for r in family_recs if r.get("N") == n and get_var(r) == var and is_optimal_status(r))
             if count < 1:
                 can_generate_phases = False
                 break
@@ -1334,9 +1435,9 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
             ratios = []
 
             for r in family_recs:
-                if r.get("N") == n and get_var(r) == var and r.get("status") == "OPTIMAL":
+                if r.get("N") == n and get_var(r) == var and is_optimal_status(r):
                     per_iter = r.get("per_iter_times", [])
-                    st = r.get("solve_time", 0.0)
+                    st = extract_repetition_solve_time(r) or 0.0
                     if per_iter:
                         last_t = per_iter[-1]
                         prev_t = sum(per_iter[:-1])
@@ -1494,9 +1595,9 @@ def make_table_methods_family(records, base_filename="table_methods_family", out
             if d == ds and "cpsat" in mmap and "sat" in mmap:
                 rec_cp = mmap["cpsat"]
                 rec_sat = mmap["sat"]
-                if rec_cp.get("status") == "OPTIMAL" and rec_sat.get("status") == "OPTIMAL":
-                    t_cp = rec_cp.get("solve_time", 0.0)
-                    t_sat = rec_sat.get("solve_time", 0.0)
+                if is_optimal_status(rec_cp) and is_optimal_status(rec_sat):
+                    t_cp = extract_repetition_solve_time(rec_cp) or 0.0
+                    t_sat = extract_repetition_solve_time(rec_sat) or 0.0
                     if t_sat > 0:
                         ratio = t_cp / t_sat
                         ratios.append(ratio)
