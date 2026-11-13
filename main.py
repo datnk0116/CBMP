@@ -4,7 +4,19 @@ import multiprocessing as mp
 import json
 import os
 
-def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout, solver="cadical195", json_out=None):
+def main(
+    dataset,
+    sb_rotation,
+    sb_reflection,
+    use_heuristic_initial_ub,
+    timeout,
+    solver="cadical195",
+    json_out=None,
+    relabel_seed=None,
+    encoding="order",
+    solving_mode="incremental",
+    eo_strategy="commander",
+):
     manager = mp.Manager()
     shared_stats = manager.dict()
     best_ub = mp.Value('i', -1)
@@ -16,6 +28,10 @@ def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout,
             "solver": solver,
             "shared_stats": shared_stats,
             "verbose": True,
+            "relabel_seed": relabel_seed,
+            "encoding": encoding,
+            "solving_mode": solving_mode,
+            "eo_strategy": eo_strategy,
         },
     )
     
@@ -32,16 +48,23 @@ def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout,
         else:
             print("timeout, lowest bandwidth found:", best_ub.value)
     
-    elif p.exitcode == 0: # child exited normally (either optimal assignment found or empty graph)
+    elif p.exitcode == 0: # child exited normally
         child_status = shared_stats.get('status')
-        if child_status == 'OPTIMAL':
-            shared_stats['status'] = 'OPTIMAL'
+        if child_status in ('OPTIMAL', 'FEASIBLE', 'UNSAT', 'TIMEOUT'):
+            shared_stats['status'] = child_status
             shared_stats['best_ub'] = best_ub.value
-            print("minimum bandwidth:", best_ub.value)
+            if child_status == 'OPTIMAL':
+                print("minimum bandwidth:", best_ub.value)
+            elif child_status == 'FEASIBLE':
+                print("feasible bandwidth found:", best_ub.value)
+            elif child_status == 'UNSAT':
+                print("problem is unsatisfiable")
+            elif child_status == 'TIMEOUT':
+                print("timeout, lowest bandwidth found:", best_ub.value)
         else:
-            shared_stats['status'] = 'ERROR'
+            shared_stats['status'] = child_status if child_status else 'ERROR'
             shared_stats['best_ub'] = best_ub.value
-            print(f"child process finished with non-optimal status: {child_status} - lowest bandwidth found: {best_ub.value}")
+            print(f"child process finished with status: {shared_stats['status']} - lowest bandwidth found: {best_ub.value}")
     
     else:                 # child crashed
         shared_stats['status'] = 'ERROR'
@@ -54,6 +77,9 @@ def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout,
     if "per_iter_times" in final_stats:
         final_stats["per_iter_times"] = list(final_stats["per_iter_times"])
 
+    if "relabel_seed" not in final_stats:
+        final_stats["relabel_seed"] = relabel_seed
+
     if json_out:
         out_path = os.path.abspath(json_out)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -65,7 +91,7 @@ def main(dataset, sb_rotation, sb_reflection, use_heuristic_initial_ub, timeout,
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="CBMP SAT Solver Entry Point")
     parser.add_argument("dataset", 
                         help="name of .mtx file in datasets/")
     parser.add_argument("--timeout", 
@@ -88,10 +114,29 @@ if __name__ == "__main__":
                         type=str,
                         default="cadical195",
                         help=f"SAT solver to use (available: {', '.join(sorted(AVAILABLE_SOLVERS.keys()))}; default: cadical195)")
+    parser.add_argument("--encoding",
+                        type=str,
+                        choices=["order", "pairwise"],
+                        default="order",
+                        help="SAT encoding to use (order or pairwise, default: order)")
+    parser.add_argument("--solving-mode",
+                        type=str,
+                        choices=["incremental", "iterative"],
+                        default="incremental",
+                        help="Solving strategy (incremental or iterative, default: incremental)")
+    parser.add_argument("--eo-strategy",
+                        type=str,
+                        choices=["commander", "pairwise", "binary", "sequential", "product"],
+                        default="commander",
+                        help="Exactly-one encoding strategy (default: commander)")
     parser.add_argument("--json-out",
                         type=str,
                         default=None,
                         help="path to append statistics dict as a single JSON line")
+    parser.add_argument("--relabel-seed",
+                        type=int,
+                        default=None,
+                        help="seed for random vertex relabeling (default: None = original labels)")
     args = parser.parse_args()
 
     sb_rotation = args.sb_rotation
@@ -115,4 +160,8 @@ if __name__ == "__main__":
         args.timeout,
         solver=args.solver.lower(),
         json_out=args.json_out,
+        relabel_seed=args.relabel_seed,
+        encoding=args.encoding,
+        solving_mode=args.solving_mode,
+        eo_strategy=args.eo_strategy,
     )

@@ -11,6 +11,8 @@ A research and evaluation repository for solving the **Cyclic Bandwidth Minimiza
 - Bộ giải SAT: `pysat` (tích hợp CaDiCaL 195, Glucose 4, MapleChrono, MiniSat 2.2, Lingeling).
 - CP-SAT: `ortools`.
 - MIP: `docplex` và `cplex` (Community Edition giới hạn <= 1000 biến & ràng buộc hoặc bản thương mại/học thuật đầy đủ).
+- CP Optimizer (tùy chọn): `docplex.cp` (IBM CPLEX CP Optimizer).
+- Gurobi (tùy chọn): `gurobipy` (yêu cầu bản quyền thương mại/học thuật).
 
 ### Khởi tạo môi trường ảo và cài đặt thư viện
 ```bash
@@ -43,32 +45,32 @@ Các phiên bản đã ghim tương thích với `results/env.json`:
 CBMP/
 ├── cbmp.py                 # Core SAT encoding & giải thuật lặp thu hẹp Cyclic Bandwidth
 ├── main.py                 # CLI giải 1 instance với timeout & multiprocessing isolation
-├── sat_encodings.py        # Các mệnh đề CNF (bậc thang, injectivity, phá đối xứng, cyclic edge)
+├── sat_encodings.py        # Các mệnh đề CNF (Order và Pairwise encodings, phá đối xứng, cyclic edge)
+├── alo_amo_eo_encodings.py # Các chiến lược ALO/AMO/EO (commander, pairwise, binary, sequential, product)
+├── graph_utils.py          # Chuẩn hóa đồ thị, load MTX, độc lập kiểm định nghiệm & băng thông vòng
 ├── baselines/
 │   ├── cpsat_cbmp.py       # Baseline OR-Tools CP-SAT
-│   └── cplex_cbmp.py       # Baseline IBM CPLEX MIP
+│   ├── cplex_cbmp.py       # Baseline IBM CPLEX MIP
+│   ├── cplex_cp_cbmp.py    # Baseline IBM CPLEX CP Optimizer
+│   └── gurobi_cbmp.py      # Baseline Gurobi MIP
 ├── experiments/
-│   ├── configs.yaml        # Cấu hình các nhóm thực nghiệm (per_dataset, solvers, methods, ablation)
-│   └── run_experiments.py # Trình điều khiển thực nghiệm (deduplication, resuming, runner)
+│   ├── configs.yaml        # Cấu hình các nhóm thực nghiệm (per_dataset, solvers, methods, ablation, encodings, exact_solvers)
+│   └── run_experiments.py # Trình điều khiển thực nghiệm (deduplication, resuming, canonical keys, runner)
 ├── analysis/
 │   ├── make_tables.py      # Sinh bảng LaTeX và CSV (ablation, solvers, methods)
-│   └── make_plots.py       # Vẽ biểu đồ cactus, scatter, ablation
+│   ├── make_plots.py       # Vẽ biểu đồ cactus, scatter, ablation
+│   ├── reference_tables.py # Trình thẩm định và xuất bảng đối chiếu công bố (Table 2 & Table 3)
+│   └── reference_data/
+│       └── published_tables.json # Dữ liệu chuẩn Table 2 & Table 3 từ tài liệu công bố
 ├── datasets/               # Thư mục chứa ma trận đồ thị MatrixMarket (.mtx)
-│   ├── 14_bus.mtx
-│   ├── 30_bus.mtx
-│   ├── 494_bus.mtx
-│   └── 662_bus.mtx
 ├── scripts/
-│   └── check_datasets.py   # Kiểm tra và cảnh báo nếu dataset trong config bị thiếu
-├── tests/                  # Bộ test tự động (brute force, baselines, graph atlas, correctness)
-│   ├── brute_force.py
-│   ├── test_baselines.py
-│   ├── test_correctness.py
-│   ├── test_experiments.py
-│   └── test_graph_atlas.py
-├── results/                # Kết quả chạy thực nghiệm (runs.jsonl, tables/, figures/, env.json)
-├── legacy/                 # Các mã nguồn cũ không còn được import
-│   └── bmp.py              # Phiên bản cũ của bộ giải (đã thay thế bởi cbmp.py)
+│   ├── check_datasets.py   # Kiểm tra và cảnh báo nếu dataset trong config bị thiếu
+│   ├── calibrate.py        # Thử nghiệm hiệu chuẩn thời gian và tài nguyên
+│   └── make_subgraphs.py   # Tạo các đồ thị con cảm ứng liên thông
+├── tests/                  # Bộ test tự động (brute force, baselines, mocked CP/Gurobi, encodings)
+├── results/                # Kết quả chạy thực nghiệm gốc
+├── results_v2/             # Kết quả chạy thực nghiệm phiên bản v2 (runs.jsonl, tables/, figures/)
+├── report/                 # Báo cáo khoa học LaTeX & hình ảnh
 ├── requirements.txt
 ├── pytest.ini
 └── README.md
@@ -97,6 +99,9 @@ python main.py 30_bus --symmetry-break --heuristic-ub --timeout 60 --json-out re
 ### Các cờ chính của `main.py`:
 - `dataset`: Tên file (ví dụ `30_bus` hoặc `datasets/30_bus.mtx`).
 - `--timeout`: Thời gian tối đa (giây), mặc định: 600.
+- `--encoding`: Lựa chọn mã hóa SAT (`order` hoặc `pairwise`, mặc định: `order`).
+- `--solving-mode`: Chế độ tìm kiếm SAT (`incremental` hoặc `iterative`, mặc định: `incremental`).
+- `--eo-strategy`: Chiến lược mã hóa Exactly-One (`commander`, `pairwise`, `binary`, `sequential`, `product`, mặc định: `commander`).
 - `--symmetry-break`: Bật cả phá đối xứng quay (`--sb-rotation`) và đối xứng gương (`--sb-reflection`).
 - `--heuristic-ub`: Sử dụng nhãn xuất phát từ thuật toán Cuthill-McKee để khởi tạo cận trên.
 - `--solver`: Trình giải SAT (mặc định: `cadical195`).
@@ -118,7 +123,7 @@ Nếu thiếu file (ví dụ chưa có `14_bus.mtx`), script sẽ báo lỗi rõ
 
 ## 5. Chạy thực nghiệm (Running Experiments)
 
-File cấu hình tại `experiments/configs.yaml` định nghĩa 4 nhóm thực nghiệm. Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình.
+File cấu hình tại `experiments/configs.yaml` định nghĩa 6 nhóm thực nghiệm. Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình. Mặc định toàn bộ kết quả được ghi vào thư mục `results_v2/` (đã được cấu hình trong `.gitignore`). Bạn có thể tùy chỉnh thư mục xuất qua cờ `--output-dir`.
 
 ### Xem trước kế hoạch chạy (Dry Run)
 ```bash
@@ -131,46 +136,113 @@ python experiments/run_experiments.py --dry-run
 # 1. Nhóm per_dataset (Cấu hình SAT tốt nhất trên toàn bộ dataset)
 python experiments/run_experiments.py --group per_dataset --timeout 600
 
-# 2. Nhóm solvers (So sánh các SAT solver khác nhau)
-python experiments/run_experiments.py --group solvers --timeout 600
+# 2. Nhóm solvers_small (So sánh các SAT solver trên đồ thị nhỏ: N <= 40, 5 reps)
+python experiments/run_experiments.py --group solvers_small --timeout 600
 
-# 3. Nhóm methods (So sánh SAT vs OR-Tools CP-SAT vs IBM CPLEX)
+# 3. Nhóm solvers_medium (So sánh các SAT solver trên đồ thị trung bình: N = 60, 80, 1 rep)
+python experiments/run_experiments.py --group solvers_medium --timeout 600
+
+# 4. Nhóm methods (So sánh SAT vs OR-Tools CP-SAT vs IBM CPLEX trên đồ thị nhỏ & trung bình)
 python experiments/run_experiments.py --group methods --timeout 600
 
-# 4. Nhóm ablation (Đánh giá đóng góp của từng thành phần: quay, phản xạ, heuristic)
-python experiments/run_experiments.py --group ablation --timeout 600
+# 5. Nhóm ablation_small (Đánh giá đóng góp quay, phản xạ, heuristic trên đồ thị nhỏ, 5 reps)
+python experiments/run_experiments.py --group ablation_small --timeout 600
 
-# Chạy tất cả các nhóm kèm cờ resume (bỏ qua những lần chạy đã hoàn thành)
+# 6. Nhóm ablation_medium (Đánh giá ablation trên đồ thị biên trung bình 662_bus_n60, 1 rep)
+python experiments/run_experiments.py --group ablation_medium --timeout 600
+
+# 7. Nhóm ablation_family (Đánh giá ablation trên các họ hoán vị nhãn ngẫu nhiên: n40 với 10 seeds, n50 với 5 seeds, 1 rep)
+python experiments/run_experiments.py --group ablation_family --timeout 600
+
+# 8. Nhóm encodings (So sánh Order Encoding vs Pairwise Encoding trên đồ thị nhỏ)
+python experiments/run_experiments.py --group encodings --timeout 600
+
+# 9. Nhóm exact_solvers (So sánh tổng thể 6 công thức giải chính xác: SAT Order, SAT Pairwise, CP-SAT, CPLEX MIP, CPLEX CP, Gurobi)
+python experiments/run_experiments.py --group exact_solvers --timeout 600
+
+# Chỉ định thư mục lưu kết quả tùy chỉnh qua --output-dir
+python experiments/run_experiments.py --group solvers_small --output-dir results_v2
+
+# Chạy kèm cờ resume (mặc định chỉ bỏ qua các record đã chạy trong runs.jsonl)
 python experiments/run_experiments.py --group all --resume
+
+# Chạy lại các bài toán bị thất bại (TIMEOUT hoặc ERROR) từ runs.jsonl
+python experiments/run_experiments.py --group all --resume --retry-failed
+
+# Ép buộc resume khi git commit hash hiện tại khác với commit trong runs.jsonl
+python experiments/run_experiments.py --group all --resume --force-resume
 
 # Ghi thông tin commit, timeout, và config vào metadata
 python experiments/run_experiments.py --group all --record-metadata
 ```
 
+> [!TIP]
+> **Cơ chế `--resume`, `--force-resume`, và `--retry-failed`:**
+> - Mỗi bản ghi trong `runs.jsonl` được tự động gắn git commit hash và cờ repo dirty (`git_commit`, `git_dirty`).
+> - `--resume`: Kiểm tra commit hash của các kết quả cũ. Nếu commit hash khác với commit hiện tại của repo, runner sẽ từ chối chạy để tránh trộn lẫn kết quả của các phiên bản mã nguồn khác nhau.
+> - `--force-resume`: Cho phép bỏ qua kiểm tra commit hash và tiếp tục chạy resume.
+> - `--retry-failed`: Mặc định `--resume` bỏ qua tất cả kết quả đã ghi. Khi thêm `--retry-failed`, runner bảo toàn các kết quả hoàn chỉnh (`OPTIMAL`, `INFEASIBLE`, `SIZE_LIMIT`), các trường hợp môi trường chưa cài đặt solver (`UNAVAILABLE`, `LICENSE_ERROR`), và nghiệm khả thi hợp lệ (`FEASIBLE` với `best_ub >= 0`), đồng thời tự động chạy lại các cấu hình thất bại tạm thời (`TIMEOUT`, `ERROR`, `INTERRUPTED`).
+
 > [!NOTE]
-> **Ghi chú về kết quả bảng biểu hiện tại (`results/tables/`)**:
-> Các bảng tổng hợp hiện tại trong `results/tables/` được chạy với `--timeout 10` (có thể kiểm chứng từ giá trị PAR2 của các lượt timeout là 2 × 10 = 20.0s).
-> Sử dụng cờ `--record-metadata` khi chạy runner để tự động lưu git commit hash, timeout, và đường dẫn cấu hình vào `results/env.json` cũng như đầu file `results/runs.jsonl`.
+> Mặc định runner ghi dữ liệu vào `results_v2/` và không can thiệp vào `results/`.
+> Sử dụng cờ `--record-metadata` khi chạy runner để tự động lưu git commit hash, timeout, và đường dẫn cấu hình vào `results_v2/env.json` cũng như đầu file `results_v2/runs.jsonl`.
 
 ---
 
 ## 6. Sinh bảng biểu và đồ thị (Analysis & Visualization)
 
-```bash
-# Sinh các bảng tổng hợp LaTeX (.tex) và CSV (.csv) vào results/tables/
-python analysis/make_tables.py results/runs.jsonl
+Các script phân tích mặc định đọc từ `results_v2/runs.jsonl` và xuất ra `results_v2/tables/` cũng như `results_v2/figures/`. Có thể tùy chỉnh thư mục đầu ra thông qua cờ `--output-dir`:
 
-# Sinh các biểu đồ cactus, scatter, ablation vào results/figures/
-python analysis/make_plots.py results/runs.jsonl
+```bash
+# Sinh các bảng tổng hợp LaTeX (.tex) và CSV (.csv) vào results_v2/tables/
+python analysis/make_tables.py results_v2/runs.jsonl
+# Hoặc chỉ định rõ thư mục xuất:
+python analysis/make_tables.py results_v2/runs.jsonl --output-dir results_v2/tables
+
+# Sinh các biểu đồ cactus, scatter, ablation vào results_v2/figures/
+python analysis/make_plots.py results_v2/runs.jsonl
+# Hoặc chỉ định rõ thư mục xuất:
+python analysis/make_plots.py results_v2/runs.jsonl --output-dir results_v2/figures
 ```
 
-- Bảng `table_ablation`: Đánh giá tác động của phá đối xứng quay, đối xứng gương và heuristic khởi tạo.
-- Bảng `table_solvers`: So sánh thời gian và tỷ lệ giải được của các solver SAT.
-- Bảng `table_methods`: So sánh SAT với CP-SAT và CPLEX. Trường hợp CPLEX chạm ngưỡng Community Edition (<= 1000 biến/ràng buộc) được đánh dấu riêng bằng mã **SL** (Size Limit), tách biệt khỏi PAR2 và được chú thích dưới bảng.
+- Bảng `table_ablation_small` & `table_ablation_medium`: Đánh giá tác động của phá đối xứng quay, đối xứng gương và heuristic khởi tạo (tách riêng đồ thị nhỏ và trung bình).
+- Bảng `table_ablation_family`: Đánh giá phân phối tỷ lệ thời gian giữa các biến thể trên họ các đồ thị hoán vị nhãn ngẫu nhiên (seeds), cung cấp median tỷ lệ thời gian, IQR (25-75%), min-max, và tỷ lệ số cặp nhanh hơn.
+- Bảng `table_ablation_family_per_graph`: Chi tiết các so sánh cặp trên từng đồ thị con họ bus ($N=40, 50$).
+- Bảng `table_ablation_phases`: Phân tích thời gian giải theo từng giai đoạn (vòng SAT cuối cùng `last_iter_time` vs các vòng trước `prev_iters_time`), phân tách theo $N=40$ và $N=50$.
+- Bảng `table_solvers_small` & `table_solvers_medium`: So sánh thời gian và tỷ lệ giải được của 5 solver SAT trên đồ thị nhỏ và trung bình.
+  - *Ghi chú cho `table_solvers_small`*: Mỗi dataset được chạy trên 5 hoán vị nhãn ngẫu nhiên (`relabel_seeds` 0..4). Thời gian giải được gộp theo trung vị (**median**); điểm PAR2 được tính theo trung bình cộng (**mean**) trên 5 seed.
+- Bảng `table_methods`: So sánh SAT với CP-SAT và CPLEX trên 7 instance (nhỏ + trung bình). Trường hợp CPLEX chạm ngưỡng Community Edition (<= 1000 biến/ràng buộc) được đánh dấu riêng bằng mã **SL** (Size Limit), tách biệt khỏi PAR2 và được chú thích dưới bảng.
+  - *Quy tắc Speedup & Mean time*: Tốc độ tăng trung bình nhân (Speedup) chỉ tính trên các instance mà baseline $\ge 0.1\text{s}$ (kèm hiển thị số instance đủ điều kiện, ví dụ `[5/7]`). Nếu solver/method chưa giải được hết các instance này thì ghi `-`. Nếu một method chưa giải hết toàn bộ instance trong bảng thì dòng "mean time" ghi `-`.
+- Bảng `table_methods_family`: So sánh hiệu năng giữa CP-SAT và SAT best trên 6 đồ thị có hoán vị nhãn ngẫu nhiên (seeds 0..4 và 0..2): median tỷ lệ thời gian `cpsat/sat`, min, max, và số cặp CP-SAT nhanh hơn / tổng số cặp.
+- Bảng `table_methods_large`: So sánh CP-SAT và SAT best trên các đồ thị lớn ($N \ge 80$, nhãn gốc). Lưu ý rằng SAT không sinh cận dưới solver; cận dưới của SAT dựa trên lý thuyết đồ thị $LB_{\text{degree}} = \lceil \Delta/2 \rceil$. CP-SAT cung cấp cận dưới thô từ solver `cpsat_solver_lb` ($\lceil \text{BestObjectiveBound} \rceil$), và cận dưới kết hợp $LB_{\text{combined}} = \max(LB_{\text{degree}}, \text{cpsat\_solver\_lb})$.
+- Bảng `table_per_dataset`: Tổng hợp kết quả SAT best (CaDiCaL 195) trên toàn bộ 16 dataset MatrixMarket. Ghi rõ SAT không sinh cận dưới solver (`lb_solver` ghi `-`), cận dưới dựa trên bậc cực đại $LB_{\text{degree}} = \lceil \Delta/2 \rceil$, và cột `ub_minus_lb` (chỉ là hiệu cận trên và cận dưới đồ thị yếu, không phải khoảng cách tới tối ưu).
+- Bảng `cross_validation.csv`: Đối chiếu nghiệm tối ưu `best_ub` giữa tất cả solver/method cùng đạt trạng thái OPTIMAL trên cùng dataset/seed (cột `relabel_seed` kiểu Int64, để trống cho nhãn gốc). Báo lỗi và dừng nếu phát hiện mâu thuẫn hoặc nghiệm incumbent không hợp lệ (< opt).
 
 ---
 
-## 7. Chạy kiểm thử tự động (Running Tests)
+## 7. Hoàn thiện kết quả (Finalize)
+
+Khi toàn bộ thực nghiệm sạch trong `results_v2/` đã hoàn thành và được kiểm chứng hợp lệ:
+1. Lưu trữ kết quả pilot cũ (chạy trên 4 đồ thị: `14_bus`, `30_bus`, `494_bus`, `662_bus`, timeout 60s, không ghi `git_commit`):
+   - Để tránh lồng thư mục (do `results/` cũ đang chứa thư mục con `results/pilot/` bên trong):
+     ```bash
+     # Nếu results/pilot tồn tại, tách riêng thư mục pilot trước:
+     git mv results/pilot results_pilot
+
+     # Sau đó di chuyển phần còn lại (bảng biểu, đồ thị cũ):
+     git mv results results_pilot_tables
+     ```
+     *(Ghi chú: Nếu di chuyển trực tiếp cả thư mục thì dùng `git mv results results_pilot_old`, chứa results/pilot/ lồng bên trong).*
+2. Sao chép kết quả chính thức từ `results_v2/` sang `results/` và commit:
+   ```bash
+   cp -r results_v2 results
+   git add results_pilot results_pilot_tables results
+   git commit -m "chore: archive pilot results and commit finalized experiment results"
+   ```
+
+---
+
+## 8. Chạy kiểm thử tự động (Running Tests)
 
 Toàn bộ các thuật toán và mô hình được kiểm thử tự động bằng `pytest`:
 
@@ -183,6 +255,7 @@ pytest -q
 
 # Chạy riêng từng file test:
 pytest tests/test_correctness.py -v   # Tính đúng đắn của SAT encoding & phá đối xứng
+pytest tests/count_solutions.py -v     # Kiểm chứng số lượng nghiệm và phá đối xứng lý thuyết
 pytest tests/test_baselines.py -v     # Kiểm thử CP-SAT & CPLEX baselines
 pytest tests/test_experiments.py -v   # Kiểm thử lập kế hoạch, tổng hợp số liệu
 pytest tests/test_graph_atlas.py -v   # Đối chiếu toàn diện 1.252 đồ thị với Brute Force
@@ -190,7 +263,23 @@ pytest tests/test_graph_atlas.py -v   # Đối chiếu toàn diện 1.252 đồ 
 
 ---
 
-## 8. Ghi chú mã nguồn cũ (Legacy)
+## 9. Biên dịch báo cáo khoa học (Compiling the Scientific Report)
+
+Báo cáo khoa học hoàn chỉnh được viết theo định dạng Elsevier CAS Single Column (`cas-sc.cls`) tại thư mục `report/`.
+
+Để biên dịch báo cáo sang định dạng PDF:
+
+```bash
+cd report
+pdflatex -interaction=nonstopmode report.tex
+pdflatex -interaction=nonstopmode report.tex
+```
+
+Kết quả xuất ra file `report/report.pdf` (13 trang, bao gồm đầy đủ tóm tắt, mô hình toán học Order Encoding & Commander Encoding, phá đối xứng quay & phản xạ, bảng số liệu thực nghiệm, phân tích pha và biểu đồ hiệu năng).
+
+---
+
+## 10. Ghi chú mã nguồn cũ (Legacy)
 
 - `legacy/bmp.py`: Là phiên bản triển khai CBMP đời đầu, không còn module nào trong dự án phụ thuộc hoặc import file này. Đã được chuyển vào thư mục `legacy/` để bảo tồn lịch sử phát triển.
 

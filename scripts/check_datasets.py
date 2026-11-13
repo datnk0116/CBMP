@@ -26,6 +26,11 @@ def find_referenced_datasets(config_path):
             for d in ds:
                 if isinstance(d, str) and d != "all":
                     referenced.add(d)
+                elif isinstance(d, dict) and "name" in d:
+                    referenced.add(d["name"])
+        elif isinstance(ds, dict):
+            for d_name in ds.keys():
+                referenced.add(d_name)
 
     return sorted(list(referenced))
 

@@ -3,15 +3,36 @@ import sys
 import glob
 import json
 import time
+import math
 import yaml
+import signal
+import logging
 import argparse
 import platform
 import subprocess
 from pathlib import Path
 
+# Setup module logger
+logger = logging.getLogger("experiments")
+
 # Ensure repo root is in sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+from analysis.make_tables import (
+    normalize_status,
+    validate_best_ub,
+    get_canonical_key,
+    is_optimal_status,
+    is_valid_assignment,
+    strict_positive_int,
+    normalize_solver_alias,
+    normalize_method_alias,
+    DuplicateConflictError,
+    get_repetition_identity,
+    get_run_identity,
+    pick_better_record,
+)
 
 def get_dataset_info(filepath):
     """Quickly read N and M from MatrixMarket header without parsing entire matrix."""
@@ -54,14 +75,31 @@ def discover_datasets(dataset_dir="datasets", min_n=1, max_n=None, allowed_names
     discovered.sort(key=lambda d: (d["N"], d["name"]))
     return discovered
 
-def get_git_commit_hash():
-    """Retrieve current git commit hash."""
+def get_git_commit_info():
+    """Retrieve current git commit hash and dirty status."""
     try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
     except Exception:
-        return "unknown"
+        commit = "unknown"
+    try:
+        status_out = subprocess.check_output(
+            ["git", "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        is_dirty = bool(status_out)
+    except Exception:
+        is_dirty = False
+    return commit, is_dirty
 
-def collect_environment_info(output_path="results/env.json", timeout=None, config_path=None, record_metadata=False):
+def get_git_commit_hash():
+    """Retrieve current git commit hash (with -dirty suffix if repo is dirty)."""
+    commit, is_dirty = get_git_commit_info()
+    if is_dirty and commit != "unknown":
+        return f"{commit}-dirty"
+    return commit
+
+def collect_environment_info(output_path="results_v2/env.json", timeout=None, config_path=None, record_metadata=False):
     """Collect hardware and software environment details."""
     info = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -78,7 +116,10 @@ def collect_environment_info(output_path="results/env.json", timeout=None, confi
         if timeout is not None:
             info["timeout"] = timeout
         if config_path is not None:
-            info["config_path"] = os.path.abspath(config_path)
+            try:
+                info["config_path"] = os.path.relpath(config_path, start=str(REPO_ROOT))
+            except Exception:
+                info["config_path"] = str(config_path)
 
     # CPU model
     try:
@@ -127,51 +168,137 @@ def collect_environment_info(output_path="results/env.json", timeout=None, confi
 
     return info
 
-def get_canonical_key(record):
+def is_run_completed(record: Dict[str, Any], retry_failed: bool = False) -> bool:
     """
-    Extracts canonical (dataset, method, solver, flags) tuple from a result dictionary.
-    """
-    dataset = record.get("dataset")
-    solver = str(record.get("solver", "")).lower()
-    cfg = record.get("config", {})
-    if solver in ("cp_sat", "cpsat"):
-        method = "cpsat"
-        flags = (cfg.get("num_workers", 1),)
-    elif solver == "cplex":
-        method = "cplex"
-        flags = ()
-    else:
-        method = "sat"
-        rot = bool(cfg.get("sb_rotation", False))
-        ref = bool(cfg.get("sb_reflection", False))
-        heur = bool(cfg.get("heuristic_ub", False))
-        flags = (rot, ref, heur)
-    return (dataset, method, solver, flags)
+    Determine whether an existing run record should be considered complete.
 
-def load_existing_runs(runs_jsonl_path):
+    Semantics:
+    - Normal resume (retry_failed=False):
+        All existing records in runs.jsonl are preserved and treated as completed.
+    - Retry failed mode (retry_failed=True):
+        * Complete proofs & hard bounds (NEVER retry):
+            - OPTIMAL: Optimality is proven mathematically with a valid best_ub and no validation_error.
+            - INFEASIBLE: Problem/bound is proven infeasible.
+            - SIZE_LIMIT: Graph size exceeded configuration limits.
+        * Stable environment/license barriers (DO NOT retry in same environment):
+            - UNAVAILABLE: Solver binary/engine is not installed.
+            - LICENSE_ERROR: Commercial license is missing or invalid.
+        * Incumbent preservation (PRESERVED):
+            - FEASIBLE with valid best_ub >= 0 and no validation_error.
+        * Retryable transient failures (RETRIED):
+            - TIMEOUT, MEMOUT, ERROR, INTERRUPTED, UNKNOWN.
+            - FEASIBLE with missing or negative best_ub.
+            - Records with validation_error = True.
+    """
+    if not retry_failed:
+        return True
+
+    if not isinstance(record, dict):
+        return False
+
+    if record.get("validation_error"):
+        return False
+
+    status = normalize_status(record.get("status"))
+    if not status:
+        status = str(record.get("status", "")).strip().upper()
+
+    # 1. Conclusive proofs and limits
+    if status == "OPTIMAL":
+        ub_val = validate_best_ub(record.get("best_ub"))
+        if ub_val is None:
+            return False
+        if record.get("validation_error"):
+            return False
+        if "assignment" in record and record.get("assignment") is not None:
+            if not is_valid_assignment(record["assignment"], n=record.get("N")):
+                return False
+        return True
+
+    if status in ("INFEASIBLE", "SIZE_LIMIT"):
+        return True
+
+    # 2. Solver installation / license unavailability
+    if status in ("UNAVAILABLE", "LICENSE_ERROR"):
+        return True
+
+    # 3. Preserved feasible incumbents
+    if status == "FEASIBLE":
+        ub_val = validate_best_ub(record.get("best_ub"))
+        if ub_val is None:
+            return False
+        if record.get("validation_error"):
+            return False
+        if "assignment" in record and record.get("assignment") is not None:
+            if not is_valid_assignment(record["assignment"], n=record.get("N")):
+                return False
+        return True
+
+    # 4. Transient failures are retryable
+    return False
+
+def load_existing_runs(runs_jsonl_path, retry_failed=False):
     """
     Load runs already recorded in runs.jsonl mapping (canonical_key, rep) -> record.
+    If retry_failed is True, completed runs are filtered via is_run_completed(..., retry_failed=True).
+    Strictly validates key and rep. Divergent duplicate OPTIMAL bounds raise DuplicateConflictError.
     """
     if not os.path.exists(runs_jsonl_path):
         return {}
     completed = {}
+    valid_count = 0
+    skipped_count = 0
     try:
         with open(runs_jsonl_path, "r", encoding="utf-8") as f:
-            for line in f:
+            for line_no, line in enumerate(f, start=1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     data = json.loads(line)
+                    if not isinstance(data, dict):
+                        skipped_count += 1
+                        logger.warning("Corrupt JSON at %s:%d: expected JSON object, got %s (skipped)", runs_jsonl_path, line_no, type(data).__name__)
+                        continue
                     if data.get("_type") == "metadata" or "dataset" not in data:
                         continue
                     key = get_canonical_key(data)
-                    rep = int(data.get("rep", 1))
-                    completed[(key, rep)] = data
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                    if key is None:
+                        skipped_count += 1
+                        logger.warning("Record at %s:%d has invalid canonical identity (skipped)", runs_jsonl_path, line_no)
+                        continue
+
+                    rep = get_repetition_identity(data)
+                    if rep is None:
+                        skipped_count += 1
+                        logger.warning("Record at %s:%d has invalid repetition (skipped)", runs_jsonl_path, line_no)
+                        continue
+
+                    if is_run_completed(data, retry_failed=retry_failed):
+                        existing = completed.get((key, rep))
+                        if existing is not None:
+                            completed[(key, rep)] = pick_better_record(existing, data, strict=True)
+                        else:
+                            completed[(key, rep)] = data
+                            valid_count += 1
+                except DuplicateConflictError:
+                    raise
+                except (json.JSONDecodeError, ValueError) as e:
+                    skipped_count += 1
+                    logger.warning("Corrupt or invalid JSON at %s:%d: %s (skipped)", runs_jsonl_path, line_no, e)
+                except Exception as e:
+                    skipped_count += 1
+                    logger.warning("Error processing record at %s:%d: %s (skipped)", runs_jsonl_path, line_no, e)
+    except DuplicateConflictError:
+        raise
+    except Exception as e:
+        logger.error("Could not read existing runs from %s: %s", runs_jsonl_path, e)
+
+    if skipped_count > 0:
+        logger.warning(
+            "Loaded %d completed runs from %s (%d invalid/corrupt lines skipped)",
+            valid_count, runs_jsonl_path, skipped_count
+        )
     return completed
 
 def filter_datasets_for_group(all_datasets, group_cfg, defaults, cli_datasets=None, cli_min_n=None, cli_max_n=None):
@@ -183,7 +310,8 @@ def filter_datasets_for_group(all_datasets, group_cfg, defaults, cli_datasets=No
     """
     default_filters = defaults.get("filters", {})
 
-    # 1. Dataset name filter
+    # 1. Dataset name filter & relabel_seeds map
+    seeds_map = {}
     if cli_datasets is not None:
         allowed = set(s.strip() for s in cli_datasets.split(","))
     else:
@@ -199,11 +327,45 @@ def filter_datasets_for_group(all_datasets, group_cfg, defaults, cli_datasets=No
         elif grp_ds == "all":
             allowed = None
         elif isinstance(grp_ds, (list, tuple, set)):
-            allowed = set(grp_ds)
+            allowed = set()
+            for item in grp_ds:
+                if isinstance(item, str):
+                    allowed.add(item)
+                elif isinstance(item, dict) and "name" in item:
+                    name = item["name"]
+                    allowed.add(name)
+                    if "relabel_seeds" in item:
+                        seeds_map[name] = item["relabel_seeds"]
+                elif isinstance(item, dict):
+                    for k, v in item.items():
+                        allowed.add(k)
+                        if isinstance(v, list):
+                            seeds_map[k] = v
+        elif isinstance(grp_ds, dict):
+            allowed = set(grp_ds.keys())
+            for k, v in grp_ds.items():
+                if isinstance(v, list):
+                    seeds_map[k] = v
         elif isinstance(grp_ds, str):
             allowed = set([s.strip() for s in grp_ds.split(",")])
         else:
             allowed = None
+
+    # Populate seeds_map also if grp_ds has seeds configured and cli_datasets filtered it
+    if cli_datasets is not None and isinstance(group_cfg.get("datasets"), (list, tuple, set, dict)):
+        raw_ds = group_cfg.get("datasets")
+        if isinstance(raw_ds, (list, tuple, set)):
+            for item in raw_ds:
+                if isinstance(item, dict) and "name" in item and "relabel_seeds" in item:
+                    seeds_map[item["name"]] = item["relabel_seeds"]
+                elif isinstance(item, dict):
+                    for k, v in item.items():
+                        if isinstance(v, list):
+                            seeds_map[k] = v
+        elif isinstance(raw_ds, dict):
+            for k, v in raw_ds.items():
+                if isinstance(v, list):
+                    seeds_map[k] = v
 
     # 2. Min N
     if cli_min_n is not None:
@@ -229,7 +391,10 @@ def filter_datasets_for_group(all_datasets, group_cfg, defaults, cli_datasets=No
             continue
         if eff_max_n is not None and d["N"] > eff_max_n:
             continue
-        filtered.append(d)
+        d_out = dict(d)
+        if d["name"] in seeds_map:
+            d_out["relabel_seeds"] = seeds_map[d["name"]]
+        filtered.append(d_out)
 
     return filtered
 
@@ -286,7 +451,7 @@ def build_experiment_plan(
 
             for d in grp_datasets:
                 grp_tasks_count += 1
-                key = (d["name"], method, solver.lower(), flags)
+                key = (d["name"], method, solver.lower(), flags, None)
                 if key not in tasks_map:
                     tasks_map[key] = {
                         "canonical_key": key,
@@ -296,11 +461,13 @@ def build_experiment_plan(
                         "method": method,
                         "solver": solver,
                         "flags": flags,
+                        "relabel_seed": None,
                         "config_dict": {
                             "sb_rotation": rot,
                             "sb_reflection": ref,
                             "heuristic_ub": heur,
                             "time_limit": grp_timeout,
+                            "relabel_seed": None,
                         },
                         "timeout": grp_timeout,
                         "group_reps": {grp: grp_reps},
@@ -312,7 +479,7 @@ def build_experiment_plan(
                         tasks_map[key]["groups"].append(grp)
                     tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
-        elif grp == "solvers":
+        elif grp == "solvers" or grp.startswith("solvers_"):
             rot = bool(grp_cfg.get("sb_rotation", True))
             ref = bool(grp_cfg.get("sb_reflection", True))
             heur = bool(grp_cfg.get("heuristic_ub", True))
@@ -321,132 +488,190 @@ def build_experiment_plan(
             flags = (rot, ref, heur)
 
             for d in grp_datasets:
-                for s in solvers:
-                    grp_tasks_count += 1
-                    key = (d["name"], method, s.lower(), flags)
-                    if key not in tasks_map:
-                        tasks_map[key] = {
-                            "canonical_key": key,
-                            "dataset": d["name"],
-                            "N": d["N"],
-                            "M": d["M"],
-                            "method": method,
-                            "solver": s,
-                            "flags": flags,
-                            "config_dict": {
+                seeds = d.get("relabel_seeds", [None])
+                for seed in seeds:
+                    for s in solvers:
+                        grp_tasks_count += 1
+                        key = (d["name"], method, s.lower(), flags, seed)
+                        if key not in tasks_map:
+                            tasks_map[key] = {
+                                "canonical_key": key,
+                                "dataset": d["name"],
+                                "N": d["N"],
+                                "M": d["M"],
+                                "method": method,
+                                "solver": s,
+                                "flags": flags,
+                                "relabel_seed": seed,
+                                "config_dict": {
+                                    "sb_rotation": rot,
+                                    "sb_reflection": ref,
+                                    "heuristic_ub": heur,
+                                    "time_limit": grp_timeout,
+                                    "relabel_seed": seed,
+                                },
+                                "timeout": grp_timeout,
+                                "group_reps": {grp: grp_reps},
+                                "groups": [grp],
+                            }
+                        else:
+                            tasks_map[key]["group_reps"][grp] = grp_reps
+                            if grp not in tasks_map[key]["groups"]:
+                                tasks_map[key]["groups"].append(grp)
+                            tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
+
+        elif "methods" in grp_cfg or grp == "methods" or grp.startswith("methods_") or grp.startswith("cpsat_") or grp == "encodings":
+            methods = grp_cfg.get("methods", [])
+            for d in grp_datasets:
+                seeds = d.get("relabel_seeds", [None])
+                for seed in seeds:
+                    for m in methods:
+                        grp_tasks_count += 1
+                        m_type = m.get("type", "sat")
+                        if m_type == "sat":
+                            solver = m.get("solver", "cadical195")
+                            rot = bool(m.get("sb_rotation", True))
+                            ref = bool(m.get("sb_reflection", True))
+                            heur = bool(m.get("heuristic_ub", True))
+                            enc = str(m.get("encoding", "order")).lower()
+                            mode = str(m.get("solving_mode", "incremental")).lower()
+                            eo = str(m.get("eo_strategy", "commander")).lower()
+                            method = "sat"
+                            if enc != "order" or mode != "incremental" or eo != "commander":
+                                flags = (rot, ref, heur, enc, mode, eo)
+                            else:
+                                flags = (rot, ref, heur)
+                            key = (d["name"], method, solver.lower(), flags, seed)
+                            cfg_dict = {
                                 "sb_rotation": rot,
                                 "sb_reflection": ref,
                                 "heuristic_ub": heur,
+                                "encoding": enc,
+                                "solving_mode": mode,
+                                "eo_strategy": eo,
                                 "time_limit": grp_timeout,
-                            },
-                            "timeout": grp_timeout,
-                            "group_reps": {grp: grp_reps},
-                            "groups": [grp],
-                        }
-                    else:
-                        tasks_map[key]["group_reps"][grp] = grp_reps
-                        if grp not in tasks_map[key]["groups"]:
-                            tasks_map[key]["groups"].append(grp)
-                        tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
+                                "relabel_seed": seed,
+                            }
+                        elif m_type == "cpsat":
+                            num_w = m.get("num_workers", 1)
+                            method = "cpsat"
+                            solver = "cp_sat"
+                            sb_rot = bool(m.get("sb_rotation", True))
+                            flags = (num_w, sb_rot)
+                            key = (d["name"], method, solver, flags, seed)
+                            cfg_dict = {
+                                "num_workers": num_w,
+                                "sb_rotation": sb_rot,
+                                "time_limit": grp_timeout,
+                                "relabel_seed": seed,
+                            }
+                        elif m_type == "cplex":
+                            method = "cplex"
+                            solver = "cplex"
+                            sb_rot = bool(m["sb_rotation"]) if "sb_rotation" in m else None
+                            flags = (sb_rot,) if sb_rot is not None else ()
+                            key = (d["name"], method, solver, flags, seed)
+                            cfg_dict = {
+                                "time_limit": grp_timeout,
+                                "relabel_seed": seed,
+                            }
+                            if sb_rot is not None:
+                                cfg_dict["sb_rotation"] = sb_rot
+                        elif m_type == "cplex_cp":
+                            method = "cplex_cp"
+                            solver = "cplex_cp"
+                            sb_rot = bool(m["sb_rotation"]) if "sb_rotation" in m else None
+                            flags = (sb_rot,) if sb_rot is not None else ()
+                            key = (d["name"], method, solver, flags, seed)
+                            cfg_dict = {
+                                "time_limit": grp_timeout,
+                                "relabel_seed": seed,
+                            }
+                            if sb_rot is not None:
+                                cfg_dict["sb_rotation"] = sb_rot
+                        elif m_type == "gurobi":
+                            method = "gurobi"
+                            solver = "gurobi"
+                            sb_rot = bool(m["sb_rotation"]) if "sb_rotation" in m else None
+                            flags = (sb_rot,) if sb_rot is not None else ()
+                            key = (d["name"], method, solver, flags, seed)
+                            cfg_dict = {
+                                "time_limit": grp_timeout,
+                                "relabel_seed": seed,
+                            }
+                            if sb_rot is not None:
+                                cfg_dict["sb_rotation"] = sb_rot
+                        else:
+                            continue
 
-        elif grp == "methods":
-            methods = grp_cfg.get("methods", [])
+                        if key not in tasks_map:
+                            tasks_map[key] = {
+                                "canonical_key": key,
+                                "dataset": d["name"],
+                                "N": d["N"],
+                                "M": d["M"],
+                                "method": method,
+                                "solver": solver,
+                                "flags": flags,
+                                "relabel_seed": seed,
+                                "config_dict": cfg_dict,
+                                "timeout": grp_timeout,
+                                "group_reps": {grp: grp_reps},
+                                "groups": [grp],
+                            }
+                        else:
+                            tasks_map[key]["group_reps"][grp] = grp_reps
+                            if grp not in tasks_map[key]["groups"]:
+                                tasks_map[key]["groups"].append(grp)
+                            tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
+
+        elif grp == "ablation" or grp.startswith("ablation_"):
+            solver = grp_cfg.get("solver", "cadical195")
+            variants = grp_cfg.get("variants", [])
+            method = "sat"
             for d in grp_datasets:
-                for m in methods:
-                    grp_tasks_count += 1
-                    m_type = m.get("type", "sat")
-                    if m_type == "sat":
-                        solver = m.get("solver", "cadical195")
-                        rot = bool(m.get("sb_rotation", True))
-                        ref = bool(m.get("sb_reflection", True))
-                        heur = bool(m.get("heuristic_ub", True))
-                        method = "sat"
+                seeds = d.get("relabel_seeds", [None])
+                for seed in seeds:
+                    for var in variants:
+                        grp_tasks_count += 1
+                        rot = bool(var.get("sb_rotation", False))
+                        ref = bool(var.get("sb_reflection", False))
+                        heur = bool(var.get("heuristic_ub", False))
                         flags = (rot, ref, heur)
-                        key = (d["name"], method, solver.lower(), flags)
+                        key = (d["name"], method, solver.lower(), flags, seed)
                         cfg_dict = {
                             "sb_rotation": rot,
                             "sb_reflection": ref,
                             "heuristic_ub": heur,
                             "time_limit": grp_timeout,
+                            "relabel_seed": seed,
                         }
-                    elif m_type == "cpsat":
-                        num_w = m.get("num_workers", 1)
-                        method = "cpsat"
-                        solver = "cp_sat"
-                        flags = (num_w,)
-                        key = (d["name"], method, solver, flags)
-                        cfg_dict = {
-                            "num_workers": num_w,
-                            "time_limit": grp_timeout,
-                        }
-                    elif m_type == "cplex":
-                        method = "cplex"
-                        solver = "cplex"
-                        flags = ()
-                        key = (d["name"], method, solver, flags)
-                        cfg_dict = {
-                            "time_limit": grp_timeout,
-                        }
-                    else:
-                        continue
+                        if key not in tasks_map:
+                            tasks_map[key] = {
+                                "canonical_key": key,
+                                "dataset": d["name"],
+                                "N": d["N"],
+                                "M": d["M"],
+                                "method": method,
+                                "solver": solver,
+                                "flags": flags,
+                                "relabel_seed": seed,
+                                "config_dict": cfg_dict,
+                                "timeout": grp_timeout,
+                                "group_reps": {grp: grp_reps},
+                                "groups": [grp],
+                            }
+                        else:
+                            tasks_map[key]["group_reps"][grp] = grp_reps
+                            if grp not in tasks_map[key]["groups"]:
+                                tasks_map[key]["groups"].append(grp)
+                            tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
 
-                    if key not in tasks_map:
-                        tasks_map[key] = {
-                            "canonical_key": key,
-                            "dataset": d["name"],
-                            "N": d["N"],
-                            "M": d["M"],
-                            "method": method,
-                            "solver": solver,
-                            "flags": flags,
-                            "config_dict": cfg_dict,
-                            "timeout": grp_timeout,
-                            "group_reps": {grp: grp_reps},
-                            "groups": [grp],
-                        }
-                    else:
-                        tasks_map[key]["group_reps"][grp] = grp_reps
-                        if grp not in tasks_map[key]["groups"]:
-                            tasks_map[key]["groups"].append(grp)
-                        tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
-
-        elif grp == "ablation":
-            solver = grp_cfg.get("solver", "cadical195")
-            variants = grp_cfg.get("variants", [])
-            method = "sat"
-            for d in grp_datasets:
-                for var in variants:
-                    grp_tasks_count += 1
-                    rot = bool(var.get("sb_rotation", False))
-                    ref = bool(var.get("sb_reflection", False))
-                    heur = bool(var.get("heuristic_ub", False))
-                    flags = (rot, ref, heur)
-                    key = (d["name"], method, solver.lower(), flags)
-                    cfg_dict = {
-                        "sb_rotation": rot,
-                        "sb_reflection": ref,
-                        "heuristic_ub": heur,
-                        "time_limit": grp_timeout,
-                    }
-                    if key not in tasks_map:
-                        tasks_map[key] = {
-                            "canonical_key": key,
-                            "dataset": d["name"],
-                            "N": d["N"],
-                            "M": d["M"],
-                            "method": method,
-                            "solver": solver,
-                            "flags": flags,
-                            "config_dict": cfg_dict,
-                            "timeout": grp_timeout,
-                            "group_reps": {grp: grp_reps},
-                            "groups": [grp],
-                        }
-                    else:
-                        tasks_map[key]["group_reps"][grp] = grp_reps
-                        if grp not in tasks_map[key]["groups"]:
-                            tasks_map[key]["groups"].append(grp)
-                        tasks_map[key]["timeout"] = max(tasks_map[key]["timeout"], grp_timeout)
+        if len(grp_datasets) > 0 and grp_tasks_count == 0:
+            raise ValueError(
+                f"Group '{grp}' has {len(grp_datasets)} dataset(s) configured, "
+                f"but generated 0 tasks! Check group methods/variants/solvers configuration."
+            )
 
         group_stats[grp] = {
             "datasets_count": len(grp_datasets),
@@ -468,48 +693,97 @@ def build_task_cmd(task, json_out_path):
     method = task["method"]
     timeout = task["timeout"]
     dataset = task["dataset"]
+    cfg = task.get("config_dict", {})
     if method == "sat":
-        rot, ref, heur = task["flags"]
+        rot = bool(cfg.get("sb_rotation", False))
+        ref = bool(cfg.get("sb_reflection", False))
+        heur = bool(cfg.get("heuristic_ub", False))
+        enc = cfg.get("encoding", "order")
+        mode = cfg.get("solving_mode", "incremental")
+        eo = cfg.get("eo_strategy", "commander")
         cmd = [
             sys.executable, "main.py", dataset,
             "--timeout", str(timeout),
             "--solver", task["solver"],
+            "--encoding", enc,
+            "--solving-mode", mode,
+            "--eo-strategy", eo,
             "--json-out", json_out_path,
         ]
         if rot: cmd.append("--sb-rotation")
         if ref: cmd.append("--sb-reflection")
         if heur: cmd.append("--heuristic-ub")
+        if task.get("relabel_seed") is not None:
+            cmd.extend(["--relabel-seed", str(task["relabel_seed"])])
         return cmd
     elif method == "cpsat":
         num_w = task["flags"][0] if task["flags"] else 1
-        return [
+        cmd = [
             sys.executable, "-m", "baselines.cpsat_cbmp", dataset,
             "--timeout", str(timeout),
             "--num-workers", str(num_w),
             "--json-out", json_out_path,
         ]
-    elif method == "cplex":
-        return [
-            sys.executable, "-m", "baselines.cplex_cbmp", dataset,
+        sb_rot = task.get("config_dict", {}).get("sb_rotation", True)
+        if len(task.get("flags", ())) > 1:
+            sb_rot = task["flags"][1]
+        cmd.append("--sb-rotation" if sb_rot else "--no-sb-rotation")
+        if task.get("relabel_seed") is not None:
+            cmd.extend(["--relabel-seed", str(task["relabel_seed"])])
+        return cmd
+    elif method in ("cplex", "cplex_cp", "gurobi"):
+        mod_map = {
+            "cplex": "baselines.cplex_cbmp",
+            "cplex_cp": "baselines.cplex_cp_cbmp",
+            "gurobi": "baselines.gurobi_cbmp",
+        }
+        cmd = [
+            sys.executable, "-m", mod_map[method], dataset,
             "--timeout", str(timeout),
             "--json-out", json_out_path,
         ]
+        if "sb_rotation" in task["config_dict"]:
+            sb_rot = bool(task["config_dict"]["sb_rotation"])
+            cmd.append("--sb-rotation" if sb_rot else "--no-sb-rotation")
+        if task.get("relabel_seed") is not None and method in ("cpsat", "cplex_cp", "gurobi"):
+            cmd.extend(["--relabel-seed", str(task["relabel_seed"])])
+        return cmd
     else:
         raise ValueError(f"Unknown method: {method}")
 
 def format_task_flags(task):
     """Human-readable representation of configuration flags."""
     if task["method"] == "sat":
-        rot, ref, heur = task["flags"]
+        rot, ref, heur = task["flags"][:3]
         parts = []
+        if len(task["flags"]) > 3:
+            enc, mode, eo = task["flags"][3:6]
+            if enc != "order": parts.append(enc)
+            if mode != "incremental": parts.append(mode)
+            if eo != "commander": parts.append(eo)
         if rot: parts.append("rot")
         if ref: parts.append("ref")
         if heur: parts.append("heur_ub")
-        return "+".join(parts) if parts else "none"
+        res = "+".join(parts) if parts else "none"
+        if task.get("relabel_seed") is not None:
+            res += f"+seed={task['relabel_seed']}"
+        return res
     elif task["method"] == "cpsat":
-        return f"workers={task['flags'][0]}"
-    elif task["method"] == "cplex":
-        return "default"
+        parts = [f"workers={task['flags'][0]}"]
+        if len(task["flags"]) > 1:
+            parts.append(f"rot={task['flags'][1]}")
+        if task.get("relabel_seed") is not None:
+            parts.append(f"seed={task['relabel_seed']}")
+        return "+".join(parts)
+    elif task["method"] in ("cplex", "cplex_cp", "gurobi"):
+        parts = []
+        if task.get("flags") and len(task["flags"]) > 0:
+            parts.append(f"rot={task['flags'][0]}")
+        else:
+            parts.append("default")
+        if task.get("relabel_seed") is not None:
+            parts.append(f"seed={task['relabel_seed']}")
+        return "+".join(parts)
     return "-"
 
 def run_experiments(
@@ -521,11 +795,23 @@ def run_experiments(
     max_n=None,
     dataset_filter=None,
     resume=False,
+    force_resume=False,
+    retry_failed=False,
+    allow_dirty=False,
     dry_run=False,
-    output_dir="results",
+    output_dir="results_v2",
     record_metadata=False,
 ):
     from scripts.check_datasets import validate_datasets
+
+    if retry_failed:
+        resume = True
+
+    commit_hash, is_dirty = get_git_commit_info()
+    if is_dirty and not allow_dirty and not dry_run:
+        msg = "Working directory has uncommitted changes (git_dirty=True). Commit all changes or pass --allow-dirty to proceed."
+        print(f"[ERROR] {msg}", file=sys.stderr)
+        raise ValueError(msg)
 
     # 1. Load config
     with open(config_path, "r", encoding="utf-8") as f:
@@ -547,16 +833,17 @@ def run_experiments(
         print("No datasets found in dataset directory.")
         return
 
-    # 3. Environment info
-    os.makedirs(output_dir, exist_ok=True)
-    env_file = os.path.join(output_dir, "env.json")
-    effective_timeout = timeout if timeout is not None else defaults.get("timeout", 600)
-    collect_environment_info(
-        output_path=env_file,
-        timeout=effective_timeout,
-        config_path=config_path,
-        record_metadata=record_metadata,
-    )
+    # 3. Environment info (only for actual execution)
+    if not dry_run:
+        os.makedirs(output_dir, exist_ok=True)
+        env_file = os.path.join(output_dir, "env.json")
+        effective_timeout = timeout if timeout is not None else defaults.get("timeout", 600)
+        collect_environment_info(
+            output_path=env_file,
+            timeout=effective_timeout,
+            config_path=config_path,
+            record_metadata=record_metadata,
+        )
 
     # 4. Build deduplicated execution plan
     plan, group_stats = build_experiment_plan(
@@ -604,18 +891,58 @@ def run_experiments(
 
     # 6. Sequential execution
     runs_file = os.path.join(output_dir, "runs.jsonl")
+    commit_hash, is_dirty = get_git_commit_info()
+
+    # If resume, validate git commit hash matches
+    if resume and os.path.exists(runs_file):
+        existing_commits = set()
+        try:
+            with open(runs_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                        c = d.get("git_commit")
+                        if c and c != "unknown":
+                            clean_c = c.replace("-dirty", "")
+                            existing_commits.add(clean_c)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        clean_current = commit_hash.replace("-dirty", "")
+        if existing_commits and clean_current != "unknown" and clean_current not in existing_commits:
+            msg = (
+                f"Git commit mismatch in runs file '{runs_file}': "
+                f"existing runs from commit(s) {sorted(list(existing_commits))}, "
+                f"current HEAD is '{clean_current}'. Use --force-resume to proceed."
+            )
+            if not force_resume:
+                print(f"[ERROR] {msg}", file=sys.stderr)
+                raise ValueError(msg)
+            else:
+                print(f"[WARNING] {msg}")
+
     if record_metadata and not os.path.exists(runs_file):
+        try:
+            rel_config_path = os.path.relpath(config_path, start=str(REPO_ROOT))
+        except Exception:
+            rel_config_path = str(config_path)
         meta_header = {
             "_type": "metadata",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "git_commit": get_git_commit_hash(),
-            "config_path": os.path.abspath(config_path),
+            "git_commit": commit_hash,
+            "git_dirty": is_dirty,
+            "config_path": rel_config_path,
             "timeout": effective_timeout,
         }
         with open(runs_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(meta_header) + "\n")
 
-    existing_runs = load_existing_runs(runs_file) if resume else {}
+    existing_runs = load_existing_runs(runs_file, retry_failed=retry_failed) if resume else {}
 
     # Build execution queue: (task, rep, rep_groups)
     execution_queue = []
@@ -675,19 +1002,53 @@ def run_experiments(
 
         try:
             # 10s grace period for child process to flush its own timeout handling
-            proc = subprocess.run(
-                cmd,
-                cwd=str(REPO_ROOT),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=task_timeout + 10,
-            )
+            popen_kwargs = {
+                "cwd": str(REPO_ROOT),
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True,
+            }
+            if hasattr(os, "setsid"):
+                popen_kwargs["start_new_session"] = True
+
+            proc = subprocess.Popen(cmd, **popen_kwargs)
+            try:
+                stdout, stderr = proc.communicate(timeout=task_timeout + 10)
+                wall_time = round(time.perf_counter() - t0, 4)
+                returncode = proc.returncode
+            except subprocess.TimeoutExpired:
+                wall_time = round(time.perf_counter() - t0, 4)
+                timed_out = True
+                returncode = -1
+                if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+                else:
+                    proc.kill()
+                try:
+                    proc.communicate(timeout=2)
+                except Exception:
+                    pass
+            except KeyboardInterrupt:
+                wall_time = round(time.perf_counter() - t0, 4)
+                timed_out = False
+                returncode = -signal.SIGINT
+                if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+                else:
+                    proc.kill()
+                try:
+                    proc.communicate(timeout=2)
+                except Exception:
+                    pass
+        except Exception:
             wall_time = round(time.perf_counter() - t0, 4)
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired:
-            wall_time = round(time.perf_counter() - t0, 4)
-            timed_out = True
+            timed_out = False
             returncode = -1
 
         # Read child output json if created
@@ -705,29 +1066,46 @@ def run_experiments(
             except Exception:
                 pass
 
-        # Fallback if child crashed or timed out before writing json
+        # Fallback if child crashed, timed out, or was interrupted before writing json
         if record is None:
-            status = "TIMEOUT" if timed_out else "ERROR"
+            if timed_out:
+                status = "TIMEOUT"
+                diagnostic = f"Process timed out after {task_timeout}s without writing JSON output"
+            elif returncode in (-signal.SIGINT, -signal.SIGTERM, 130, 143):
+                status = "INTERRUPTED"
+                diagnostic = f"Process interrupted by signal (returncode {returncode}) without writing JSON output"
+            else:
+                status = "ERROR"
+                diagnostic = f"Child process exited with code {returncode} without writing JSON output"
             record = {
                 "dataset": task["dataset"],
                 "N": task["N"],
                 "num_edges": task["M"],
+                "relabel_seed": task.get("relabel_seed"),
                 "config": task["config_dict"],
                 "solver": task["solver"],
                 "status": status,
                 "best_ub": None,
                 "encode_time": 0.0,
-                "solve_time": wall_time,
+                "solve_time": None,
                 "per_iter_times": [],
                 "num_iterations": 0,
                 "num_vars": 0,
                 "num_clauses": 0,
+                "diagnostic": diagnostic,
             }
+        elif record.get("best_ub") is None:
+            record["best_ub"] = None
 
-        # Attach parent-measured wall_time, rep, and groups
+        # Attach parent-measured wall_time, rep, groups, git_commit, git_dirty, relabel_seed
         record["groups"] = rep_groups
         record["rep"] = rep
         record["wall_time"] = wall_time
+        record["git_commit"] = commit_hash
+        record["git_dirty"] = is_dirty
+        if "relabel_seed" not in record or record["relabel_seed"] is None:
+            if task.get("relabel_seed") is not None:
+                record["relabel_seed"] = task["relabel_seed"]
 
         # Append record
         with open(runs_file, "a", encoding="utf-8") as f:
@@ -736,25 +1114,57 @@ def run_experiments(
         if resume:
             existing_runs[(key, rep)] = record
 
-        status_str = record.get("status", "UNKNOWN")
-        ub_str = f"ub={record.get('best_ub')}" if record.get("best_ub") is not None else ""
-        print(f"       -> {status_str} {ub_str} (solve_time: {record.get('solve_time', 0):.3f}s, wall_time: {wall_time:.3f}s)")
+        status_str = normalize_status(record.get("status")) or str(record.get("status", "UNKNOWN"))
+        ub_val = validate_best_ub(record.get("best_ub"))
+        ub_str = f"ub={ub_val}" if ub_val is not None else (f"ub={record.get('best_ub')}" if record.get('best_ub') is not None else "")
+        st_val = record.get("solve_time")
+        if isinstance(st_val, (int, float)) and not isinstance(st_val, bool) and math.isfinite(st_val):
+            st_disp = f"{float(st_val):.3f}s"
+        else:
+            st_disp = "-"
+        wt_disp = f"{float(wall_time):.3f}s" if (isinstance(wall_time, (int, float)) and not isinstance(wall_time, bool) and math.isfinite(wall_time)) else "-"
+        print(f"       -> {status_str} {ub_str} (solve_time: {st_disp}, wall_time: {wt_disp})")
 
     print(f"\nExperiment execution finished. All results saved in: {runs_file}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CBMP Experiment Runner")
     parser.add_argument("--config", type=str, default="experiments/configs.yaml", help="path to config YAML")
-    parser.add_argument("--group", type=str, default="all", choices=["all", "per_dataset", "solvers", "methods", "ablation"], help="experiment group to run")
+    parser.add_argument(
+        "--group",
+        type=str,
+        default="all",
+        choices=[
+            "all",
+            "per_dataset",
+            "solvers_small",
+            "solvers_medium",
+            "methods",
+            "ablation_small",
+            "ablation_medium",
+            "ablation_family",
+            "methods_family",
+            "cpsat_large",
+            "methods_large_seeds",
+            "encodings",
+            "exact_solvers",
+            "cplex_cp",
+            "gurobi",
+        ],
+        help="experiment group to run",
+    )
     parser.add_argument("--timeout", type=float, default=None, help="override timeout in seconds")
     parser.add_argument("--repetitions", type=int, default=None, help="override number of repetitions per configuration")
     parser.add_argument("--min-n", type=int, default=None, help="override minimum N vertices filter")
     parser.add_argument("--max-n", type=int, default=None, help="override maximum N vertices filter")
     parser.add_argument("--datasets", type=str, default=None, help="comma-separated dataset names to filter")
     parser.add_argument("--resume", action="store_true", help="skip combinations already recorded in runs.jsonl")
+    parser.add_argument("--force-resume", action="store_true", help="force resume even if git commit hash differs from recorded runs")
+    parser.add_argument("--retry-failed", action="store_true", help="re-run tasks that previously resulted in TIMEOUT or ERROR")
+    parser.add_argument("--allow-dirty", action="store_true", help="allow running experiments even if working directory has uncommitted changes")
     parser.add_argument("--dry-run", action="store_true", help="list planned runs without executing")
-    parser.add_argument("--output-dir", type=str, default="results", help="directory to store results")
-    parser.add_argument("--record-metadata", action="store_true", default=False, help="record timeout, git commit hash, and config path into results/env.json and runs.jsonl header")
+    parser.add_argument("--output-dir", type=str, default="results_v2", help="directory to store results")
+    parser.add_argument("--record-metadata", action="store_true", default=False, help="record timeout, git commit hash, and config path into env.json and runs.jsonl header")
     args = parser.parse_args()
 
     run_experiments(
@@ -766,6 +1176,9 @@ if __name__ == "__main__":
         max_n=args.max_n,
         dataset_filter=args.datasets,
         resume=args.resume,
+        force_resume=args.force_resume,
+        retry_failed=args.retry_failed,
+        allow_dirty=args.allow_dirty,
         dry_run=args.dry_run,
         output_dir=args.output_dir,
         record_metadata=args.record_metadata,

@@ -16,16 +16,40 @@ groups:
     heuristic_ub: true
     timeout: 600
 
-  solvers:
-    description: "Fixed best symmetry & heuristic configuration, varying SAT solvers"
+  solvers_small:
+    description: "SAT solvers comparison on small graphs (N <= 40)"
     datasets:
-      - "14_bus"
-      - "30_bus"
-    max_n: 200
+      - name: "14_bus"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "30_bus"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "494_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "662_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4]
+    repetitions: 1
+    timeout: 600
     sb_rotation: true
     sb_reflection: true
     heuristic_ub: true
+    solvers:
+      - "cadical195"
+      - "glucose4"
+      - "maplechrono"
+      - "minisat22"
+      - "lingeling"
+
+  solvers_medium:
+    description: "SAT solvers comparison on medium graphs (N=60, 80)"
+    datasets:
+      - "494_bus_n60"
+      - "662_bus_n60"
+      - "662_bus_n80"
+    repetitions: 1
     timeout: 600
+    sb_rotation: true
+    sb_reflection: true
+    heuristic_ub: true
     solvers:
       - "cadical195"
       - "glucose4"
@@ -34,8 +58,16 @@ groups:
       - "lingeling"
 
   methods:
-    description: "Comparison of methods: Best SAT vs OR-Tools CP-SAT vs CPLEX MIP"
-    datasets: "all"
+    description: "Comparison of methods: Best SAT vs OR-Tools CP-SAT vs CPLEX MIP on small and medium graphs"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+      - "494_bus_n60"
+      - "662_bus_n60"
+      - "662_bus_n80"
+    repetitions: 1
     timeout: 600
     methods:
       - name: "sat_best"
@@ -47,16 +79,18 @@ groups:
       - name: "cpsat"
         type: "cpsat"
         num_workers: 1
+        sb_rotation: true
       - name: "cplex"
         type: "cplex"
 
-  ablation:
-    description: "Ablation study on symmetry breaking and heuristic initial upper bound"
+  ablation_small:
+    description: "Ablation study on small graphs (N <= 40)"
     datasets:
       - "14_bus"
       - "30_bus"
-    max_n: 200
-    repetitions: 3
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 5
     solver: "cadical195"
     timeout: 600
     variants:
@@ -80,3 +114,235 @@ groups:
         sb_rotation: true
         sb_reflection: true
         heuristic_ub: true
+
+  ablation_medium:
+    description: "Ablation study on boundary medium graph (662_bus_n60)"
+    datasets:
+      - "662_bus_n60"
+    repetitions: 1
+    solver: "cadical195"
+    timeout: 600
+    variants:
+      - name: "none"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation"
+        sb_rotation: true
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation_reflection"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: false
+      - name: "heuristic_ub"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: true
+      - name: "all"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+
+  ablation_family:
+    description: "Ablation study on graph families under random vertex relabelings"
+    datasets:
+      - name: "494_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      - name: "662_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      - name: "494_bus_n50"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "662_bus_n50"
+        relabel_seeds: [0, 1, 2, 3, 4]
+    repetitions: 1
+    solver: "cadical195"
+    timeout: 600
+    variants:
+      - name: "none"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation"
+        sb_rotation: true
+        sb_reflection: false
+        heuristic_ub: false
+      - name: "rotation_reflection"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: false
+      - name: "heuristic_ub"
+        sb_rotation: false
+        sb_reflection: false
+        heuristic_ub: true
+      - name: "all"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+
+  methods_family:
+    description: "Comparison of Best SAT vs CP-SAT across random vertex relabelings"
+    datasets:
+      - name: "494_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "662_bus_n40"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "494_bus_n50"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "662_bus_n50"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "494_bus_n60"
+        relabel_seeds: [0, 1, 2]
+      - name: "662_bus_n60"
+        relabel_seeds: [0, 1, 2]
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "sat_best"
+        type: "sat"
+        solver: "cadical195"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+      - name: "cpsat"
+        type: "cpsat"
+        num_workers: 1
+        sb_rotation: true
+
+  cpsat_large:
+    description: "CP-SAT on large graphs (N >= 80)"
+    datasets:
+      - "494_bus_n80"
+      - "494_bus_n100"
+      - "662_bus_n100"
+      - "494_bus_n150"
+      - "662_bus_n150"
+      - "494_bus"
+      - "662_bus"
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "cpsat"
+        type: "cpsat"
+        num_workers: 1
+        sb_rotation: true
+
+  methods_large_seeds:
+    description: "Comparison of Best SAT vs CP-SAT across random vertex relabelings on large graphs (N=80, 100)"
+    datasets:
+      - name: "494_bus_n80"
+        relabel_seeds: [0, 1]
+      - name: "494_bus_n100"
+        relabel_seeds: [0, 1]
+      - name: "662_bus_n80"
+        relabel_seeds: [0, 1]
+      - name: "662_bus_n100"
+        relabel_seeds: [0, 1]
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "sat_best"
+        type: "sat"
+        solver: "cadical195"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+      - name: "cpsat"
+        type: "cpsat"
+        num_workers: 1
+        sb_rotation: true
+
+  encodings:
+    description: "Comparison of Order Encoding vs Pairwise Encoding on small graphs"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "sat_order"
+        type: "sat"
+        solver: "cadical195"
+        encoding: "order"
+        solving_mode: "incremental"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+      - name: "sat_pairwise"
+        type: "sat"
+        solver: "cadical195"
+        encoding: "pairwise"
+        solving_mode: "incremental"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+
+  exact_solvers:
+    description: "Comprehensive comparison across all 6 exact solver formulations"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "sat_order"
+        type: "sat"
+        solver: "cadical195"
+        encoding: "order"
+        solving_mode: "incremental"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+      - name: "sat_pairwise"
+        type: "sat"
+        solver: "cadical195"
+        encoding: "pairwise"
+        solving_mode: "incremental"
+        sb_rotation: true
+        sb_reflection: true
+        heuristic_ub: true
+      - name: "cpsat"
+        type: "cpsat"
+        num_workers: 1
+        sb_rotation: true
+      - name: "cplex_mip"
+        type: "cplex"
+        sb_rotation: true
+      - name: "cplex_cp"
+        type: "cplex_cp"
+        sb_rotation: true
+      - name: "gurobi"
+        type: "gurobi"
+        sb_rotation: true
+
+  cplex_cp:
+    description: "CPLEX CP Optimizer baseline on small graphs"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "cplex_cp"
+        type: "cplex_cp"
+        sb_rotation: true
+
+  gurobi:
+    description: "Gurobi MIP baseline on small graphs"
+    datasets:
+      - "14_bus"
+      - "30_bus"
+      - "494_bus_n40"
+      - "662_bus_n40"
+    repetitions: 1
+    timeout: 600
+    methods:
+      - name: "gurobi"
+        type: "gurobi"
+        sb_rotation: true

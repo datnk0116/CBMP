@@ -1,5 +1,6 @@
 import pytest
 import os
+import sys
 import json
 import yaml
 import numpy as np
@@ -14,6 +15,7 @@ from experiments.run_experiments import (
 from analysis.make_tables import (
     aggregate_repetitions,
     cross_validate_optima,
+    format_cell_value,
 )
 
 def test_filter_datasets_max_n():
@@ -212,20 +214,119 @@ def test_aggregate_repetitions():
     assert r["status"] == "OPTIMAL"
     assert r["best_ub"] == 3
 
-def test_cross_validation_pass_and_fail():
+def test_cross_validation_two_solvers_same_opt(tmp_path):
+    # (a) Two solvers with same opt -> verified
+    out_dir = str(tmp_path / "tables")
     matching_records = [
         {"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
         {"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
-        {"dataset": "g2", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 5, "groups": ["solvers"]},
     ]
-    cross_validate_optima(matching_records)
+    df = cross_validate_optima(matching_records, output_dir=out_dir)
+    assert len(df) == 2
+    assert all(df["validation_status"] == "verified")
+    assert all(df["best_ub"] == 3)
+    assert os.path.isfile(os.path.join(out_dir, "cross_validation.csv"))
 
+def test_cross_validation_conflict_error(tmp_path):
+    # (b) Conflicting optima -> error
+    out_dir = str(tmp_path / "tables")
     conflicting_records = [
         {"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
         {"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 4, "groups": ["solvers"]},
     ]
     with pytest.raises(ValueError, match="conflicting optima"):
-        cross_validate_optima(conflicting_records)
+        cross_validate_optima(conflicting_records, output_dir=out_dir)
+    assert os.path.isfile(os.path.join(out_dir, "cross_validation.csv"))
+    import pandas as pd
+    df = pd.read_csv(os.path.join(out_dir, "cross_validation.csv"))
+    assert all(df["validation_status"] == "conflict")
+
+def test_cross_validation_single_source_5_reps(tmp_path, capsys):
+    # (c) Only 1 key repeated 5 reps -> single_source and warning printed
+    out_dir = str(tmp_path / "tables")
+    records = [
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "status": "OPTIMAL",
+            "best_ub": 3,
+            "rep": i,
+            "groups": ["solvers"],
+        }
+        for i in range(1, 6)
+    ]
+    df = cross_validate_optima(records, output_dir=out_dir)
+    assert len(df) == 1
+    assert df.iloc[0]["validation_status"] == "single_source"
+    assert df.iloc[0]["num_distinct_sources"] == 1
+    out = capsys.readouterr().out
+    assert "[WARNING]" in out and "single_source" in out
+    assert "All optima match identically" not in out
+    assert os.path.isfile(os.path.join(out_dir, "cross_validation.csv"))
+
+def test_cross_validation_incumbent_smaller_than_opt_error():
+    # (d) Incumbent < proven opt -> error
+    records = [
+        {"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]},
+        {"dataset": "g1", "solver": "glucose4", "status": "TIMEOUT", "best_ub": 2, "groups": ["solvers"]},
+    ]
+    with pytest.raises(ValueError, match="Invalid incumbent"):
+        cross_validate_optima(records)
+
+def test_cross_validation_none_vs_all_two_keys(tmp_path):
+    # Under strict engines (production default): same solver engine with different SB configs
+    # is 1 distinct engine source -> single_source
+    out_dir = str(tmp_path / "tables")
+    records = [
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+            "status": "OPTIMAL",
+            "best_ub": 3,
+        },
+        {
+            "dataset": "g1",
+            "solver": "cadical195",
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "status": "OPTIMAL",
+            "best_ub": 3,
+        },
+    ]
+    df = cross_validate_optima(records, output_dir=out_dir)
+    assert len(df) == 1
+    assert df.iloc[0]["num_distinct_sources"] == 1
+    assert df.iloc[0]["validation_status"] == "single_source"
+
+    # In exploratory non-strict mode: different configurations are tracked as distinct config keys
+    df_config = cross_validate_optima(records, output_dir=out_dir, strict_engines=False)
+    assert len(df_config) == 2
+    assert df_config.iloc[0]["num_distinct_sources"] == 2
+
+def test_cross_validation_cli_exit_code(tmp_path):
+    import subprocess
+    import json
+
+    out_dir = str(tmp_path / "tables")
+
+    # Matching jsonl -> exit code 0
+    match_file = tmp_path / "match.jsonl"
+    with open(match_file, "w") as f:
+        f.write(json.dumps({"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]}) + "\n")
+        f.write(json.dumps({"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]}) + "\n")
+    res_ok = subprocess.run([sys.executable, "analysis/make_tables.py", str(match_file), out_dir], capture_output=True, text=True)
+    assert res_ok.returncode == 0
+    assert os.path.isfile(os.path.join(out_dir, "cross_validation.csv"))
+
+    # Conflicting jsonl -> exit code != 0
+    conflict_file = tmp_path / "conflict.jsonl"
+    with open(conflict_file, "w") as f:
+        f.write(json.dumps({"dataset": "g1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "groups": ["solvers"]}) + "\n")
+        f.write(json.dumps({"dataset": "g1", "solver": "glucose4", "status": "OPTIMAL", "best_ub": 4, "groups": ["solvers"]}) + "\n")
+    res_err = subprocess.run([sys.executable, "analysis/make_tables.py", str(conflict_file), out_dir], capture_output=True, text=True)
+    assert res_err.returncode != 0
+    assert "conflicting optima" in res_err.stderr.lower() or "conflicting optima" in res_err.stdout.lower()
 
 def test_canonical_key_consistency():
     rec_sat = {
@@ -234,15 +335,51 @@ def test_canonical_key_consistency():
         "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": True},
     }
     key_sat = get_canonical_key(rec_sat)
-    assert key_sat == ("bus14", "sat", "cadical195", (True, False, True))
+    assert key_sat == ("bus14", "sat", "cadical195", (True, False, True), None)
+
+    rec_sat_seed0 = {
+        "dataset": "bus14",
+        "solver": "cadical195",
+        "relabel_seed": 0,
+        "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": True},
+    }
+    key_sat_seed0 = get_canonical_key(rec_sat_seed0)
+    assert key_sat_seed0 == ("bus14", "sat", "cadical195", (True, False, True), 0)
+    assert key_sat != key_sat_seed0
 
     rec_cpsat = {
         "dataset": "bus14",
         "solver": "cp_sat",
-        "config": {"num_workers": 1},
+        "config": {"num_workers": 1, "sb_rotation": True},
     }
     key_cpsat = get_canonical_key(rec_cpsat)
-    assert key_cpsat == ("bus14", "cpsat", "cp_sat", (1,))
+    assert key_cpsat == ("bus14", "cpsat", "cp_sat", (1, True), None)
+
+    rec_cpsat_default = {
+        "dataset": "bus14",
+        "solver": "cp_sat",
+        "config": {"num_workers": 1},
+    }
+    key_cpsat_default = get_canonical_key(rec_cpsat_default)
+    assert key_cpsat_default == ("bus14", "cpsat", "cp_sat", (1, True), None)
+
+    rec_cpsat_no_rot = {
+        "dataset": "bus14",
+        "solver": "cp_sat",
+        "config": {"num_workers": 1, "sb_rotation": False},
+    }
+    key_cpsat_no_rot = get_canonical_key(rec_cpsat_no_rot)
+    assert key_cpsat_no_rot == ("bus14", "cpsat", "cp_sat", (1, False), None)
+    assert key_cpsat != key_cpsat_no_rot, "CP-SAT with rotation enabled and disabled must produce distinct canonical keys"
+
+    rec_cpsat_w4 = {
+        "dataset": "bus14",
+        "solver": "cp_sat",
+        "config": {"num_workers": 4, "sb_rotation": True},
+    }
+    key_cpsat_w4 = get_canonical_key(rec_cpsat_w4)
+    assert key_cpsat_w4 == ("bus14", "cpsat", "cp_sat", (4, True), None)
+    assert key_cpsat != key_cpsat_w4, "Changing CP-SAT num_workers must produce distinct canonical keys"
 
     rec_cplex = {
         "dataset": "bus14",
@@ -250,7 +387,7 @@ def test_canonical_key_consistency():
         "config": {},
     }
     key_cplex = get_canonical_key(rec_cplex)
-    assert key_cplex == ("bus14", "cplex", "cplex", ())
+    assert key_cplex == ("bus14", "cplex", "cplex", (), None)
 
 def test_main_optimal_exit(tmp_path):
     from main import main
@@ -270,14 +407,16 @@ def test_main_optimal_exit(tmp_path):
 def test_aggregate_repetitions_mixed_optimal_timeout():
     """
     Test 4 repetitions: OPTIMAL 10s, OPTIMAL 20s, TIMEOUT 30s, TIMEOUT 600s.
-    Status must be OPTIMAL (mixed flag set).
+    Status must be PARTIAL (n_optimal=2, n_total=4).
     Median time must be computed only over OPTIMAL reps: median(10s, 20s) = 15s.
+    PAR2: each non-optimal rep gets 2T. (10 + 20 + 2*600 + 2*600) / 4 = 607.5s.
+    Table display must be 'k/n' and median time of optimal reps with '*': '2/4 15.0000*'.
     """
     records = [
         {
             "dataset": "g1",
             "solver": "cadical195",
-            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True, "time_limit": 600.0},
             "status": "OPTIMAL",
             "best_ub": 3,
             "solve_time": 10.0,
@@ -286,7 +425,7 @@ def test_aggregate_repetitions_mixed_optimal_timeout():
         {
             "dataset": "g1",
             "solver": "cadical195",
-            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True, "time_limit": 600.0},
             "status": "OPTIMAL",
             "best_ub": 3,
             "solve_time": 20.0,
@@ -295,7 +434,7 @@ def test_aggregate_repetitions_mixed_optimal_timeout():
         {
             "dataset": "g1",
             "solver": "cadical195",
-            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True, "time_limit": 600.0},
             "status": "TIMEOUT",
             "best_ub": 4,
             "solve_time": 30.0,
@@ -304,7 +443,7 @@ def test_aggregate_repetitions_mixed_optimal_timeout():
         {
             "dataset": "g1",
             "solver": "cadical195",
-            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True, "time_limit": 600.0},
             "status": "TIMEOUT",
             "best_ub": 4,
             "solve_time": 600.0,
@@ -315,11 +454,19 @@ def test_aggregate_repetitions_mixed_optimal_timeout():
     agg = aggregate_repetitions(records)
     assert len(agg) == 1
     r = agg[0]
-    assert r["status"] == "OPTIMAL"
+    assert r["status"] == "PARTIAL"
+    assert r["n_optimal"] == 2
+    assert r["n_total"] == 4
     assert r.get("mixed") is True or r.get("is_mixed") is True
     # Median of OPTIMAL reps only: (10.0 + 20.0) / 2 = 15.0
     assert r["solve_time"] == pytest.approx(15.0)
     assert r["best_ub"] == 3
+    # PAR2: (10 + 20 + 1200 + 1200) / 4 = 607.5
+    assert r["par2"] == pytest.approx(607.5)
+
+    # Format cell value check
+    assert format_cell_value(r) == "2/4 15.0000*"
+    assert format_cell_value("PARTIAL", 15.0, 3, n_optimal=2, n_total=4) == "2/4 15.0000*"
 
 def test_compute_summary_stats_size_limit_excluded_from_par2():
     """
@@ -343,3 +490,342 @@ def test_compute_summary_stats_size_limit_excluded_from_par2():
     # PAR2 has d1 (2.0s) and d3 (2*10.0 = 20.0s), d2 (SIZE_LIMIT) is excluded
     # Mean of [2.0, 20.0] = 11.0s (not including 2*10 for d2 which would make it 14.0s)
     assert par2["cplex"] == pytest.approx(11.0)
+
+def test_resume_rejects_git_commit_mismatch(tmp_path):
+    from experiments.run_experiments import run_experiments
+
+    runs_file = tmp_path / "runs.jsonl"
+    fake_record = {
+        "dataset": "14_bus",
+        "N": 14,
+        "num_edges": 20,
+        "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        "solver": "cadical195",
+        "status": "OPTIMAL",
+        "best_ub": 3,
+        "solve_time": 0.01,
+        "git_commit": "0000000000000000000000000000000000000000",
+        "git_dirty": False,
+        "groups": ["ablation"],
+        "rep": 1,
+    }
+    runs_file.write_text(json.dumps(fake_record) + "\n")
+
+    # Resume without force_resume must raise ValueError due to commit mismatch
+    with pytest.raises(ValueError, match="Git commit mismatch"):
+        run_experiments(
+            output_dir=str(tmp_path),
+            group="ablation",
+            dataset_filter="14_bus",
+            resume=True,
+            force_resume=False,
+            allow_dirty=True,
+            timeout=5.0,
+        )
+
+    # With force_resume=True, it should proceed (and skip the existing optimal task)
+    run_experiments(
+        output_dir=str(tmp_path),
+        group="ablation",
+        dataset_filter="14_bus",
+        resume=True,
+        force_resume=True,
+        allow_dirty=True,
+        timeout=5.0,
+    )
+
+def test_resume_and_retry_failed_behavior(tmp_path):
+    from experiments.run_experiments import load_existing_runs, get_canonical_key
+
+    runs_file = tmp_path / "runs.jsonl"
+    opt_rec = {
+        "dataset": "14_bus",
+        "N": 14,
+        "num_edges": 20,
+        "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        "solver": "cadical195",
+        "status": "OPTIMAL",
+        "best_ub": 3,
+        "solve_time": 0.01,
+        "groups": ["ablation"],
+        "rep": 1,
+    }
+    timeout_rec = {
+        "dataset": "14_bus",
+        "N": 14,
+        "num_edges": 20,
+        "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+        "solver": "cadical195",
+        "status": "TIMEOUT",
+        "best_ub": -1,
+        "solve_time": 600.0,
+        "groups": ["ablation"],
+        "rep": 1,
+    }
+    sl_rec = {
+        "dataset": "494_bus",
+        "N": 494,
+        "num_edges": 580,
+        "config": {},
+        "solver": "cplex",
+        "status": "SIZE_LIMIT",
+        "best_ub": -1,
+        "solve_time": 0.1,
+        "groups": ["methods"],
+        "rep": 1,
+    }
+    with open(runs_file, "w") as f:
+        f.write(json.dumps(opt_rec) + "\n")
+        f.write(json.dumps(timeout_rec) + "\n")
+        f.write(json.dumps(sl_rec) + "\n")
+
+    # Behavior 1: Default resume (retry_failed=False) retains all records (all skipped)
+    loaded_default = load_existing_runs(str(runs_file), retry_failed=False)
+    assert len(loaded_default) == 3
+    assert (get_canonical_key(opt_rec), 1) in loaded_default
+    assert (get_canonical_key(timeout_rec), 1) in loaded_default
+    assert (get_canonical_key(sl_rec), 1) in loaded_default
+
+    # Behavior 2: With retry_failed=True, TIMEOUT is omitted so it will be retried
+    loaded_retry = load_existing_runs(str(runs_file), retry_failed=True)
+    assert len(loaded_retry) == 2
+    assert (get_canonical_key(opt_rec), 1) in loaded_retry
+    assert (get_canonical_key(sl_rec), 1) in loaded_retry
+    assert (get_canonical_key(timeout_rec), 1) not in loaded_retry
+
+
+def test_load_existing_runs_corrupt_lines(tmp_path):
+    from experiments.run_experiments import load_existing_runs, get_canonical_key
+
+    runs_file = tmp_path / "corrupt_runs.jsonl"
+    valid_rec = {
+        "dataset": "bus14",
+        "solver": "cadical195",
+        "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+        "status": "OPTIMAL",
+        "best_ub": 3,
+        "solve_time": 0.1,
+        "rep": 1,
+    }
+    with open(runs_file, "w") as f:
+        f.write(json.dumps(valid_rec) + "\n")
+        f.write("{corrupt json line truncated here...\n")
+        f.write("\n")  # empty line
+        f.write("not json at all\n")
+        f.write(json.dumps({**valid_rec, "rep": 2}) + "\n")
+
+    loaded = load_existing_runs(str(runs_file), retry_failed=False)
+    # Both valid lines should be loaded despite the two corrupted lines
+    assert len(loaded) == 2
+    assert (get_canonical_key(valid_rec), 1) in loaded
+    assert (get_canonical_key(valid_rec), 2) in loaded
+
+def test_runner_rejects_dirty_without_allow_dirty(monkeypatch, tmp_path):
+    from experiments import run_experiments as runner
+
+    # Mock dirty repository status
+    monkeypatch.setattr(runner, "get_git_commit_info", lambda: ("testcommit123", True))
+
+    with pytest.raises(ValueError, match="Working directory has uncommitted changes"):
+        runner.run_experiments(
+            output_dir=str(tmp_path),
+            group="ablation",
+            dataset_filter="14_bus",
+            allow_dirty=False,
+            timeout=5.0,
+        )
+
+    # When allow_dirty=True, it should proceed
+    runner.run_experiments(
+        output_dir=str(tmp_path),
+        group="ablation",
+        dataset_filter="14_bus",
+        allow_dirty=True,
+        timeout=5.0,
+    )
+
+def test_metadata_records_relative_config_path(tmp_path):
+    from experiments import run_experiments as runner
+
+    runner.run_experiments(
+        output_dir=str(tmp_path),
+        group="ablation",
+        dataset_filter="14_bus",
+        allow_dirty=True,
+        record_metadata=True,
+        timeout=5.0,
+    )
+
+    env_path = tmp_path / "env.json"
+    assert env_path.exists()
+    env_data = json.loads(env_path.read_text())
+    assert "config_path" in env_data
+    # Must be relative (not absolute starting with / or C:\)
+    assert not os.path.isabs(env_data["config_path"])
+    assert env_data["config_path"] == "experiments/configs.yaml"
+
+    runs_file = tmp_path / "runs.jsonl"
+    assert runs_file.exists()
+    first_line = json.loads(runs_file.read_text().splitlines()[0])
+    assert first_line.get("_type") == "metadata"
+    assert "config_path" in first_line
+    assert not os.path.isabs(first_line["config_path"])
+    assert first_line["config_path"] == "experiments/configs.yaml"
+
+
+def test_ablation_tables_not_generated_when_unqualified(tmp_path):
+    """Verify [1]: When records consist only of solvers_small, no ablation tables or figures are created."""
+    from analysis.make_tables import (
+        make_table_ablation,
+        make_table_ablation_family,
+        make_table_ablation_phases,
+    )
+    from analysis.make_plots import plot_ablation_family_boxplots
+
+    # Synthetic or actual solvers_small records: only variant 'all', solver cadical195, relabel_seed 0..4
+    solvers_small_recs = []
+    for seed in range(5):
+        solvers_small_recs.append({
+            "dataset": "14_bus",
+            "N": 14,
+            "num_edges": 20,
+            "relabel_seed": seed,
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+            "solver": "cadical195",
+            "status": "OPTIMAL",
+            "best_ub": 3,
+            "solve_time": 0.001,
+            "groups": ["solvers_small"],
+        })
+
+    out_tables = tmp_path / "tables"
+    out_figures = tmp_path / "figures"
+    out_tables.mkdir(parents=True, exist_ok=True)
+    out_figures.mkdir(parents=True, exist_ok=True)
+
+    make_table_ablation(solvers_small_recs, group_name="ablation_small", output_dirs=(str(out_tables),))
+    make_table_ablation(solvers_small_recs, group_name="ablation_medium", output_dirs=(str(out_tables),))
+    make_table_ablation_family(solvers_small_recs, output_dirs=(str(out_tables),))
+    make_table_ablation_phases(solvers_small_recs, output_dirs=(str(out_tables),))
+    plot_ablation_family_boxplots(solvers_small_recs, output_dirs=(str(out_figures),))
+
+    table_files = [f.name for f in out_tables.iterdir() if "ablation" in f.name]
+    figure_files = [f.name for f in out_figures.iterdir() if "ablation" in f.name]
+    assert len(table_files) == 0, f"Expected no ablation table files, got {table_files}"
+    assert len(figure_files) == 0, f"Expected no ablation figure files, got {figure_files}"
+
+
+def test_resume_and_retry_failed_status_semantics(tmp_path):
+    """
+    Test resume/retry semantics for every solver result status in run_experiments.
+    Verifies:
+    1. retry_failed=False preserves all valid records (normal resume).
+    2. retry_failed=True preserves OPTIMAL, INFEASIBLE, SIZE_LIMIT.
+    3. retry_failed=True preserves UNAVAILABLE and LICENSE_ERROR (do not repeatedly retry missing environment).
+    4. retry_failed=True preserves valid FEASIBLE incumbents (best_ub >= 0).
+    5. retry_failed=True retries TIMEOUT, ERROR, INTERRUPTED, and FEASIBLE with best_ub < 0.
+    """
+    from experiments.run_experiments import is_run_completed, load_existing_runs
+
+    records = [
+        {"dataset": "g1", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "OPTIMAL", "best_ub": 2, "rep": 1},
+        {"dataset": "g2", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "INFEASIBLE", "best_ub": -1, "rep": 1},
+        {"dataset": "g3", "N": 1000, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "SIZE_LIMIT", "best_ub": -1, "rep": 1},
+        {"dataset": "g4", "N": 10, "num_edges": 12, "config": {}, "solver": "gurobi", "status": "UNAVAILABLE", "best_ub": -1, "rep": 1},
+        {"dataset": "g5", "N": 10, "num_edges": 12, "config": {}, "solver": "gurobi", "status": "LICENSE_ERROR", "best_ub": -1, "rep": 1},
+        {"dataset": "g6", "N": 10, "num_edges": 12, "config": {}, "solver": "cpsat", "status": "FEASIBLE", "best_ub": 4, "rep": 1},
+        {"dataset": "g7", "N": 10, "num_edges": 12, "config": {}, "solver": "cpsat", "status": "FEASIBLE", "best_ub": -1, "rep": 1},
+        {"dataset": "g8", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "TIMEOUT", "best_ub": -1, "rep": 1},
+        {"dataset": "g9", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "ERROR", "best_ub": -1, "rep": 1},
+        {"dataset": "g10", "N": 10, "num_edges": 12, "config": {}, "solver": "cadical195", "status": "INTERRUPTED", "best_ub": -1, "rep": 1},
+    ]
+
+    # Check is_run_completed directly
+    # Under retry_failed=False, all records are considered complete
+    for rec in records:
+        assert is_run_completed(rec, retry_failed=False) is True
+
+    # Under retry_failed=True:
+    # Definitive proofs and barriers must be complete
+    assert is_run_completed(records[0], retry_failed=True) is True   # OPTIMAL
+    assert is_run_completed(records[1], retry_failed=True) is True   # INFEASIBLE
+    assert is_run_completed(records[2], retry_failed=True) is True   # SIZE_LIMIT
+    assert is_run_completed(records[3], retry_failed=True) is True   # UNAVAILABLE
+    assert is_run_completed(records[4], retry_failed=True) is True   # LICENSE_ERROR
+    assert is_run_completed(records[5], retry_failed=True) is True   # FEASIBLE (ub >= 0)
+
+    # Transient failures or incomplete incumbents must NOT be complete (must be retried)
+    assert is_run_completed(records[6], retry_failed=True) is False  # FEASIBLE (ub < 0)
+    assert is_run_completed(records[7], retry_failed=True) is False  # TIMEOUT
+    assert is_run_completed(records[8], retry_failed=True) is False  # ERROR
+    assert is_run_completed(records[9], retry_failed=True) is False  # INTERRUPTED
+
+    # Write to a test jsonl file and verify load_existing_runs
+    jsonl_file = tmp_path / "test_runs.jsonl"
+    with open(jsonl_file, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"_type": "metadata", "solver": "test"}) + "\n")
+        for rec in records:
+            f.write(json.dumps(rec) + "\n")
+
+    # Normal resume: all 10 non-metadata runs loaded
+    loaded_resume = load_existing_runs(str(jsonl_file), retry_failed=False)
+    assert len(loaded_resume) == 10
+
+    # Retry failed: only 6 preserved runs loaded; 4 retryable runs omitted
+    loaded_retry = load_existing_runs(str(jsonl_file), retry_failed=True)
+    assert len(loaded_retry) == 6
+    loaded_datasets = {rec["dataset"] for rec in loaded_retry.values()}
+    assert loaded_datasets == {"g1", "g2", "g3", "g4", "g5", "g6"}
+    assert "g7" not in loaded_datasets  # FEASIBLE with ub < 0 retried
+    assert "g8" not in loaded_datasets  # TIMEOUT retried
+    assert "g9" not in loaded_datasets  # ERROR retried
+    assert "g10" not in loaded_datasets # INTERRUPTED retried
+
+
+def test_cpsat_large_dry_run_produces_nonzero_tasks():
+    """Verify cpsat_large produces expected nonzero task count with CP-SAT method."""
+    from experiments.run_experiments import discover_datasets
+    cfg_path = "experiments/configs.yaml"
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    all_datasets = discover_datasets("datasets")
+    plan, group_stats = build_experiment_plan(config=config, all_datasets=all_datasets, selected_group="cpsat_large")
+    assert len(plan) == 7, "cpsat_large must produce 7 planned tasks (for the 7 large datasets)"
+    for task in plan:
+        assert task["method"] == "cpsat"
+        assert task["solver"] == "cp_sat"
+        assert task["config_dict"]["sb_rotation"] is True
+        assert task["flags"] == (1, True)
+
+
+def test_unintentional_zero_task_group_fails_loudly():
+    """Verify runner fails loudly when a configured group has datasets but produces 0 tasks."""
+    bad_config = {
+        "groups": {
+            "empty_methods_group": {
+                "description": "Faulty group with datasets but no methods",
+                "datasets": ["14_bus"],
+                "repetitions": 1,
+                "timeout": 60,
+                # No methods / variants provided!
+            }
+        }
+    }
+    all_datasets = [{"name": "14_bus", "N": 14, "M": 20}]
+    with pytest.raises(ValueError, match="generated 0 tasks"):
+        build_experiment_plan(config=bad_config, all_datasets=all_datasets, selected_group="empty_methods_group")
+
+
+def test_feasible_with_validation_error_is_retried():
+    """Verify FEASIBLE record with validation_error is rejected from completed runs under retry_failed."""
+    from experiments.run_experiments import is_run_completed
+    rec_bad_feasible = {
+        "dataset": "g1",
+        "status": "FEASIBLE",
+        "best_ub": 3,
+        "validation_error": "Assignment is not a permutation",
+    }
+    assert is_run_completed(rec_bad_feasible, retry_failed=False) is True
+    assert is_run_completed(rec_bad_feasible, retry_failed=True) is False
+
+
