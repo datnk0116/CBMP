@@ -53,7 +53,8 @@ def test_cplex_matches_bruteforce(name, N, edges):
         # 4. No sol available + hit limit -> TIMEOUT (-1)
         ("time limit exceeded, no integer solution", 108, True, False, "TIMEOUT", False),
         ("time limit exceeded", 107, True, False, "TIMEOUT", False),
-        (None, -1, True, False, "TIMEOUT", False),
+        # Limit hit without time-limit evidence and without incumbent -> ERROR
+        (None, -1, True, False, "ERROR", False),
         ("time limit exceeded", -1, False, False, "TIMEOUT", False),
         ("node limit exceeded", 105, True, False, "ERROR", False),
         # 5. No sol available + did not hit limit -> ERROR
