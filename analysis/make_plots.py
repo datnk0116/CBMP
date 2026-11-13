@@ -213,17 +213,10 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
     """
     Bar chart showing median solve time per configuration.
     """
-    if group_name is not None and any("groups" in r for r in records):
-        ablation_recs = [
-            r for r in records
-            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
-            and is_optimal_status(r)
-        ]
-        if not ablation_recs:
-            logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
-            return
-    else:
-        ablation_recs = [r for r in records if is_optimal_status(r)]
+    ablation_recs = filter_records_by_group(records, group_name, caller_name=base_filename, require_optimal=True)
+    if not ablation_recs:
+        logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
+        return
 
     if not ablation_recs:
         return
@@ -339,10 +332,10 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
         return
 
     def get_var(rec):
-        cfg = rec.get("config", {})
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
+        key = get_canonical_key(rec)
+        if key is None or not isinstance(key[3], (tuple, list)) or len(key[3]) < 3:
+            return "other"
+        rot, ref, heur = key[3][:3]
         if not rot and not ref and not heur:
             return "none"
         elif rot and not ref and not heur:
