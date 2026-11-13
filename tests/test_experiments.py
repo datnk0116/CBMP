@@ -7,11 +7,13 @@ import numpy as np
 from pathlib import Path
 
 from experiments.run_experiments import (
+    get_dataset_info,
     build_experiment_plan,
     get_canonical_key,
     format_task_flags,
     filter_datasets_for_group,
 )
+from scripts.check_datasets import find_referenced_datasets, validate_datasets
 from analysis.make_tables import (
     aggregate_repetitions,
     cross_validate_optima,
@@ -829,3 +831,37 @@ def test_feasible_with_validation_error_is_retried():
     assert is_run_completed(rec_bad_feasible, retry_failed=True) is False
 
 
+
+
+def test_dataset_validation_is_scoped_to_selected_group(tmp_path):
+    config = tmp_path / "configs.yaml"
+    datasets = tmp_path / "datasets"
+    datasets.mkdir()
+    (datasets / "present.mtx").write_text(
+        "%%MatrixMarket matrix coordinate pattern symmetric\\n3 3 2\\n1 2\\n2 3\\n",
+        encoding="utf-8",
+    )
+    config.write_text(
+        yaml.safe_dump({"groups": {"small": {"datasets": ["present"]}, "optional": {"datasets": ["not_downloaded"]}}}),
+        encoding="utf-8",
+    )
+    assert find_referenced_datasets(str(config), groups=["small"]) == ["present"]
+    assert validate_datasets(str(config), str(datasets), groups=["small"]) == ["present"]
+    with pytest.raises(FileNotFoundError, match="not_downloaded"):
+        validate_datasets(str(config), str(datasets), groups=["optional"])
+    with pytest.raises(FileNotFoundError, match="not_downloaded"):
+        validate_datasets(str(config), str(datasets))
+
+
+def test_dataset_info_counts_normalized_graph_edges(tmp_path):
+    matrix = tmp_path / "symmetric_with_diagonal.mtx"
+    matrix.write_text(
+        "%%MatrixMarket matrix coordinate pattern symmetric\\n"
+        "3 3 4\\n"
+        "1 1\\n"
+        "1 2\\n"
+        "2 3\\n"
+        "1 2\\n",
+        encoding="utf-8",
+    )
+    assert get_dataset_info(str(matrix)) == (3, 2)
