@@ -47,14 +47,15 @@ def test_cplex_matches_bruteforce(name, N, edges):
         # 3. Not optimal reported + sol available (incumbent found before timeout/stop) -> TIMEOUT
         ("time limit exceeded", 107, True, True, "TIMEOUT", True),
         ("deterministic time limit exceeded", 131, True, True, "TIMEOUT", True),
-        ("node limit exceeded", 105, True, True, "TIMEOUT", True),
-        ("feasible", -1, False, True, "TIMEOUT", True),
-        ("", -1, False, True, "TIMEOUT", True),
+        ("node limit exceeded", 105, True, True, "FEASIBLE", True),
+        ("feasible", -1, False, True, "FEASIBLE", True),
+        ("", -1, False, True, "FEASIBLE", True),
         # 4. No sol available + hit limit -> TIMEOUT (-1)
         ("time limit exceeded, no integer solution", 108, True, False, "TIMEOUT", False),
         ("time limit exceeded", 107, True, False, "TIMEOUT", False),
         (None, -1, True, False, "TIMEOUT", False),
         ("time limit exceeded", -1, False, False, "TIMEOUT", False),
+        ("node limit exceeded", 105, True, False, "ERROR", False),
         # 5. No sol available + did not hit limit -> ERROR
         ("infeasible", 103, False, False, "ERROR", False),
         ("unbounded", 118, False, False, "ERROR", False),
