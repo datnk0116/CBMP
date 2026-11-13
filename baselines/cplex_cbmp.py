@@ -37,8 +37,9 @@ def map_cplex_status(status_str, status_code, has_hit_limit, sol_available):
     Rules:
     - OPTIMAL: only when solver reports optimal AND sol_available is True.
     - If solver reports optimal but sol_available is False -> ERROR.
-    - If sol_available is True but solver did not report optimal -> TIMEOUT (use incumbent).
-    - If sol_available is False and hit limit (has_hit_limit or time limit status) -> TIMEOUT (-1).
+    - Time-limit termination maps to TIMEOUT, retaining any incumbent.
+    - A non-time-limit stop with an incumbent maps to FEASIBLE.
+    - A stop without an incumbent maps to TIMEOUT only for a time limit; otherwise ERROR.
     - All other outcomes -> ERROR.
     """
     s_str = (status_str or "").lower()
@@ -50,19 +51,18 @@ def map_cplex_status(status_str, status_code, has_hit_limit, sol_available):
         and "non_optimal" not in s_str
     )
 
-    hit_limit = bool(has_hit_limit or ("time limit" in s_str))
+    time_limit = "time limit" in s_str or code in (107, 108, 131, 132)
+    hit_limit = bool(has_hit_limit or time_limit)
 
     if is_optimal_reported:
-        if sol_available:
-            return ("OPTIMAL", True)
-        else:
-            return ("ERROR", False)
-    elif sol_available:
-        return ("TIMEOUT", True)
-    elif hit_limit:
+        return ("OPTIMAL", True) if sol_available else ("ERROR", False)
+    if sol_available:
+        return ("TIMEOUT", True) if time_limit else ("FEASIBLE", True)
+    if time_limit:
         return ("TIMEOUT", False)
-    else:
+    if hit_limit:
         return ("ERROR", False)
+    return ("ERROR", False)
 
 def build_cplex_model(N: int, edges: list, sb_rotation: bool = True):
     """
