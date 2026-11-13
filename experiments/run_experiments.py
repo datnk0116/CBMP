@@ -11,6 +11,7 @@ import argparse
 import platform
 import subprocess
 from pathlib import Path
+from typing import Any, Dict
 
 # Setup module logger
 logger = logging.getLogger("experiments")
@@ -18,6 +19,8 @@ logger = logging.getLogger("experiments")
 # Ensure repo root is in sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+from graph_utils import load_graph_from_mtx
 
 from analysis.make_tables import (
     normalize_status,
@@ -35,21 +38,9 @@ from analysis.make_tables import (
 )
 
 def get_dataset_info(filepath):
-    """Quickly read N and M from MatrixMarket header without parsing entire matrix."""
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("%"):
-                    continue
-                parts = line.split()
-                if len(parts) >= 3:
-                    return int(parts[0]), int(parts[2])
-                elif len(parts) >= 2:
-                    return int(parts[0]), int(parts[1])
-    except Exception:
-        pass
-    return 0, 0
+    """Return graph order and normalized undirected edge count."""
+    n, edges, _ = load_graph_from_mtx(filepath)
+    return n, len(edges)
 
 def discover_datasets(dataset_dir="datasets", min_n=1, max_n=None, allowed_names=None):
     """Scan dataset_dir for .mtx files, filtered and sorted by N."""
@@ -820,9 +811,10 @@ def run_experiments(
     defaults = config.get("defaults", {})
     dataset_dir = defaults.get("dataset_dir", "datasets")
 
-    # 1b. Validate datasets referenced in config
+    # Validate only datasets required by the selected group(s).
     try:
-        validate_datasets(config_path=config_path, dataset_dir=dataset_dir)
+        selected_groups = None if group == "all" else [group]
+        validate_datasets(config_path=config_path, dataset_dir=dataset_dir, groups=selected_groups)
     except FileNotFoundError as e:
         print(f"[ERROR] Dataset validation failed:\n{e}", file=sys.stderr)
         sys.exit(1)
