@@ -838,7 +838,7 @@ def test_dataset_validation_is_scoped_to_selected_group(tmp_path):
     datasets = tmp_path / "datasets"
     datasets.mkdir()
     (datasets / "present.mtx").write_text(
-        "%%MatrixMarket matrix coordinate pattern symmetric\\n3 3 2\\n1 2\\n2 3\\n",
+        "%%MatrixMarket matrix coordinate pattern symmetric\n3 3 2\n1 2\n2 3\n",
         encoding="utf-8",
     )
     config.write_text(
@@ -856,12 +856,12 @@ def test_dataset_validation_is_scoped_to_selected_group(tmp_path):
 def test_dataset_info_counts_normalized_graph_edges(tmp_path):
     matrix = tmp_path / "symmetric_with_diagonal.mtx"
     matrix.write_text(
-        "%%MatrixMarket matrix coordinate pattern symmetric\\n"
-        "3 3 4\\n"
-        "1 1\\n"
-        "1 2\\n"
-        "2 3\\n"
-        "1 2\\n",
+        "%%MatrixMarket matrix coordinate pattern symmetric\n"
+        "3 3 4\n"
+        "1 1\n"
+        "1 2\n"
+        "2 3\n"
+        "1 2\n",
         encoding="utf-8",
     )
     assert get_dataset_info(str(matrix)) == (3, 2)
