@@ -1,0 +1,20 @@
+% Table: SAT Solver Performance Comparison (Medium Graphs)
+\begin{table}[htbp]
+\centering
+\caption{SAT Solver Performance Comparison (Medium Graphs)}
+\label{tab:table_solvers_medium}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Dataset & N & |E| & cadical195 & glucose4 & maplechrono & minisat22 & lingeling \\
+\midrule
+494\_bus\_n60 & 60 & 76 & 34.1434 & TO(7) & 596.6603 & TO(7) & 215.2864 \\
+662\_bus\_n60 & 60 & 77 & 26.8385 & TO(9) & TO(9) & TO(9) & 112.7343 \\
+662\_bus\_n80 & 80 & 105 & 45.7719 & TO(11) & TO(11) & TO(10) & 191.4057 \\
+\midrule
+\textbf{Solved} & - & - & 3 & 0 & 1 & 0 & 3 \\
+\textbf{PAR2 (s)} & - & - & 35.585 & 1200.000 & 998.887 & 1200.000 & 173.142 \\
+\textbf{Speedup (geom) [3/3]} & - & - & 1.00x & - & - & - & 0.21x \\
+\bottomrule
+\multicolumn{8}{l}{\footnotesize Speedup chỉ tính trên instance mà baseline >= 0.1s (3/3). Các solver chưa giải hết các instance này ghi '-'.} \\
+\end{tabular}
+\end{table}

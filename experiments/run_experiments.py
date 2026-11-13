@@ -1150,6 +1150,7 @@ if __name__ == "__main__":
             "exact_solvers",
             "cplex_cp",
             "gurobi",
+            "harwell_boeing_28",
         ],
         help="experiment group to run",
     )

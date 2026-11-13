@@ -399,9 +399,9 @@ def test_group_e_scatter_pairs_require_same_seed_and_config():
     # Record 2: seed 1, with_sb (MUST NOT PAIR WITH RECORD 1!)
     # Record 3: seed 0, with_sb (MUST PAIR WITH RECORD 1)
     records = [
-        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 10.0, "status": "OPTIMAL", "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
-        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 1, "solve_time": 2.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
-        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 5.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 10.0, "status": "OPTIMAL", "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 1, "solve_time": 2.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 5.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
     ]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -896,25 +896,114 @@ def test_mr2_duplicate_record_preserves_summary_stats(tmp_path):
     assert loaded_clean[0]["solve_time"] == loaded_dup[0]["solve_time"]
 
 
-def test_mr3_deduplication_tie_breaking_is_commutative():
-    """MR3: Deduplication tie-breaking is strictly commutative: pick_better_record(A, B) == pick_better_record(B, A)."""
-    # Case 1: OPTIMAL vs Failure
-    r_opt = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 5.0}
-    r_fail = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0}
-    assert pick_better_record(r_opt, r_fail) is r_opt
-    assert pick_better_record(r_fail, r_opt) is r_opt
+def test_mr3_deduplication_tie_breaking_is_commutative(caplog, tmp_path):
+    """MR3 (A1): Exact duplicates dedup cleanly; any divergent status/UB/assignment/runtime is a CONFLICT."""
+    import logging
 
-    # Case 2: Both OPTIMAL same UB, different solve times
-    r_fast = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 2.0}
-    r_slow = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 4.0}
-    assert pick_better_record(r_fast, r_slow) is r_fast
-    assert pick_better_record(r_slow, r_fast) is r_fast
+    # Case 1: Identical core data -> deduplicates cleanly regardless of order (only metadata like _line/groups differ)
+    r_id_a = {
+        "dataset": "d1", "solver": "cadical195", "status": "OPTIMAL",
+        "best_ub": 3, "assignment": [0, 1, 2], "solve_time": 2.0, "wall_time": 2.5,
+        "rep": 1, "groups": ["methods"], "_file": "a.jsonl", "_line": 1,
+    }
+    r_id_b = {
+        "dataset": "d1", "solver": "cadical195", "status": "OPTIMAL",
+        "best_ub": 3, "assignment": [0, 1, 2], "solve_time": 2.0, "wall_time": 2.5,
+        "rep": 1, "groups": ["solvers_small"], "_file": "a.jsonl", "_line": 2,
+    }
+    res_ab = pick_better_record(r_id_a, r_id_b, strict=True)
+    res_ba = pick_better_record(r_id_b, r_id_a, strict=True)
+    assert res_ab["status"] == "OPTIMAL"
+    assert res_ab["best_ub"] == 3
+    assert res_ab["solve_time"] == 2.0
+    assert sorted(res_ab["groups"]) == ["methods", "solvers_small"]
+    assert res_ba["status"] == res_ab["status"]
+    assert res_ba["solve_time"] == res_ab["solve_time"]
+    assert sorted(res_ba["groups"]) == ["methods", "solvers_small"]
 
-    # Case 3: Both TIMEOUT, one has valid timing, other is None
-    r_time = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0}
-    r_notime = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": None}
-    assert pick_better_record(r_time, r_notime) is r_time
-    assert pick_better_record(r_notime, r_time) is r_time
+    # Case 2: Different status on same (canonical_key, rep) -> conflict
+    r_opt = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 5.0, "rep": 1}
+    r_fail = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0, "rep": 1}
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_opt, r_fail, strict=True)
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_fail, r_opt, strict=True)
+    c_opt_fail_ab = pick_better_record(r_opt, r_fail, strict=False)
+    c_opt_fail_ba = pick_better_record(r_fail, r_opt, strict=False)
+    assert c_opt_fail_ab["status"] == "CONFLICT"
+    assert c_opt_fail_ba["status"] == "CONFLICT"
+
+    # Case 3: Both OPTIMAL same UB & status, DIFFERENT solve_time -> conflict (do NOT pick min/max)
+    r_fast = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 2.0, "rep": 1}
+    r_slow = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 4.0, "rep": 1}
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_fast, r_slow, strict=True)
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_slow, r_fast, strict=True)
+    c_time_ab = pick_better_record(r_fast, r_slow, strict=False)
+    c_time_ba = pick_better_record(r_slow, r_fast, strict=False)
+    assert c_time_ab["status"] == "CONFLICT"
+    assert c_time_ba["status"] == "CONFLICT"
+    assert c_time_ab["solve_time"] is None
+    assert c_time_ba["solve_time"] is None
+
+    # Case 4: Both TIMEOUT same status, one has timing and other is None -> conflict
+    r_time = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0, "rep": 1}
+    r_notime = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": None, "rep": 1}
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_time, r_notime, strict=True)
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_notime, r_time, strict=True)
+    assert pick_better_record(r_time, r_notime, strict=False)["status"] == "CONFLICT"
+    assert pick_better_record(r_notime, r_time, strict=False)["status"] == "CONFLICT"
+
+    # Case 5: Same status & UB & runtime, DIFFERENT assignment -> conflict
+    r_asg1 = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 2, "assignment": [0, 1, 2], "solve_time": 1.0, "rep": 1}
+    r_asg2 = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 2, "assignment": [2, 1, 0], "solve_time": 1.0, "rep": 1}
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_asg1, r_asg2, strict=True)
+    assert pick_better_record(r_asg1, r_asg2, strict=False)["status"] == "CONFLICT"
+
+    # Case 6: JSONL strict=False excludes entire conflicting group from aggregate & marks CONFLICT in CSV + logs file/line/reason
+    jsonl_fwd = tmp_path / "fwd.jsonl"
+    jsonl_rev = tmp_path / "rev.jsonl"
+    recs = [
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 1.5, "rep": 1, "groups": ["solvers_small"]},
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 3.5, "rep": 1, "groups": ["solvers_small"]},
+        # Even rep=2 of the same run group is tainted when rep=1 conflicted -> entire group marked CONFLICT!
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 2.0, "rep": 2, "groups": ["solvers_small"]},
+        # Non-conflicting solver on same dataset
+        {"dataset": "d1", "solver": "kissat", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 1.0, "rep": 1, "groups": ["solvers_small"]},
+    ]
+    jsonl_fwd.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    jsonl_rev.write_text("\n".join(json.dumps(r) for r in reversed(recs)) + "\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        agg_fwd = load_records(str(jsonl_fwd), strict=False)
+        agg_rev = load_records(str(jsonl_rev), strict=False)
+
+    assert any("fwd.jsonl" in m and ("conflict" in m.lower() or "mismatch" in m.lower()) for m in caplog.messages)
+
+    by_sol_fwd = {r["solver"]: r for r in agg_fwd}
+    by_sol_rev = {r["solver"]: r for r in agg_rev}
+    assert by_sol_fwd["cadical195"]["status"] == "CONFLICT"
+    assert by_sol_rev["cadical195"]["status"] == "CONFLICT"
+    assert by_sol_fwd["cadical195"]["solve_time"] is None
+    assert by_sol_fwd["cadical195"].get("par2") is None
+    assert by_sol_fwd["kissat"]["status"] == "OPTIMAL"
+
+    from analysis.make_tables import make_table_solvers
+    out_fwd = str(tmp_path / "tab_fwd")
+    out_rev = str(tmp_path / "tab_rev")
+    df_fwd, sum_fwd, _ = make_table_solvers(agg_fwd, group_name="solvers_small", base_filename="table_solvers_small", output_dirs=(out_fwd,))
+    df_rev, sum_rev, _ = make_table_solvers(agg_rev, group_name="solvers_small", base_filename="table_solvers_small", output_dirs=(out_rev,))
+    pd.testing.assert_frame_equal(df_fwd, df_rev)
+    assert df_fwd.loc["d1", "cadical195"] == "CONFLICT"
+    # Solved count for cadical195 must be 0, and csv must contain CONFLICT
+    solved_row = dict(sum_fwd).get("Solved", {})
+    assert solved_row["cadical195"] == "0"
+    assert "CONFLICT" in (tmp_path / "tab_fwd" / "table_solvers_small.csv").read_text(encoding="utf-8")
+    assert "CONFLICT" in (tmp_path / "tab_fwd" / "table_solvers_small_data.csv").read_text(encoding="utf-8")
 
 
 def test_mr4_divergent_optimal_best_ub_raises_duplicate_conflict_error():
@@ -1052,3 +1141,240 @@ def test_mr12_validation_bijection_rejects_invalid_assignments():
 
     # Rejection of non-lists
     assert is_valid_assignment("012", n=3) is False
+
+
+def test_a2_canonical_ablation_variant_and_multi_rep_boxplot_invariance(tmp_path, monkeypatch):
+    """A2: plot_ablation_family_boxplots uses canonical flags (incl. top-level) and aggregates reps like tables."""
+    from analysis.make_plots import get_ablation_var_name, plot_ablation_family_boxplots
+    from analysis.make_tables import make_table_ablation_family
+    import matplotlib.axes
+
+    # 1. Top-level flags (not inside config) must be recognized identically to config flags
+    rec_top_rot_ref = {
+        "dataset": "d40", "solver": "cadical195", "N": 40, "relabel_seed": 0,
+        "status": "OPTIMAL", "solve_time": 2.0, "best_ub": 3,
+        "sb_rotation": True, "sb_reflection": True, "heuristic_ub": False,
+        "config": {},
+    }
+    assert get_ablation_var_name(rec_top_rot_ref) == "rot+ref"
+
+    # 2. Multi-repetition records on (base_key, var) must aggregate via median (2.0), NOT last-record-wins (100.0 / 1.0)
+    recs = []
+    for n_val, ds in [(40, "d40"), (50, "d50")]:
+        # Baseline 'none' with top-level flags and solve_time=4.0
+        recs.append({
+            "dataset": ds, "solver": "cadical195", "N": n_val, "relabel_seed": 0,
+            "status": "OPTIMAL", "solve_time": 4.0, "best_ub": 3, "rep": 1,
+            "sb_rotation": False, "sb_reflection": False, "heuristic_ub": False, "config": {},
+        })
+        # 'rotation', 'heur_ub', 'all' with top-level flags (solve_time=2.0 -> ratio 0.5)
+        for flags in [
+            {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+            {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": True},
+            {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+        ]:
+            recs.append({
+                "dataset": ds, "solver": "cadical195", "N": n_val, "relabel_seed": 0,
+                "status": "OPTIMAL", "solve_time": 2.0, "best_ub": 3, "rep": 1,
+                **flags, "config": {},
+            })
+        # 'rot_ref' with 3 repetitions: [1.0, 2.0, 100.0] -> median is 2.0 (ratio 0.5)
+        for rep_i, st_val in [(1, 1.0), (2, 2.0), (3, 100.0)]:
+            recs.append({
+                "dataset": ds, "solver": "cadical195", "N": n_val, "relabel_seed": 0,
+                "status": "OPTIMAL", "solve_time": st_val, "best_ub": 3, "rep": rep_i,
+                "sb_rotation": True, "sb_reflection": True, "heuristic_ub": False, "config": {},
+            })
+
+    captured_fwd = []
+    orig_boxplot = matplotlib.axes.Axes.boxplot
+
+    def spy_boxplot(self, x, *args, **kwargs):
+        captured_fwd.append([list(col) for col in x])
+        return orig_boxplot(self, x, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", spy_boxplot)
+    plot_ablation_family_boxplots(recs, base_filename="bp_fwd", output_dirs=(str(tmp_path / "fwd"),))
+    assert len(captured_fwd) == 2
+    # rot_ref is index 1 in ["rotation", "rot_ref", "heur_ub", "all"]
+    assert captured_fwd[0][1] == [pytest.approx(0.5)]
+    assert captured_fwd[1][1] == [pytest.approx(0.5)]
+
+    captured_rev = []
+
+    def spy_boxplot_rev(self, x, *args, **kwargs):
+        captured_rev.append([list(col) for col in x])
+        return orig_boxplot(self, x, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", spy_boxplot_rev)
+    plot_ablation_family_boxplots(list(reversed(recs)), base_filename="bp_rev", output_dirs=(str(tmp_path / "rev"),))
+    assert captured_fwd == captured_rev
+
+    # Family table must match plot aggregation (median 0.5, not raise DuplicateConflictError across distinct reps)
+    df_fam = make_table_ablation_family(recs, output_dirs=(str(tmp_path / "tab"),))
+    assert df_fam is not None
+    row_rr = df_fam[(df_fam["comparison_group"] == "variant vs none") & (df_fam["variant"] == "rotation_reflection")]
+    assert row_rr.iloc[0]["median_time_ratio"] == "0.5000"
+
+
+def test_a3_plot_group_filter_no_fallback_when_groups_missing(tmp_path, caplog):
+    """A3: Plot functions must NOT fall back to all OPTIMAL records when requested group_name matches nothing (incl. missing 'groups')."""
+    import logging
+    from analysis.make_plots import (
+        extract_scatter_pairs,
+        plot_cactus,
+        plot_scatter_sb_vs_nosb,
+        plot_ablation_median_time,
+        plot_ablation_iterations_and_unsat,
+        plot_ablation_family_boxplots,
+    )
+
+    records_no_groups = [
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "N": 40, "relabel_seed": 0,
+            "status": "OPTIMAL", "solve_time": 4.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [2.0, 2.0],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "N": 40, "relabel_seed": 0,
+            "status": "OPTIMAL", "solve_time": 1.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.5, 0.5],
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+        },
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        pairs = extract_scatter_pairs(records_no_groups, group_name="ablation_small")
+        assert pairs == []
+
+        out_dir = str(tmp_path / "figs")
+        plot_cactus(records_no_groups, "solvers_small", lambda r: r["solver"], "Cactus", "cactus_empty", output_dirs=(out_dir,))
+        plot_scatter_sb_vs_nosb(records_no_groups, group_name="ablation_small", base_filename="scatter_empty", output_dirs=(out_dir,))
+        plot_ablation_median_time(records_no_groups, group_name="ablation_small", base_filename="med_empty", output_dirs=(out_dir,))
+        plot_ablation_iterations_and_unsat(records_no_groups, group_name="ablation_small", base_filename="iter_empty", output_dirs=(out_dir,))
+        plot_ablation_family_boxplots(records_no_groups, group_name="ablation_family", base_filename="box_empty", output_dirs=(out_dir,))
+
+    assert not os.path.exists(os.path.join(out_dir, "scatter_empty.png"))
+    assert not os.path.exists(os.path.join(out_dir, "med_empty.png"))
+    assert not os.path.exists(os.path.join(out_dir, "iter_empty.png"))
+    assert not os.path.exists(os.path.join(out_dir, "cactus_empty.png"))
+    assert not os.path.exists(os.path.join(out_dir, "box_empty.png"))
+    assert any("ablation_small" in msg or "solvers_small" in msg for msg in caplog.messages)
+
+
+def test_a4_ablation_plots_lock_canonical_identity_and_aggregate_reps(tmp_path):
+    """
+    A4: Ablation bar plots must:
+    - Refuse to mix multiple solvers, encodings, solving modes, EO strategies, or seeds
+      in a single group (raise ValueError).
+    - Aggregate repetitions per canonical_key so multi-rep datasets receive equal weight
+      matching tables.
+    - Not hardcode 'UNSAT' claims on final iteration titles when UNSAT proof is unverified.
+    """
+    import inspect
+    import numpy as np
+    from analysis.make_plots import (
+        plot_ablation_median_time,
+        plot_ablation_iterations_and_unsat,
+    )
+
+    out_dir = str(tmp_path / "figs")
+
+    # 1. Mixed solvers inside same group must raise ValueError
+    mixed_solver_recs = [
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.4, 0.6],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+        {
+            "dataset": "d2", "solver": "kissat", "encoding": "order", "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 2.0, "best_ub": 4, "num_iterations": 3, "per_iter_times": [0.5, 0.7, 0.8],
+            "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+        },
+    ]
+    with pytest.raises(ValueError):
+        plot_ablation_median_time(mixed_solver_recs, group_name="ablation_small", base_filename="mix_s_m", output_dirs=(out_dir,))
+    with pytest.raises(ValueError):
+        plot_ablation_iterations_and_unsat(mixed_solver_recs, group_name="ablation_small", base_filename="mix_s_i", output_dirs=(out_dir,))
+
+    # 2. Mixed encodings or relabel seeds must raise ValueError
+    mixed_enc_recs = [
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.4, 0.6],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "pairwise", "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.5, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.7, 0.8],
+            "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+        },
+    ]
+    with pytest.raises(ValueError):
+        plot_ablation_median_time(mixed_enc_recs, group_name="ablation_small", base_filename="mix_e_m", output_dirs=(out_dir,))
+
+    mixed_seed_recs = [
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.4, 0.6],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+        {
+            "dataset": "d2", "solver": "cadical195", "encoding": "order", "relabel_seed": 1, "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.2, "best_ub": 4, "num_iterations": 2, "per_iter_times": [0.5, 0.7],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+    ]
+    with pytest.raises(ValueError):
+        plot_ablation_iterations_and_unsat(mixed_seed_recs, group_name="ablation_small", base_filename="mix_seed_i", output_dirs=(out_dir,))
+
+    # 3. Multi-rep aggregation must give equal weight per canonical dataset:
+    # d1 has 3 reps with solve_time=10.0, d2 has 1 rep with solve_time=2.0.
+    # Unaggregated raw median([10, 10, 10, 2]) == 10.0; aggregated median([10.0, 2.0]) == 6.0.
+    captured_medians = []
+    captured_ax2_titles = []
+    orig_bar = None
+    import matplotlib.axes
+    orig_bar = matplotlib.axes.Axes.bar
+    orig_set_title = matplotlib.axes.Axes.set_title
+
+    def spy_bar(self, x, height, *args, **kwargs):
+        captured_medians.append(list(height))
+        return orig_bar(self, x, height, *args, **kwargs)
+
+    def spy_set_title(self, label, *args, **kwargs):
+        captured_ax2_titles.append(str(label))
+        return orig_set_title(self, label, *args, **kwargs)
+
+    rep_recs = [
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"], "repetition": 1,
+         "status": "OPTIMAL", "solve_time": 10.0, "best_ub": 3, "num_iterations": 4, "per_iter_times": [2.0, 4.0],
+         "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"], "repetition": 2,
+         "status": "OPTIMAL", "solve_time": 10.0, "best_ub": 3, "num_iterations": 4, "per_iter_times": [2.0, 4.0],
+         "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"], "repetition": 3,
+         "status": "OPTIMAL", "solve_time": 10.0, "best_ub": 3, "num_iterations": 4, "per_iter_times": [2.0, 4.0],
+         "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "d2", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"], "repetition": 1,
+         "status": "OPTIMAL", "solve_time": 2.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [1.0, 1.0],
+         "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+    ]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(matplotlib.axes.Axes, "bar", spy_bar)
+        mp.setattr(matplotlib.axes.Axes, "set_title", spy_set_title)
+        plot_ablation_median_time(rep_recs, group_name="ablation_small", base_filename="rep_med", output_dirs=(out_dir,))
+        plot_ablation_iterations_and_unsat(rep_recs, group_name="ablation_small", base_filename="rep_iter", output_dirs=(out_dir,))
+
+    # First bar call is plot_ablation_median_time; index 0 is variant "none"
+    assert np.isclose(captured_medians[0][0], 6.0)
+    # Second bar call (ax1 in iterations) -> mean([4, 2]) == 3.0 (not 3.5)
+    assert np.isclose(captured_medians[1][0], 3.0)
+    # Third bar call (ax2 in iterations) -> mean([4.0, 1.0]) == 2.5 (not 3.25)
+    assert np.isclose(captured_medians[2][0], 2.5)
+
+    # 4. Neither default signature title nor subplot title claims unproven "UNSAT"
+    sig = inspect.signature(plot_ablation_iterations_and_unsat)
+    assert "UNSAT" not in sig.parameters["title"].default
+    assert all("UNSAT" not in t for t in captured_ax2_titles)

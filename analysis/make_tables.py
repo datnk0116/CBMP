@@ -667,6 +667,8 @@ def normalize_status(val):
         return "NUMERIC_ERROR"
     elif s == "PARTIAL":
         return "PARTIAL"
+    elif s == "CONFLICT":
+        return "CONFLICT"
     elif s in ("UNKNOWN", "UNK"):
         return "UNKNOWN"
     else:
@@ -733,22 +735,174 @@ def get_pairing_identity(record):
         enc, mode, eo = "order", "incremental", "commander"
     return (ds, solver, enc, mode, eo, seed)
 
+
+_ABLATION_VARIANT_LABELS = {
+    "table": {
+        (False, False, False): "none",
+        (True, False, False): "rotation",
+        (True, True, False): "rot_ref",
+        (False, False, True): "heur_ub",
+        (True, True, True): "all",
+    },
+    "family": {
+        (False, False, False): "none",
+        (True, False, False): "rotation",
+        (True, True, False): "rotation_reflection",
+        (False, False, True): "heuristic_ub",
+        (True, True, True): "all",
+    },
+    "plot": {
+        (False, False, False): "none",
+        (True, False, False): "rotation",
+        (True, True, False): "rot+ref",
+        (False, False, True): "heuristic-ub",
+        (True, True, True): "all (SB+Heur)",
+    },
+}
+
+
+def get_ablation_variant(rec_or_cfg, style="table"):
+    """
+    Single canonical source of truth for classifying ablation variants.
+    Resolves sb_rotation, sb_reflection, heuristic_ub from top-level fields and/or
+    nested config dict via canonical identity / resolve_field_with_conflict_check.
+    """
+    if not isinstance(rec_or_cfg, dict):
+        return "other"
+
+    rot = ref = heur = None
+    has_identity = any(k in rec_or_cfg for k in ("dataset", "solver", "method"))
+    if has_identity:
+        canon = get_canonical_key(rec_or_cfg)
+        if canon is None or canon[1] != "sat" or len(canon[3]) < 3:
+            return "other"
+        flags = canon[3]
+        rot, ref, heur = bool(flags[0]), bool(flags[1]), bool(flags[2])
+    else:
+        cfg = rec_or_cfg.get("config") if isinstance(rec_or_cfg.get("config"), dict) else rec_or_cfg
+        rec_view = rec_or_cfg if "config" in rec_or_cfg else {}
+        rot, c1 = resolve_field_with_conflict_check(rec_view, cfg, "sb_rotation", strict_bool, default=False)
+        ref, c2 = resolve_field_with_conflict_check(rec_view, cfg, "sb_reflection", strict_bool, default=False)
+        heur, c3 = resolve_field_with_conflict_check(rec_view, cfg, "heuristic_ub", strict_bool, default=False)
+        if c1 or c2 or c3 or rot is None or ref is None or heur is None:
+            return "other"
+
+    style_map = _ABLATION_VARIANT_LABELS.get(style, _ABLATION_VARIANT_LABELS["table"])
+    return style_map.get((bool(rot), bool(ref), bool(heur)), "other")
+
+
+def _ensure_aggregated_records(records, strict=True):
+    """
+    Ensures records are deduplicated on (canonical_key, rep) and aggregated across
+    multiple repetitions per canonical_key. Already-aggregated singleton records
+    (n_total is not None) are preserved without re-wrapping.
+    """
+    by_canon = {}
+    for idx, r in enumerate(records, start=1):
+        if not is_valid_record_dict(r):
+            logger.warning("_ensure_aggregated_records: skipped invalid record at index %d", idx)
+            continue
+        ckey = get_canonical_key(r)
+        if ckey is None:
+            logger.warning("[%s] Skipped record with invalid canonical identity", _format_rec_location(r))
+            continue
+        by_canon.setdefault(ckey, []).append(r)
+
+    result = []
+    for ckey in sorted(by_canon.keys(), key=lambda x: str(x)):
+        group = by_canon[ckey]
+        if len(group) == 1 and group[0].get("n_total") is not None:
+            result.append(group[0])
+        else:
+            deduped = resolve_duplicate_records(group, strict=strict)
+            agg = aggregate_repetition_group(deduped)
+            if agg is not None:
+                agg["canonical_key"] = ckey
+                result.append(agg)
+    return result
+
+def _format_rec_location(rec):
+    if not isinstance(rec, dict):
+        return "<unknown>:?"
+    f = rec.get("_file") or "<memory>"
+    ln = rec.get("_line")
+    return f"{f}:{ln if ln is not None else '?'}"
+
+
+def _merge_record_groups(rec_a, rec_b):
+    gs = set()
+    for r in (rec_a, rec_b):
+        if not isinstance(r, dict):
+            continue
+        if isinstance(r.get("groups"), (list, tuple, set)):
+            gs.update(str(g) for g in r["groups"])
+        if r.get("_group"):
+            gs.add(str(r["_group"]))
+    return sorted(gs)
+
+
+def _float_timing_differs(val_a, val_b):
+    if val_a is None and val_b is None:
+        return False
+    if val_a is None or val_b is None:
+        return True
+    return not math.isclose(float(val_a), float(val_b), rel_tol=1e-12, abs_tol=1e-12)
+
+
+def _build_conflict_record(rec_a, rec_b, reason_list):
+    """Builds a deterministic CONFLICT sentinel record independent of input order."""
+    # Pick deterministic base dictionary for identity fields
+    try:
+        repr_a = json.dumps({k: v for k, v in rec_a.items() if k not in ("_file", "_line", "_group", "groups")}, sort_keys=True, default=str)
+        repr_b = json.dumps({k: v for k, v in rec_b.items() if k not in ("_file", "_line", "_group", "groups")}, sort_keys=True, default=str)
+        base = dict(rec_a if repr_a <= repr_b else rec_b)
+    except Exception:
+        base = dict(rec_a)
+
+    sources = set()
+    for r in (rec_a, rec_b):
+        if isinstance(r, dict):
+            for s in r.get("_conflict_sources", []):
+                sources.add(tuple(s) if isinstance(s, (list, tuple)) else (str(s), "?"))
+            if r.get("_file") is not None or r.get("_line") is not None:
+                sources.add((str(r.get("_file") or "<memory>"), str(r.get("_line") if r.get("_line") is not None else "?")))
+
+    existing_reasons = set(reason_list)
+    for r in (rec_a, rec_b):
+        if isinstance(r, dict) and r.get("conflict_reason"):
+            for part in str(r["conflict_reason"]).split("; "):
+                if part:
+                    existing_reasons.add(part)
+
+    merged_groups = _merge_record_groups(rec_a, rec_b)
+    if merged_groups:
+        base["groups"] = merged_groups
+
+    base["status"] = "CONFLICT"
+    base["_conflict"] = True
+    base["conflict_reason"] = "; ".join(sorted(existing_reasons))
+    base["_conflict_sources"] = [list(s) for s in sorted(sources)]
+    base["solve_time"] = None
+    base["wall_time"] = None
+    base["encode_time"] = None
+    base["best_ub"] = -1
+    base["assignment"] = None
+    return base
+
+
 def pick_better_record(rec_a, rec_b, strict=False):
     """
     Deterministically resolves two execution records representing the same run (canonical_key, rep).
-    Symmetric and order-invariant: pick_better_record(A, B) == pick_better_record(B, A).
+    Symmetric and order-invariant: pick_better_record(A, B) matches pick_better_record(B, A).
 
-    Policy:
-    1. Divergent OPTIMAL best_ub -> raises DuplicateConflictError.
-    2. Valid OPTIMAL (with valid best_ub, no validation error) beats any non-OPTIMAL.
-    3. Status tier ranking:
-       OPTIMAL (tier 0) > FEASIBLE with valid UB (tier 1) > TIMEOUT (tier 2) >
-       INTERRUPTED (tier 3) > SIZE_LIMIT (tier 4) > UNAVAILABLE/LICENSE_ERROR (tier 5) >
-       INFEASIBLE (tier 6) > ERROR/UNKNOWN (tier 7).
-    4. For equal status tier:
-       - Record with genuine valid solve_time is preferred over one without.
-       - If both have valid solve_time: chooses min (solve_time, wall_time).
-       - Deterministic tie-breaking via sorted JSON string serialization.
+    Duplicate Resolution Policy (A1):
+    1. Exact duplicates (identical status, best_ub, assignment, solve_time, wall_time, validation_error):
+       deduplicate cleanly, merging group membership and logging dropped source.
+    2. Divergent status, best_ub, assignment, OR divergent runtime (solve_time / wall_time)
+       for the same (canonical_key, rep):
+       - Logs (file, line, reason) for the conflicting records.
+       - If strict=True: raises DuplicateConflictError.
+       - If strict=False: returns a deterministic CONFLICT sentinel record (never picks min/max runtime).
     """
     if rec_a is rec_b:
         return rec_a
@@ -759,78 +913,84 @@ def pick_better_record(rec_a, rec_b, strict=False):
 
     st_a = normalize_status(rec_a.get("status"))
     st_b = normalize_status(rec_b.get("status"))
+
+    # Propagate existing conflict deterministically
+    if st_a == "CONFLICT" or rec_a.get("_conflict") or st_b == "CONFLICT" or rec_b.get("_conflict"):
+        conflict_rec = _build_conflict_record(rec_a, rec_b, [])
+        msg = (
+            f"Duplicate conflict propagated at {_format_rec_location(rec_a)} vs "
+            f"{_format_rec_location(rec_b)}: {conflict_rec.get('conflict_reason', 'conflict')}"
+        )
+        logger.error(msg)
+        if strict:
+            raise DuplicateConflictError(msg)
+        return conflict_rec
+
     ub_a = validate_best_ub(rec_a.get("best_ub"))
     ub_b = validate_best_ub(rec_b.get("best_ub"))
     err_a = bool(rec_a.get("validation_error"))
     err_b = bool(rec_b.get("validation_error"))
+    asgn_a = rec_a.get("assignment")
+    asgn_b = rec_b.get("assignment")
+    t_a = validate_solve_time(rec_a.get("solve_time"))
+    t_b = validate_solve_time(rec_b.get("solve_time"))
+    w_a = validate_solve_time(rec_a.get("wall_time"))
+    w_b = validate_solve_time(rec_b.get("wall_time"))
 
-    is_opt_a = (st_a == "OPTIMAL" and ub_a is not None and not err_a)
-    is_opt_b = (st_b == "OPTIMAL" and ub_b is not None and not err_b)
+    # Also treat explicit None vs numeric or invalid non-None timing consistently:
+    # if one record has raw solve_time=None and other has numeric, t_a != t_b catches it.
+    reasons = []
+    if st_a != st_b:
+        pair = tuple(sorted((str(st_a), str(st_b))))
+        reasons.append(f"status mismatch ({pair[0]} vs {pair[1]})")
+    if ub_a != ub_b:
+        pair = tuple(sorted((str(ub_a), str(ub_b))))
+        reasons.append(f"best_ub mismatch ({pair[0]} vs {pair[1]})")
+    if err_a != err_b:
+        pair = tuple(sorted((str(err_a), str(err_b))))
+        reasons.append(f"validation_error mismatch ({pair[0]} vs {pair[1]})")
+    if asgn_a != asgn_b:
+        reasons.append("assignment mismatch")
+    if _float_timing_differs(t_a, t_b):
+        pair = tuple(sorted((str(t_a), str(t_b))))
+        reasons.append(f"solve_time mismatch ({pair[0]} vs {pair[1]})")
+    if _float_timing_differs(w_a, w_b):
+        pair = tuple(sorted((str(w_a), str(w_b))))
+        reasons.append(f"wall_time mismatch ({pair[0]} vs {pair[1]})")
 
-    # 1. Critical conflict check: both claim OPTIMAL but report different best_ub
-    if is_opt_a and is_opt_b and ub_a != ub_b:
-        msg = f"Duplicate OPTIMAL conflict: best_ub {ub_a} vs {ub_b}"
+    if reasons:
+        reasons_sorted = sorted(reasons)
+        loc_pair = tuple(sorted((_format_rec_location(rec_a), _format_rec_location(rec_b))))
+        msg = (
+            f"Duplicate conflict between {loc_pair[0]} and {loc_pair[1]}: "
+            f"{'; '.join(reasons_sorted)}"
+        )
         logger.error(msg)
-        raise DuplicateConflictError(msg)
+        if strict:
+            raise DuplicateConflictError(msg)
+        return _build_conflict_record(rec_a, rec_b, reasons_sorted)
 
-    # 2. Status tier ranking
-    def _status_tier(st, ub, err):
-        if err:
-            return 7
-        if st == "OPTIMAL" and ub is not None:
-            return 0
-        if st == "FEASIBLE" and ub is not None:
-            return 1
-        if st == "TIMEOUT":
-            return 2
-        if st == "INTERRUPTED":
-            return 3
-        if st == "SIZE_LIMIT":
-            return 4
-        if st in ("UNAVAILABLE", "LICENSE_ERROR"):
-            return 5
-        if st == "INFEASIBLE":
-            return 6
-        return 7
-
-    tier_a = _status_tier(st_a, ub_a, err_a)
-    tier_b = _status_tier(st_b, ub_b, err_b)
-
-    if tier_a < tier_b:
-        return rec_a
-    elif tier_b < tier_a:
-        return rec_b
-
-    # 3. Same status tier: compare timing and tie-break deterministically
-    t_a = extract_repetition_solve_time(rec_a)
-    t_b = extract_repetition_solve_time(rec_b)
-
-    has_t_a = (t_a is not None and t_a > 0)
-    has_t_b = (t_b is not None and t_b > 0)
-
-    if has_t_a and not has_t_b:
-        return rec_a
-    elif has_t_b and not has_t_a:
-        return rec_b
-
-    w_a = validate_solve_time(rec_a.get("wall_time")) or float("inf")
-    w_b = validate_solve_time(rec_b.get("wall_time")) or float("inf")
-
-    time_tuple_a = (t_a if has_t_a else float("inf"), w_a)
-    time_tuple_b = (t_b if has_t_b else float("inf"), w_b)
-
-    if time_tuple_a < time_tuple_b:
-        return rec_a
-    elif time_tuple_b < time_tuple_a:
-        return rec_b
-
-    # 4. Strict deterministic tie-breaker via canonical JSON string representation
+    # Identical core data -> exact duplicate, deduplicate deterministically
+    merged_groups = _merge_record_groups(rec_a, rec_b)
     try:
-        repr_a = json.dumps(rec_a, sort_keys=True, default=str)
-        repr_b = json.dumps(rec_b, sort_keys=True, default=str)
-        return rec_a if repr_a <= repr_b else rec_b
+        repr_a = json.dumps({k: v for k, v in rec_a.items() if k not in ("_file", "_line", "_group", "groups")}, sort_keys=True, default=str)
+        repr_b = json.dumps({k: v for k, v in rec_b.items() if k not in ("_file", "_line", "_group", "groups")}, sort_keys=True, default=str)
+        if repr_a <= repr_b:
+            winner, dropped = dict(rec_a), rec_b
+        else:
+            winner, dropped = dict(rec_b), rec_a
     except Exception:
-        return rec_a
+        winner, dropped = dict(rec_a), rec_b
+
+    if merged_groups:
+        winner["groups"] = merged_groups
+
+    logger.info(
+        "[%s] Exact duplicate dropped (identical data to %s)",
+        _format_rec_location(dropped),
+        _format_rec_location(winner),
+    )
+    return winner
 
 def resolve_duplicate_records(records, strict=False):
     """
@@ -838,11 +998,16 @@ def resolve_duplicate_records(records, strict=False):
     Input-order invariant.
     """
     by_run_id = {}
-    for r in records:
+    for idx, r in enumerate(records, start=1):
         if not is_valid_record_dict(r):
+            logger.warning("resolve_duplicate_records: skipped invalid record at index %d (non-dict or empty)", idx)
             continue
         run_id = get_run_identity(r)
         if run_id is None:
+            logger.warning(
+                "[%s] Skipped record with invalid canonical or repetition identity",
+                _format_rec_location(r),
+            )
             continue
         if run_id in by_run_id:
             by_run_id[run_id] = pick_better_record(by_run_id[run_id], r, strict=strict)
@@ -931,6 +1096,19 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
             continue
         rc = dict(r)
         st_norm = normalize_status(rc.get("status"))
+        if st_norm == "CONFLICT" or rc.get("_conflict"):
+            cat = "CONFLICT"
+            rc["status"] = "CONFLICT"
+            rc["_conflict"] = True
+            rc["solve_time"] = None
+            rc["wall_time"] = None
+            rc["encode_time"] = None
+            rc["best_ub"] = -1
+            rc["assignment"] = None
+            rc["_cat"] = cat
+            cleaned_reps.append(rc)
+            continue
+
         ub_val = validate_best_ub(rc.get("best_ub"))
         lb_val = validate_lower_bound(rc.get("lower_bound") if rc.get("lower_bound") is not None else rc.get("best_lb"))
 
@@ -955,6 +1133,7 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
     if n_total == 0:
         return None
 
+    n_conflict = sum(1 for r in reps if r["_cat"] == "CONFLICT" or r.get("_conflict"))
     n_optimal = sum(1 for r in reps if r["_cat"] == "OPTIMAL")
     n_timeout = sum(1 for r in reps if r["_cat"] == "TIMEOUT")
     n_interrupted = sum(1 for r in reps if r["_cat"] == "INTERRUPTED")
@@ -965,6 +1144,58 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
     n_unavailable = sum(1 for r in reps if r["_cat"] == "UNAVAILABLE")
     n_license_error = sum(1 for r in reps if r["_cat"] == "LICENSE_ERROR")
     n_unknown = sum(1 for r in reps if r["_cat"] == "UNKNOWN")
+
+    if n_conflict > 0:
+        conflict_reasons = sorted(
+            {str(r.get("conflict_reason")) for r in reps if r.get("conflict_reason")}
+        )
+        rep_base = sorted(
+            [r for r in reps if r["_cat"] == "CONFLICT"],
+            key=lambda x: str(x.get("conflict_reason", "")),
+        )[0]
+        logger.warning(
+            "aggregate_repetition_group: excluding entire conflicting group (dataset=%s, solver=%s) from aggregate and marking CONFLICT: %s",
+            rep_base.get("dataset"),
+            rep_base.get("solver"),
+            "; ".join(conflict_reasons) or "duplicate conflict",
+        )
+        all_groups = set()
+        for r in reps:
+            for g in r.get("groups", []):
+                all_groups.add(g)
+            if "_group" in r:
+                all_groups.add(r["_group"])
+        agg = dict(rep_base)
+        agg["status"] = "CONFLICT"
+        agg["_conflict"] = True
+        agg["conflict_reason"] = "; ".join(conflict_reasons) or "duplicate conflict"
+        agg["n_total"] = n_total
+        agg["n_algorithmic"] = 0
+        agg["n_optimal"] = 0
+        agg["n_timeout"] = 0
+        agg["n_interrupted"] = 0
+        agg["n_feasible"] = 0
+        agg["n_infeasible"] = 0
+        agg["n_error"] = 0
+        agg["n_size_limit"] = 0
+        agg["n_unavailable"] = 0
+        agg["n_license_error"] = 0
+        agg["n_unknown"] = 0
+        agg["solve_time"] = None
+        agg["solve_time_source"] = None
+        agg["timing_fallback"] = False
+        agg["wall_time"] = None
+        agg["effective_time"] = None
+        agg["effective_time_source"] = None
+        agg["encode_time"] = None
+        agg["num_iterations"] = None
+        agg["last_iter_time"] = None
+        agg.pop("par2", None)
+        agg["best_ub"] = -1
+        agg["assignment"] = None
+        agg["groups"] = sorted(list(all_groups))
+        agg["reps"] = reps
+        return agg
 
     n_algorithmic = n_optimal + n_timeout + n_interrupted + n_feasible + n_infeasible + n_error
 
@@ -1083,6 +1314,31 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
         agg["encode_time"] = float(np.median(encode_times))
     else:
         agg["encode_time"] = validate_solve_time(rep_chosen.get("encode_time"))
+
+    iter_counts = []
+    last_iter_times = []
+    for r in rep_pool:
+        it = r.get("num_iterations")
+        if isinstance(it, (int, float)) and not isinstance(it, bool) and math.isfinite(it) and it >= 0:
+            iter_counts.append(float(it))
+        t_last = validate_solve_time(r.get("last_iter_time"))
+        if t_last is None:
+            per_iter = r.get("per_iter_times")
+            if isinstance(per_iter, list) and per_iter:
+                t_last = validate_solve_time(per_iter[-1])
+        if t_last is not None:
+            last_iter_times.append(t_last)
+
+    if iter_counts:
+        med_iter = float(np.median(iter_counts))
+        agg["num_iterations"] = int(med_iter) if med_iter.is_integer() else med_iter
+    else:
+        agg["num_iterations"] = None
+
+    if last_iter_times:
+        agg["last_iter_time"] = float(np.median(last_iter_times))
+    else:
+        agg["last_iter_time"] = None
 
     par2_val = compute_repetition_par2(reps, default_timeout=default_timeout)
     if par2_val is not None:
@@ -1523,6 +1779,8 @@ def format_cell_value(status, solve_time=None, best_ub=None, n_optimal=None, n_t
         return "NUM_ERR"
     elif st == "ERROR":
         return "ERR"
+    elif st == "CONFLICT":
+        return "CONFLICT"
     elif st == "UNKNOWN":
         return "UNK"
     else:
@@ -1599,8 +1857,8 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             elif st == "SIZE_LIMIT":
                 sl_count += 1
                 # SIZE_LIMIT is reported separately in SL and not penalized in PAR2 as timeout
-            elif st in ("UNAVAILABLE", "LICENSE_ERROR", "UNKNOWN") or st is None:
-                # Solver environment unavailability, missing license, or unknown status excluded from algorithmic PAR2
+            elif st in ("UNAVAILABLE", "LICENSE_ERROR", "UNKNOWN", "CONFLICT") or st is None:
+                # Solver environment unavailability, missing license, unknown, or duplicate conflict excluded from algorithmic PAR2
                 pass
             else:
                 par2_val = validate_solve_time(rec.get("par2"))
@@ -1735,22 +1993,6 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         print(f"[WARNING] Skipping {base_filename}: no records found for group '{group_name}'.")
         return None
 
-    def get_var_name(cfg):
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
-        if not rot and not ref and not heur:
-            return "none"
-        elif rot and not ref and not heur:
-            return "rotation"
-        elif rot and ref and not heur:
-            return "rot_ref"
-        elif not rot and not ref and heur:
-            return "heur_ub"
-        elif rot and ref and heur:
-            return "all"
-        return "other"
-
     recs_by_ds_var = {}
     meta = {}
     for r in ablation_recs:
@@ -1782,7 +2024,7 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
 
         ds = r["dataset"]
         meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
-        var = get_var_name(cfg if cfg else r)
+        var = get_ablation_variant(r, style="table")
         if var == "other":
             continue
 
@@ -2178,23 +2420,6 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
     if isinstance(output_dirs, str):
         output_dirs = (output_dirs,)
 
-    def get_var(rec):
-        cfg = rec.get("config", {})
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
-        if not rot and not ref and not heur:
-            return "none"
-        elif rot and not ref and not heur:
-            return "rotation"
-        elif rot and ref and not heur:
-            return "rotation_reflection"
-        elif not rot and not ref and heur:
-            return "heuristic_ub"
-        elif rot and ref and heur:
-            return "all"
-        return "other"
-
     def _extract_seed(rec):
         if not isinstance(rec, dict):
             return None
@@ -2209,19 +2434,14 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
         print("[WARNING] Skipping table_ablation_family: no records with relabel_seed found.")
         return None
 
+    family_recs = _ensure_aggregated_records(family_recs, strict=True)
+
     pairs_map = {}
     for r in family_recs:
         base_key = get_pairing_identity(r)
         if base_key is None or base_key[5] is None:
-            seed = _extract_seed(r)
-            if seed is None:
-                continue
-            cfg = r.get("config", {}) if isinstance(r.get("config"), dict) else {}
-            enc = str(r.get("encoding") or cfg.get("encoding", "order")).strip().lower()
-            mode = str(r.get("solving_mode") or cfg.get("solving_mode", "incremental")).strip().lower()
-            eo = str(r.get("eo_strategy") or cfg.get("eo_strategy", "commander")).strip().lower()
-            base_key = (r.get("dataset", ""), normalize_solver_alias(r.get("solver") or "cadical195"), enc, mode, eo, seed)
-        var = get_var(r)
+            continue
+        var = get_ablation_variant(r, style="family")
         if var == "other":
             continue
 
@@ -2402,23 +2622,6 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     if isinstance(output_dirs, str):
         output_dirs = (output_dirs,)
 
-    def get_var(rec):
-        cfg = rec.get("config", {})
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
-        if not rot and not ref and not heur:
-            return "none"
-        elif rot and not ref and not heur:
-            return "rotation"
-        elif rot and ref and not heur:
-            return "rotation_reflection"
-        elif not rot and not ref and heur:
-            return "heuristic_ub"
-        elif rot and ref and heur:
-            return "all"
-        return "other"
-
     def _extract_seed(rec):
         if not isinstance(rec, dict):
             return None
@@ -2432,6 +2635,9 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     if not family_recs:
         print("[WARNING] Skipping table_ablation_phases: no records with relabel_seed found.")
         return None
+
+    if all(get_canonical_key(r) is not None for r in family_recs):
+        family_recs = _ensure_aggregated_records(family_recs, strict=True)
 
     variants = ["none", "rotation", "rotation_reflection", "heuristic_ub", "all"]
     sizes = sorted(list(set(r.get("N", 0) for r in family_recs if r.get("N"))))
@@ -2457,7 +2663,7 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
         for var in variants:
             count = sum(
                 1 for r in family_recs
-                if r.get("N") == n and get_var(r) == var and is_optimal_status(r)
+                if r.get("N") == n and get_ablation_variant(r, style="family") == var and is_optimal_status(r)
                 and _clean_iter_times(r) is not None
             )
             if count < 1:
@@ -2478,7 +2684,7 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
             ratios = []
 
             for r in family_recs:
-                if r.get("N") == n and get_var(r) == var and is_optimal_status(r):
+                if r.get("N") == n and get_ablation_variant(r, style="family") == var and is_optimal_status(r):
                     cleaned_iter = _clean_iter_times(r)
                     if cleaned_iter is not None and len(cleaned_iter) > 0:
                         last_t = cleaned_iter[-1]
@@ -2512,20 +2718,33 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     return df
 
 def get_lb_degree(dataset_name):
-    """Compute lb_degree = ceil(Delta / 2) from datasets/<dataset_name>.mtx, excluding self-loops."""
+    """Compute lb_degree = ceil(Delta / 2) from datasets/<dataset_name>.mtx, excluding self-loops and symmetrizing undirected edges."""
     filepath = f"datasets/{dataset_name}.mtx" if not dataset_name.endswith(".mtx") else dataset_name
     if not os.path.exists(filepath):
         return 0
     try:
         from scipy.io import mmread
+        from scipy.sparse import issparse
         try:
-            mat = mmread(filepath, spmatrix=True).tocsr()
+            mat = mmread(filepath, spmatrix=True)
         except TypeError:
-            mat = mmread(filepath).tocsr()
-        mat.setdiag(0)
-        mat.eliminate_zeros()
-        degrees = np.diff(mat.indptr)
-        max_deg = int(degrees.max()) if len(degrees) > 0 else 0
+            mat = mmread(filepath)
+        n_rows = int(mat.shape[0])
+        if n_rows <= 0:
+            return 0
+        if issparse(mat):
+            rows, cols = mat.tocsr().nonzero()
+        else:
+            rows, cols = np.nonzero(mat)
+        mask = rows != cols
+        undirected_edges = {(min(int(u), int(v)), max(int(u), int(v))) for u, v in zip(rows[mask], cols[mask])}
+        if not undirected_edges:
+            return 0
+        deg = np.zeros(n_rows, dtype=np.int64)
+        for u, v in undirected_edges:
+            deg[u] += 1
+            deg[v] += 1
+        max_deg = int(deg.max()) if len(deg) > 0 else 0
         return int(math.ceil(max_deg / 2))
     except Exception:
         return 0
@@ -2620,8 +2839,9 @@ def make_table_methods_family(records, base_filename="table_methods_family", out
     if isinstance(output_dirs, str):
         output_dirs = (output_dirs,)
 
+    agg_records = _ensure_aggregated_records(records, strict=True)
     pairs_map = {}
-    for r in records:
+    for r in agg_records:
         if not is_valid_record_dict(r):
             continue
         canon = get_canonical_key(r)
@@ -2722,7 +2942,8 @@ def make_table_methods_large(records, base_filename="table_methods_large", outpu
     cpsat_recs = {}
     meta = {}
 
-    for r in records:
+    agg_records = _ensure_aggregated_records(records, strict=True)
+    for r in agg_records:
         if not is_valid_record_dict(r):
             continue
         canon = get_canonical_key(r)
@@ -2815,7 +3036,8 @@ def make_table_methods_large_seeds(records, base_filename="table_methods_large_s
     sat_map = {}
     cpsat_map = {}
 
-    for r in records:
+    agg_records = _ensure_aggregated_records(records, strict=True)
+    for r in agg_records:
         if not is_valid_record_dict(r):
             continue
         canon = get_canonical_key(r)

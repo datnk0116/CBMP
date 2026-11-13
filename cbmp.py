@@ -111,8 +111,10 @@ def solve(
 
     Parameters:
       dataset: Name of dataset in datasets/ or direct path to .mtx file.
-      sb_rotation: Enable rotation symmetry breaking (fix anchor vertex label to 0).
-      sb_reflection: Enable reflection symmetry breaking (requires sb_rotation).
+      sb_rotation: Enable rotation symmetry breaking (0-based f(0) = 0, corresponding
+        to f(x_1) = 1 in the report).
+      sb_reflection: Enable reflection symmetry breaking (0-based f(1) < f(N - 1),
+        corresponding to f(x_2) < f(x_N) in the report; requires sb_rotation and N >= 3).
       use_heuristic_initial_ub: Compute initial UB via Reverse Cuthill-McKee layout.
       best_ub: Shared multiprocessing.Value or None for incumbent tracking.
       N: Number of vertices (if providing graph explicitly).
@@ -252,6 +254,7 @@ def solve(
         )
         if sb_rotation:
             base_clauses.extend(break_rotation_symmetry(X, 0))
+            # Reflection SB (0-based f(1) < f(N-1)) is valid only for N >= 3 (for N <= 2, 1 == N-1).
             if sb_reflection and N >= 3:
                 base_clauses.extend(break_reflection_symmetry_order(N, X, G))
     else:  # pairwise

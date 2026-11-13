@@ -209,3 +209,58 @@ def test_reflection_symmetry_n2_regression():
     assert res == 1
     assert res.stats["status"] == "OPTIMAL"
     assert res.stats["best_ub"] == 1
+
+
+RANDOM_N_LE_8_GRAPHS = [
+    (name, N, edges)
+    for name, N, edges in ALL_GRAPHS
+    if N <= 8 and name.startswith("random_")
+]
+# Ensure coverage across N=3..8 with a deterministic seed
+_rng_a6 = random.Random(2026)
+for _i in range(12):
+    _n = _rng_a6.randint(3, 8)
+    _p = _rng_a6.uniform(0.2, 0.75)
+    _edges = [(u, v) for u in range(_n) for v in range(u + 1, _n) if _rng_a6.random() < _p]
+    if not _edges and _n >= 2:
+        _edges = [(0, 1)]
+    RANDOM_N_LE_8_GRAPHS.append((f"rand_extra_{_i:02d}_N{_n}", _n, _edges))
+
+
+@pytest.mark.parametrize("graph_info", RANDOM_N_LE_8_GRAPHS, ids=[g[0] for g in RANDOM_N_LE_8_GRAPHS])
+@pytest.mark.parametrize("encoding", ["order", "pairwise"])
+@pytest.mark.parametrize("solving_mode", ["incremental", "iterative"])
+def test_order_and_pairwise_sb_modes_match_bruteforce_on_random_graphs(graph_info, encoding, solving_mode):
+    """
+    A6: On random graphs with N <= 8, verify that none / rotation / rotation_reflection
+    produce the exact same optimum equal to cyclic_bandwidth_bruteforce for BOTH
+    Order and Pairwise encodings (and both incremental and iterative solving modes).
+    """
+    name, N, edges = graph_info
+    expected = cyclic_bandwidth_bruteforce(N, edges)
+
+    optima = {}
+    for label, (sb_rot, sb_ref) in [
+        ("none", (False, False)),
+        ("rotation", (True, False)),
+        ("rotation_reflection", (True, True)),
+    ]:
+        res = solve(
+            N=N,
+            edges=edges,
+            encoding=encoding,
+            solving_mode=solving_mode,
+            sb_rotation=sb_rot,
+            sb_reflection=sb_ref,
+            use_heuristic_initial_ub=False,
+            verbose=False,
+        )
+        assert res.stats["status"] == "OPTIMAL", (
+            f"{name} ({encoding}/{solving_mode}/{label}) returned non-OPTIMAL: {res.stats['status']}"
+        )
+        optima[label] = int(res)
+        assert optima[label] == expected, (
+            f"{name} ({encoding}/{solving_mode}/{label}): got {optima[label]}, expected {expected}"
+        )
+
+    assert optima["none"] == optima["rotation"] == optima["rotation_reflection"] == expected

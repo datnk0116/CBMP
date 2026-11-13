@@ -95,8 +95,12 @@ def test_lb_degree_all_mtx_datasets_le_known_optima():
 
     assert tested >= 12, f"Expected at least 12 verified datasets, got {tested}"
     # Skipped datasets without proven optima yet:
-    # ['494_bus', '494_bus_n150', '662_bus', '662_bus_n150']
-    assert set(skipped) == {"494_bus", "494_bus_n150", "662_bus", "662_bus_n150"}
+    # Original 4 unverified datasets + 26 newly fetched Harwell-Boeing Table A.2 datasets (out of 28)
+    from scripts.fetch_harwell_boeing import HARWELL_BOEING_28
+    expected_skipped = {"494_bus", "494_bus_n150", "662_bus", "662_bus_n150"} | {
+        name for name, _, _, _ in HARWELL_BOEING_28
+    }
+    assert set(skipped) == expected_skipped
 
 
 def test_lb_degree_star_graphs_with_self_loops():
