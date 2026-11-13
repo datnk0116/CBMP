@@ -1,0 +1,216 @@
+# agent.md — CBMP (Cyclic Bandwidth Minimization Problem) bằng SAT
+
+> File hướng dẫn cho agent (Antigravity). Phạm vi của tôi: **(A) Method — phần Symmetry Breaking** và **(B) Experiments**. Các phần Intro, Background, ALO/AMO, Order Encoding, Iterative SAT do thành viên khác làm; không sửa các phần đó, chỉ dùng lại interface.
+
+## 0. Bối cảnh
+
+- Môn: Các vấn đề hiện đại KHMT, BTL số 2, đề tài **CBMP**.
+- Yêu cầu của đề: cài đặt **pairwise encoding** và **order encoding**; có thể thử thêm các AMO/ALO encoding qua PySAT (binary, commander, product, sequential counter). So sánh SAT với CPLEX CP, CPLEX MIP, Gurobi, CP-SAT. SAT solver tham khảo: CaDiCaL, Glucose, Kissat, CryptoMiniSat.
+- Báo cáo viết như bài báo khoa học, template LaTeX Elsevier `\documentclass[a4paper,fleqn]{cas-sc}`, có mục **Data Availability** trỏ tới repo GitHub, hình vẽ dùng thư viện **cnsplots** (https://cnsplots.farid.one/latest/).
+- Paper tham khảo CBMP (chỉ để hiểu bài toán, không phải để cài thuật toán metaheuristic): Ren, Hao et al., *A new iterated local search algorithm for the cyclic bandwidth problem* (NILS).
+- Báo cáo mẫu để học cấu trúc và cách trình bày thực nghiệm: *Exact SAT Solving for 2DBMP* (SAT + incremental, ablation, so sánh CPLEX/Gurobi, bảng OPT/FEAS/TO).
+
+## 1. Định nghĩa bài toán (dùng thống nhất ký hiệu)
+
+- Đồ thị vô hướng G = (V, E), N = |V|. Gán nhãn đơn ánh f: V → {1..N}.
+- Khoảng cách vòng: d(u,v) = min(|f(u) − f(v)|, N − |f(u) − f(v)|).
+- Cyclic bandwidth: CB(G, f) = max_{(u,v)∈E} d(u,v). Mục tiêu: tối thiểu hoá CB.
+- Quyết định (SAT) với ngưỡng K: tồn tại f sao cho mọi cạnh có d(u,v) ≤ K.
+- Order encoding: biến G[v][l] ⇔ f(v) ≥ l, với l = 1..N (và G[v][1] luôn true, G[v][N+1] luôn false). Rằng buộc đơn điệu G[v][l+1] → G[v][l].
+- Iterative SAT: giảm dần upper bound K cho tới khi UNSAT; Incremental SAT: dùng 1 solver, giữ learned clauses, chỉ thêm clause/assumption cho K mới.
+
+Quy ước: đánh số đỉnh x_1..x_N, nhãn 1..N (không dùng 0-based trong phần viết báo cáo; trong code có thể 0-based nhưng phải map rõ).
+
+---
+
+## PHẦN A — METHOD: Symmetry Breaking
+
+### A.1. Mục tiêu
+
+Viết mục *Symmetry breaking* của phần Method (LaTeX) **và** cài đặt tương ứng trong code, với 2 kỹ thuật:
+
+1. **Rotation breaking (neo đỉnh):** cố định f(x_1) = 1.
+2. **Reflection breaking (đối xứng gương):** sau khi cố định x_1, thêm ràng buộc f(x_2) < f(x_N) (hoặc cặp đỉnh được chọn tốt hơn, xem A.4).
+
+### A.2. Cơ sở toán học (dùng để viết proof ngắn trong báo cáo)
+
+**Rotation.** Với mọi k, phép xoay f'(v) = ((f(v) − 1 + k) mod N) + 1 giữ nguyên khoảng cách vòng giữa mọi cặp đỉnh vì hiệu f(u) − f(v) chỉ đổi theo modulo N, mà d(u,v) là hàm của hiệu này theo modulo N. Do đó CB(G, f') = CB(G, f). Với mọi nghiệm f, chọn k = 1 − f(x_1) cho ra nghiệm tương đương có f'(x_1) = 1. Vậy ràng buộc f(x_1) = 1 chỉ loại nghiệm dư thừa, không làm mất giá trị tối ưu.
+
+**Reflection.** Sau khi f(x_1) = 1, định nghĩa gương f''(v) = ((1 − f(v)) mod N) + 1, nghĩa là f''(x_1) = 1 và f''(v) = N + 2 − f(v) với v ≠ x_1. Phép này giữ d(u,v) (vì |f''(u) − f''(v)| = |f(u) − f(v)|) và giữ f(x_1) = 1. Với hai đỉnh u, v khác x_1 và khác nhau: f''(u) < f''(v) ⇔ f(u) > f(v). Nên trong mỗi cặp {f, f''} có đúng một nghiệm thoả f(u) < f(v) (do đơn ánh nên f(u) ≠ f(v)). Vậy ràng buộc f(u) < f(v) chọn 1 trong 2 ảnh gương mà không mất nghiệm tối ưu.
+
+**Điều kiện áp dụng:** N ≥ 3 để có u, v ≠ x_1 phân biệt. Với N < 3 bỏ qua reflection.
+
+**Kết hợp:** hai kỹ thuật độc lập về mặt chứng minh nhưng phải áp dụng đúng thứ tự (rotation trước, rồi mới gương), vì gương như trên chỉ giữ nguyên neo khi f(x_1) = 1. Đưa thành một Proposition: "thêm cả hai tập ràng buộc không đổi giá trị tối ưu của CBMP", chứng minh bằng 2 lemma ở trên (cấu trúc giống Lemma 5 trong bài mẫu 2DBMP).
+
+### A.3. Mã hoá CNF với order encoding
+
+Với biến G[v][l] ⇔ f(v) ≥ l:
+
+- **Neo f(x_1) = 1:** unit clause `G[x1][1]` và `¬G[x1][2]`.
+  (Nếu ngữ cảnh có biến G[v][1] đã là true cố định thì chỉ cần `¬G[x1][2]`.)
+- **Reflection f(u) < f(v)** (u, v ≠ x_1):
+  - Với mọi l = 1..N−1: `¬G[u][l] ∨ G[v][l+1]`  (nếu f(u) ≥ l thì f(v) ≥ l+1)
+  - Với l = N: `¬G[u][N]`  (f(u) không thể bằng N vì cần f(v) > f(u))
+  
+  Lưu ý: ở bước neo, f(x_1) = 1 nên các đỉnh còn lại có nhãn trong 2..N, có thể rút gọn miền nhưng KHÔNG bắt buộc; ưu tiên đơn giản và đúng.
+- **Với pairwise encoding (biến x[v][l] ⇔ f(v)=l):** neo là unit clause `x[x1][1]`. Reflection f(u) < f(v) mã hoá: với mọi cặp (a, b) có a ≥ b: `¬x[u][a] ∨ ¬x[v][b]`. (Số clause Θ(N²), chấp nhận được vì chỉ có 1 cặp.)
+
+Triển khai thành hàm riêng, ví dụ `add_symmetry_breaking(solver, enc, mode)` với `mode ∈ {none, rotation, rotation_reflection}` để chạy ablation.
+
+### A.4. Cách chọn x_1, u, v
+
+Đề xuất mặc định (ghi rõ trong báo cáo, và coi là tuỳ chọn thí nghiệm):
+- x_1 = đỉnh bậc lớn nhất (tie-break: tổng bậc láng giềng lớn nhất, rồi chỉ số nhỏ nhất) — giống cách chọn anchor trong bài 2DBMP mẫu.
+- (u, v) cho reflection: hai đỉnh phân biệt khác x_1; mặc định là 2 láng giềng của x_1 nếu deg(x_1) ≥ 2, ngược lại x_2 và x_N. Phải test cả cấu hình "x_2, x_N" đúng như file cấu trúc của nhóm.
+- Mọi lựa chọn đều hợp lệ về tính đúng đắn theo A.2; khác nhau chỉ ở hiệu quả giải.
+
+### A.5. Tương tác với Iterative/Incremental SAT
+
+- Các clause symmetry breaking **không phụ thuộc K** → thêm 1 lần vào `fixedClauses`, không thêm lại khi giảm K.
+- Nếu dùng assumptions thay cho unit clause (để thử tắt/bật), neo vẫn nên là clause cố định vì không bao giờ bị nới lỏng.
+- Phải đảm bảo UNSAT ở ngưỡng K vẫn là chứng chỉ tối ưu hợp lệ (đã đúng nhờ Proposition ở A.2).
+
+### A.6. Cần viết trong báo cáo (LaTeX, mục `\subsection{Symmetry breaking}`)
+
+1. Động lực: hai nhóm đối xứng của chu trình C_N (N phép xoay, phép phản chiếu, nhóm nhị diện bậc 2N) → nghiệm tương đương.
+2. Công thức d(x_u, x_v) = min(|f(x_u) − f(x_v)|, N − |f(x_u) − f(x_v)|).
+3. Kỹ thuật 1 (rotation) + chứng minh ngắn.
+4. Kỹ thuật 2 (reflection) + chứng minh ngắn + điều kiện N ≥ 3.
+5. Mã hoá clause (order encoding, có thể thêm 1 đoạn cho pairwise).
+6. Một hình minh hoạ (cnsplots hoặc TikZ): vòng tròn C_N, 2 nghiệm là ảnh gương của nhau, cùng CB.
+7. Proposition: thêm cả hai không đổi optimum.
+8. Nêu giới hạn: không loại hết đối xứng của đồ thị G (tự đẳng cấu của G) — chỉ loại đối xứng của chu trình.
+
+Đầu ra phần A: `report/sections/method_symmetry.tex` + hàm `add_symmetry_breaking` trong code, kèm unit test.
+
+### A.7. Kiểm thử phần A (bắt buộc trước khi chạy thực nghiệm)
+
+- Brute-force trên đồ thị nhỏ (N ≤ 8, vài đồ thị ngẫu nhiên + path/cycle/complete/star): CB tối ưu **có** và **không** symmetry breaking phải bằng nhau.
+- Đếm số nghiệm thoả (với K cố định, N nhỏ): số nghiệm khi có rotation ≈ giảm N lần; khi thêm reflection ≈ giảm thêm 2 lần (với đồ thị không có tự đẳng cấu).
+- Mọi nhãn trả về phải qua hàm `verify_labeling(G, f, K)` độc lập (kiểm tra đơn ánh, miền 1..N, CB ≤ K).
+
+---
+
+## PHẦN B — EXPERIMENTS
+
+### B.1. Dữ liệu
+
+- **Nguồn:** các instance trong bài CBMP của Ren et al. (bảng kết quả theo họ đồ thị: Table 2 tóm tắt theo họ, Table A.1 và A.2 liệt kê từng instance) và bộ Harwell–Boeing tại https://math.nist.gov/MatrixMarket/data/Harwell-Boeing/.
+  - *Giả định cần xác nhận với nhóm:* "table 2, 3 – dataset 3 file CBMP" nghĩa là lấy tập instance từ các bảng này.
+- **Nhóm 1 – đồ thị chuẩn (có nghiệm tối ưu đã biết Cb\*):** path, cycle, mesh2D, mesh3D, complete r-level k-ary tree, caterpillar, hypercube. Tạo bằng script sinh đồ thị theo đúng tên/kích thước trong bảng (ví dụ path20..path1000, cycle20..cycle1000, mesh2D5x4..mesh2D20x50, mesh3D4..mesh3D13, tree2x4.., caterpillar3.., hypercube11-13). Ưu tiên cỡ nhỏ–trung bình trước; cỡ lớn (N > ~1000) chạy sau và chấp nhận TO.
+- **Nhóm 2 – Harwell–Boeing (28 instance trong bảng A.2, N từ 9 đến 715):** tên như jgl009, rgg010, jgl011, can_24, pores_1, ibm32, bcspwr01, bcsstk01, bcspwr02, curtis54, will57, impcol_b, ash85, nos4, dwt_234, bcspwr03, bcsstk06, bcsstk07, impcol_d, can_445, 494_bus, dwt_503, sherman4, dwt_592, 662_bus, nos6, 685_bus, can_715. Cung cấp LB = ⌈Δ(G)/2⌉ và UB = ⌊N/2⌋ làm cận tham chiếu; ngoài ra dùng best-known Cbb của NILS trong paper làm tham chiếu.
+- **Tải & parse:** tải file Harwell–Boeing (định dạng RB/.rua/.psa…) từ trang NIST; dùng `scipy.io.hb_read` hoặc `scipy.io.mmread` (nếu có bản Matrix Market). Chuyển ma trận thưa → đồ thị vô hướng: cạnh {i,j} nếu A[i,j] ≠ 0, bỏ self-loop, đối xứng hoá, bỏ cạnh trùng. **Phải kiểm tra |V|, |E| khớp bảng A.2** (ví dụ bcsstk06: |V|=420, |E|=3720). Nếu lệch, ghi rõ cách xử lý trong báo cáo, không tự ý chỉnh. Lưu thành `data/<tên>.edges` (định dạng thống nhất) và `data/instances.csv` (name, family, N, M, Cb\*/LB/UB/best-known).
+- **Đồ thị không liên thông / đỉnh cô lập:** vẫn hợp lệ (nhãn vẫn đơn ánh); ghi chú nếu có.
+- **Bắt đầu nhỏ:** làm toàn bộ pipeline trên các instance N ≤ 60 trước, kiểm đúng giá trị tối ưu với Cb\*, sau đó mới mở rộng.
+
+### B.2. Phương pháp được so sánh
+
+| Nhóm | Phương pháp |
+|---|---|
+| SAT (do nhóm cài) | pairwise encoding; order encoding |
+| Chiến lược tìm kiếm | Iterative SAT (xây lại solver mỗi K); Incremental SAT (1 solver, assumptions) |
+| SAT solver (PySAT) | CaDiCaL, Glucose, MiniSat/Lingeling/Maplesat (tuỳ có sẵn); Kissat/CryptoMiniSat nếu cài được |
+| Solver khác | CPLEX CP, CPLEX MIP, Gurobi, OR-Tools CP-SAT |
+| Tham chiếu (chỉ so giá trị) | Cb\* đã biết, LB/UB, best-known của NILS/TS_CB/ITPS trong paper — **không** coi là bằng chứng tối ưu |
+
+Mô hình MIP/CP cho CBMP (cần xây cho Gurobi/CPLEX/CP-SAT): biến nhãn f(v) ∈ {1..N}, all-different; với mỗi cạnh dùng biến phụ cho |f(u)−f(v)| và d = min(|Δ|, N−|Δ|) (ví dụ: hai biến nhị phân chọn nhánh, hoặc `AddModuloEquality`/`AddAbsEquality` trong CP-SAT); mục tiêu min CB. Trao đổi với nhóm nếu mô hình đã được người khác viết để dùng chung.
+
+### B.3. Thiết lập chung
+
+- Giới hạn thời gian mặc định: **3600 s/instance** cho thí nghiệm chính (có thể 600–900 s cho thí nghiệm phụ/ablation nếu thiếu thời gian; ghi rõ trong báo cáo). Giới hạn bộ nhớ ghi lại nếu gặp OOM.
+- Thời gian tính **toàn bộ** run: gồm dựng encoding + mọi lần gọi solver (giống bài mẫu 2DBMP).
+- Khởi đầu K = upper bound hợp lệ: ít nhất ⌊N/2⌋ (luôn khả thi vì d ≤ ⌊N/2⌋); có thể thêm heuristic UB ban đầu (ví dụ nghiệm tham lam/BFS-ordering) như một "cải tiến" để ablation. Mỗi lần SAT, giải mã nghiệm, tính CB thực tế B ≤ K, đặt K ← B − 1.
+- Trạng thái kết quả: **OPT** (có SAT ở B và UNSAT ở B−1, hoặc B = LB), **FEAS** (hết giờ nhưng có nghiệm), **TO** (hết giờ, không có nghiệm). Mọi nghiệm trả về phải qua `verify_labeling`.
+- Cờ `--seed` cho solver có ngẫu nhiên; SAT thường chạy 1 lần/instance, nhưng nếu thời gian cho phép chạy 3 lần trên một tập con để kiểm tra biến thiên rồi nêu trong báo cáo.
+- Ghi thông tin máy: CPU, RAM, hệ điều hành, phiên bản Python, PySAT, từng SAT solver, CPLEX, Gurobi, OR-Tools.
+- Mỗi run xuất 1 dòng vào `results/*.csv`: `instance, family, N, M, method, encoding, search, solver, sym_mode, ub_init, K_best, status, time_total, time_to_best, n_vars, n_clauses, n_sat_calls`.
+- Runner chạy theo tiến trình con có timeout cứng (để tránh solver treo), có khả năng resume (bỏ qua run đã có trong CSV).
+
+### B.4. Các thí nghiệm cần thực hiện
+
+**E1 – Thời gian giải theo dataset (bảng chính).** Với cấu hình tốt nhất (dự kiến order + incremental + symmetry breaking đầy đủ + CaDiCaL), báo cáo trên từng họ đồ thị và từng instance Harwell–Boeing: K_best, status, thời gian; kiểm đối chiếu với Cb\* (nhóm 1) và LB/UB/best-known (nhóm 2). Gom theo họ: số instance OPT/FEAS/TO, thời gian trung bình trên các instance đã OPT.
+
+**E2 – So sánh các SAT solver.** Cố định encoding/search/sym, đổi solver (CaDiCaL, Glucose, … ). Báo cáo số OPT, thời gian trung bình/median trên tập instance chung, và đường cong tích luỹ "số instance giải được vs thời gian".
+
+**E3 – So sánh phương pháp giải.** SAT (cấu hình tốt nhất) vs CPLEX CP vs CPLEX MIP vs Gurobi vs CP-SAT, cùng giới hạn thời gian. Hai góc nhìn: (i) số instance OPT/FEAS/TO; (ii) thời gian trên tập instance mà **tất cả** phương pháp cùng chứng minh được cùng một giá trị tối ưu (tránh so sánh thiên lệch). Ngoài ra so giá trị incumbent trên các instance có FEAS.
+
+**E4 – Pairwise vs Order encoding, Iterative vs Incremental.** Bảng 2×2 trên cùng tập instance: số biến, số clause (trước khi thêm clause phụ thuộc K), số OPT, thời gian. Đây là yêu cầu bắt buộc của đề.
+
+**E5 – Ablation (so sánh có/không có cải tiến).** Từ cấu hình đầy đủ, bỏ lần lượt từng thành phần:
+1. không symmetry breaking (`none`)
+2. chỉ rotation (`rotation`)
+3. rotation + reflection (`rotation_reflection`, **phần việc chính của tôi**)
+4. không heuristic UB ban đầu (bắt đầu từ ⌊N/2⌋)
+5. non-incremental (Iterative)
+6. (tuỳ chọn) đổi AMO/ALO encoding qua PySAT: pairwise, seqcounter, binary, commander, product… trong phần injectivity
+Mỗi cấu hình ghi: số OPT, thời gian, số lần gọi SAT, số xung đột/quyết định nếu solver cung cấp. Kết luận phải dựa trên số liệu thực, không viết kết quả trước khi chạy.
+
+**E6 – Mở rộng kích thước.** Với các instance lớn (mesh3D lớn, hypercube, Harwell–Boeing N > 400), báo cáo trung thực ranh giới giải được bằng SAT và chỉ ra nơi metaheuristic (NILS) vẫn cần thiết. Không khẳng định tối ưu khi không có chứng chỉ UNSAT.
+
+### B.5. Trực quan hoá (cnsplots)
+
+Dùng thư viện cnsplots (https://cnsplots.farid.one/latest/) — **đọc tài liệu trước, kiểm tra API thực tế** vì tôi không giả định tên hàm. Các hình dự kiến:
+- Cumulative solved-vs-time (cactus plot) cho E2, E3, E4.
+- Bar/grouped bar số OPT/FEAS/TO theo phương pháp.
+- Scatter thời gian (log–log) giữa hai cấu hình (có/không symmetry breaking), đường y = x.
+- Bar so sánh K_best trên các instance có FEAS.
+- Hình minh hoạ vòng tròn C_N và nghiệm gương cho phần Method (nếu dùng cnsplots/graph drawing).
+Mỗi hình xuất PDF vector vào `report/figures/`, nhãn trục có đơn vị, thang log cho thời gian, màu + ký hiệu phân biệt được khi in đen trắng.
+
+### B.6. Viết mục Experiments trong báo cáo (LaTeX)
+
+Cấu trúc đề xuất (khớp file cấu trúc của nhóm):
+1. Experimental setup (phần cứng, phiên bản, dataset, giới hạn thời gian, định nghĩa OPT/FEAS/TO, cách tính thời gian).
+2. So sánh thời gian giải trên các dataset (E1).
+3. So sánh giữa các SAT solver (E2).
+4. So sánh với CPLEX CP/MIP, Gurobi, CP-SAT (E3).
+5. Pairwise vs Order, Iterative vs Incremental (E4).
+6. Ablation study (E5), nêu rõ tác động của symmetry breaking.
+7. Thảo luận và hạn chế (E6).
+Văn phong: câu chữ trung thực, ghi "trong thiết lập này", không tổng quát hoá quá mức; nếu chạy 1 lần thì nói rõ không có kiểm định thống kê.
+Phần **Data Availability**: link GitHub chứa mã nguồn, dữ liệu, CSV kết quả.
+
+---
+
+## PHẦN C — Cấu trúc repo đề xuất
+
+```
+cbmp-sat/
+  agent.md
+  data/                  # instances.csv, *.edges, script tải & parse Harwell-Boeing
+  src/
+    graphs.py            # sinh đồ thị chuẩn, đọc HB, ghi/đọc .edges
+    verify.py            # verify_labeling
+    enc_pairwise.py
+    enc_order.py
+    symmetry.py          # add_symmetry_breaking(mode)   <-- phần của tôi
+    search.py            # iterative / incremental
+    models_mip_cp.py     # Gurobi, CPLEX MIP, CPLEX CP, CP-SAT
+    run_experiments.py   # runner có timeout, resume, ghi CSV
+  tests/                 # brute-force kiểm tính đúng đắn
+  results/               # CSV theo thí nghiệm
+  report/
+    sections/            # method_symmetry.tex, experiments.tex
+    figures/             # PDF từ cnsplots
+```
+
+Chỉ sửa `symmetry.py`, `run_experiments.py`, `models_mip_cp.py` (nếu chưa có người làm), `report/sections/method_symmetry.tex`, `report/sections/experiments.tex`, và dữ liệu/kết quả. Với các module encoding/search của người khác: chỉ gọi, không đổi chữ ký hàm; nếu cần thay đổi thì ghi đề xuất vào `NOTES.md` để trao đổi.
+
+## PHẦN D — Thứ tự làm việc
+
+1. Đọc code hiện có của nhóm (enc_order, search); xác nhận quy ước chỉ số biến G[v][l].
+2. Cài `symmetry.py` + test brute-force (A.7).
+3. Dựng pipeline dữ liệu: sinh đồ thị chuẩn, tải/parse Harwell–Boeing, kiểm |V|,|E| với bảng.
+4. Runner + CSV; chạy thử trên instance N ≤ 60, đối chiếu Cb\*.
+5. Chạy E1 → E5 theo độ ưu tiên: E5 (symmetry), E4, E1, E3, E2, E6.
+6. Vẽ hình bằng cnsplots, điền bảng LaTeX từ CSV bằng script (không gõ tay số liệu).
+7. Viết `method_symmetry.tex` và `experiments.tex`, rà lại với đề và file cấu trúc.
+
+## PHẦN E — Quy tắc cho agent
+
+- **Không bịa số liệu.** Mọi con số trong báo cáo phải đến từ file CSV do chính run này sinh ra; số lấy từ paper NILS phải ghi rõ nguồn và chỉ dùng làm tham chiếu.
+- Luôn xác minh nghiệm bằng `verify_labeling`; một nghiệm không qua kiểm tra bị tính là lỗi, không phải kết quả.
+- Không khẳng định "tối ưu" nếu không có SAT tại B và UNSAT tại B−1 (hoặc B = cận dưới hợp lệ).
+- Không sửa dữ liệu gốc; chuyển đổi phải có script và log.
+- Nếu một solver thương mại (CPLEX/Gurobi) thiếu license hoặc không cài được, báo rõ và bỏ qua phương pháp đó, không thay bằng số giả; ghi hạn chế trong báo cáo.
+- Câu hỏi còn mở cần hỏi nhóm: (1) tập instance chính xác ("Table 2, 3" ở file CBMP) và giới hạn N; (2) timeout chính thức; (3) có dùng Kissat/CryptoMiniSat không; (4) ai viết mô hình MIP/CP; (5) cặp (u, v) cho reflection mà nhóm chốt.

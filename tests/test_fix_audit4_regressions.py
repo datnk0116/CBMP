@@ -238,3 +238,46 @@ def test_raw_mtx_integrity_independent_parser(path):
                 seen.add(w)
                 stack.append(w)
     assert len(seen) == nr, "graph is disconnected"
+
+
+# ---------------------------------------------------------------------------
+# A4-05: planned canonical key for CPLEX/CP/Gurobi must equal the key of the
+# record the baseline actually writes (sb_rotation defaults to True in CLIs)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("m_type,solver", [("cplex", "cplex"), ("cplex_cp", "cplex_cp"), ("gurobi", "gurobi")])
+@pytest.mark.parametrize("method_cfg_extra", [{}, {"sb_rotation": True}, {"sb_rotation": False}])
+def test_planned_key_matches_recorded_key_for_baselines(m_type, solver, method_cfg_extra):
+    from analysis.make_tables import get_canonical_key
+    config = {
+        "defaults": {"timeout": 7, "repetitions": 1},
+        "groups": {"g": {"datasets": ["14_bus"], "methods": [dict(name="x", type=m_type, **method_cfg_extra)]}},
+    }
+    all_ds = [{"name": "14_bus", "N": 14, "M": 20, "path": "datasets/14_bus.mtx"}]
+    plan, _ = rexp.build_experiment_plan(config, all_ds, selected_group="g")
+    assert len(plan) == 1
+    task = plan[0]
+    cmd = rexp.build_task_cmd(task, "/tmp/unused.jsonl")
+    expected_rot = method_cfg_extra.get("sb_rotation", True)
+    assert ("--sb-rotation" if expected_rot else "--no-sb-rotation") in cmd
+    # What the baseline CLI writes (see stats["config"] in baselines/*_cbmp.py)
+    record = {"dataset": "14_bus", "solver": solver, "config": {"time_limit": 7.0, "sb_rotation": expected_rot}}
+    assert get_canonical_key(record) == task["canonical_key"]
+
+
+def test_resume_skips_completed_cplex_task(tmp_path):
+    import json
+    from analysis.make_tables import get_canonical_key
+    config = {
+        "defaults": {"timeout": 7, "repetitions": 1},
+        "groups": {"g": {"datasets": ["14_bus"], "methods": [{"name": "cplex", "type": "cplex"}]}},
+    }
+    all_ds = [{"name": "14_bus", "N": 14, "M": 20, "path": "datasets/14_bus.mtx"}]
+    plan, _ = rexp.build_experiment_plan(config, all_ds, selected_group="g")
+    rec = {"dataset": "14_bus", "N": 14, "solver": "cplex", "status": "OPTIMAL", "best_ub": 3, "best_lb": 3,
+           "config": {"time_limit": 7.0, "sb_rotation": True}, "rep": 1, "groups": ["g"]}
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text(json.dumps(rec) + "\n")
+    existing = rexp.load_existing_runs(str(runs))
+    assert (plan[0]["canonical_key"], 1) in existing
+    assert get_canonical_key(rec) == plan[0]["canonical_key"]

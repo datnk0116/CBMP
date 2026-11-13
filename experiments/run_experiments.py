@@ -559,7 +559,11 @@ def build_experiment_plan(
                         elif m_type == "cplex":
                             method = "cplex"
                             solver = "cplex"
-                            sb_rot = bool(m["sb_rotation"]) if "sb_rotation" in m else None
+                            # The baseline CLIs default to --sb-rotation (True) and always record
+                            # config.sb_rotation, so an omitted value must resolve to True here;
+                            # otherwise the planned key (flags=()) never matches the recorded key
+                            # (flags=(True,)), breaking --resume and cross-group deduplication.
+                            sb_rot = bool(m.get("sb_rotation", BASELINE_SB_ROTATION_DEFAULT))
                             flags = (sb_rot,) if sb_rot is not None else ()
                             key = (d["name"], method, solver, flags, seed)
                             cfg_dict = {
@@ -571,7 +575,11 @@ def build_experiment_plan(
                         elif m_type == "cplex_cp":
                             method = "cplex_cp"
                             solver = "cplex_cp"
-                            sb_rot = bool(m["sb_rotation"]) if "sb_rotation" in m else None
+                            # The baseline CLIs default to --sb-rotation (True) and always record
+                            # config.sb_rotation, so an omitted value must resolve to True here;
+                            # otherwise the planned key (flags=()) never matches the recorded key
+                            # (flags=(True,)), breaking --resume and cross-group deduplication.
+                            sb_rot = bool(m.get("sb_rotation", BASELINE_SB_ROTATION_DEFAULT))
                             flags = (sb_rot,) if sb_rot is not None else ()
                             key = (d["name"], method, solver, flags, seed)
                             cfg_dict = {
@@ -583,7 +591,11 @@ def build_experiment_plan(
                         elif m_type == "gurobi":
                             method = "gurobi"
                             solver = "gurobi"
-                            sb_rot = bool(m["sb_rotation"]) if "sb_rotation" in m else None
+                            # The baseline CLIs default to --sb-rotation (True) and always record
+                            # config.sb_rotation, so an omitted value must resolve to True here;
+                            # otherwise the planned key (flags=()) never matches the recorded key
+                            # (flags=(True,)), breaking --resume and cross-group deduplication.
+                            sb_rot = bool(m.get("sb_rotation", BASELINE_SB_ROTATION_DEFAULT))
                             flags = (sb_rot,) if sb_rot is not None else ()
                             key = (d["name"], method, solver, flags, seed)
                             cfg_dict = {
@@ -680,6 +692,9 @@ def build_experiment_plan(
 
     return plan, group_stats
 
+
+# Default of ``--sb-rotation`` in baselines/{cplex,cplex_cp,gurobi}_cbmp.py CLIs.
+BASELINE_SB_ROTATION_DEFAULT = True
 
 # Methods whose CLI entry points accept ``--relabel-seed``.
 RELABEL_SUPPORTED_METHODS = ("sat", "cpsat")
