@@ -399,9 +399,9 @@ def test_group_e_scatter_pairs_require_same_seed_and_config():
     # Record 2: seed 1, with_sb (MUST NOT PAIR WITH RECORD 1!)
     # Record 3: seed 0, with_sb (MUST PAIR WITH RECORD 1)
     records = [
-        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 10.0, "status": "OPTIMAL", "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
-        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 1, "solve_time": 2.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
-        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 5.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 10.0, "status": "OPTIMAL", "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 1, "solve_time": 2.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "solve_time": 5.0, "status": "OPTIMAL", "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True}, "groups": ["ablation_small"]},
     ]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1215,3 +1215,47 @@ def test_a2_canonical_ablation_variant_and_multi_rep_boxplot_invariance(tmp_path
     assert df_fam is not None
     row_rr = df_fam[(df_fam["comparison_group"] == "variant vs none") & (df_fam["variant"] == "rotation_reflection")]
     assert row_rr.iloc[0]["median_time_ratio"] == "0.5000"
+
+
+def test_a3_plot_group_filter_no_fallback_when_groups_missing(tmp_path, caplog):
+    """A3: Plot functions must NOT fall back to all OPTIMAL records when requested group_name matches nothing (incl. missing 'groups')."""
+    import logging
+    from analysis.make_plots import (
+        extract_scatter_pairs,
+        plot_cactus,
+        plot_scatter_sb_vs_nosb,
+        plot_ablation_median_time,
+        plot_ablation_iterations_and_unsat,
+        plot_ablation_family_boxplots,
+    )
+
+    records_no_groups = [
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "N": 40, "relabel_seed": 0,
+            "status": "OPTIMAL", "solve_time": 4.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [2.0, 2.0],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "N": 40, "relabel_seed": 0,
+            "status": "OPTIMAL", "solve_time": 1.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.5, 0.5],
+            "config": {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+        },
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        pairs = extract_scatter_pairs(records_no_groups, group_name="ablation_small")
+        assert pairs == []
+
+        out_dir = str(tmp_path / "figs")
+        plot_cactus(records_no_groups, "solvers_small", lambda r: r["solver"], "Cactus", "cactus_empty", output_dirs=(out_dir,))
+        plot_scatter_sb_vs_nosb(records_no_groups, group_name="ablation_small", base_filename="scatter_empty", output_dirs=(out_dir,))
+        plot_ablation_median_time(records_no_groups, group_name="ablation_small", base_filename="med_empty", output_dirs=(out_dir,))
+        plot_ablation_iterations_and_unsat(records_no_groups, group_name="ablation_small", base_filename="iter_empty", output_dirs=(out_dir,))
+        plot_ablation_family_boxplots(records_no_groups, group_name="ablation_family", base_filename="box_empty", output_dirs=(out_dir,))
+
+    assert not os.path.exists(os.path.join(out_dir, "scatter_empty.png"))
+    assert not os.path.exists(os.path.join(out_dir, "med_empty.png"))
+    assert not os.path.exists(os.path.join(out_dir, "iter_empty.png"))
+    assert not os.path.exists(os.path.join(out_dir, "cactus_empty.png"))
+    assert not os.path.exists(os.path.join(out_dir, "box_empty.png"))
+    assert any("ablation_small" in msg or "solvers_small" in msg for msg in caplog.messages)

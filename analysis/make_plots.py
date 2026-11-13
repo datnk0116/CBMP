@@ -64,15 +64,41 @@ def save_fig(fig, base_filename, output_dirs=("results_v2/figures",)):
 def get_ablation_var_name(rec_or_cfg):
     return get_ablation_variant(rec_or_cfg, style="plot")
 
+
+def filter_records_by_group(records, group_name, caller_name="plot", require_optimal=False):
+    """
+    Strictly filters records by group_name without falling back to all records
+    when 'groups' is missing or empty. Logs a warning and returns [] on no match.
+    """
+    valid = [r for r in records if is_valid_record_dict(r)]
+    if group_name is None:
+        matched = valid
+    else:
+        matched = [
+            r for r in valid
+            if isinstance(r.get("groups"), (list, tuple, set)) and (
+                group_name in r["groups"]
+                or (group_name == "solvers_small" and "solvers" in r["groups"])
+                or (group_name == "ablation_small" and "ablation" in r["groups"])
+            )
+        ]
+        if not matched:
+            logger.warning("%s: no records found matching group '%s'", caller_name, group_name)
+            return []
+
+    if require_optimal:
+        matched = [r for r in matched if is_optimal_status(r)]
+        if not matched:
+            logger.warning("%s: no OPTIMAL records found for group '%s'", caller_name, group_name)
+            return []
+    return matched
+
+
 def plot_cactus(records, group_name, category_key, title, base_filename, output_dirs=("results_v2/figures",)):
     """
     Plots cumulative solved instances over solve time (Cactus plot).
     """
-    recs = [
-        r for r in records
-        if (group_name in r.get("groups", []) or (group_name == "solvers_small" and "solvers" in r.get("groups", [])) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
-        and is_optimal_status(r)
-    ]
+    recs = filter_records_by_group(records, group_name, caller_name=f"plot_cactus({base_filename})", require_optimal=True)
     if not recs:
         return
 
@@ -118,17 +144,9 @@ def extract_scatter_pairs(records, group_name="ablation_small"):
     If multiple repetitions exist, aggregates using np.median for exact determinism.
     Returns: list of dict [{"dataset": ds, "key": k, "no_sb": t_no, "with_sb": t_with}, ...]
     """
-    if group_name is not None and any("groups" in r for r in records):
-        ablation_recs = [
-            r for r in records
-            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
-            and is_optimal_status(r)
-        ]
-        if not ablation_recs:
-            logger.warning("extract_scatter_pairs: no records found for group '%s'", group_name)
-            return []
-    else:
-        ablation_recs = [r for r in records if is_optimal_status(r)]
+    ablation_recs = filter_records_by_group(records, group_name, caller_name="extract_scatter_pairs", require_optimal=True)
+    if not ablation_recs:
+        return []
 
     by_key = {}
     for r in ablation_recs:
@@ -206,18 +224,7 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
     """
     Bar chart showing median solve time per configuration.
     """
-    if group_name is not None and any("groups" in r for r in records):
-        ablation_recs = [
-            r for r in records
-            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
-            and is_optimal_status(r)
-        ]
-        if not ablation_recs:
-            logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
-            return
-    else:
-        ablation_recs = [r for r in records if is_optimal_status(r)]
-
+    ablation_recs = filter_records_by_group(records, group_name, caller_name=f"plot_ablation_median_time({base_filename})", require_optimal=True)
     if not ablation_recs:
         return
 
@@ -253,20 +260,9 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
 
 def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)", output_dirs=("results_v2/figures",)):
     """
-    Plots number of SAT iterations and time spent on the final UNSAT iteration.
+    Plots number of SAT iterations and time spent on the final SAT iteration.
     """
-    if group_name is not None and any("groups" in r for r in records):
-        ablation_recs = [
-            r for r in records
-            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
-            and is_optimal_status(r)
-        ]
-        if not ablation_recs:
-            logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
-            return
-    else:
-        ablation_recs = [r for r in records if is_optimal_status(r)]
-
+    ablation_recs = filter_records_by_group(records, group_name, caller_name=f"plot_ablation_iterations_and_unsat({base_filename})", require_optimal=True)
     if not ablation_recs:
         return
 
@@ -321,14 +317,17 @@ def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", bas
 
     save_fig(fig, base_filename, output_dirs=output_dirs)
 
-def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_family", output_dirs=("results_v2/figures",)):
+def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_family", output_dirs=("results_v2/figures",), group_name=None):
     """
     Boxplot (log scale) of time ratio relative to 'none' across vertex relabeling families.
     Separate panels for N=40 and N=50.
     Variants compared to none: rotation, rot+ref, heur_ub, all.
     """
+    filtered = filter_records_by_group(records, group_name, caller_name=f"plot_ablation_family_boxplots({base_filename})")
+    if not filtered:
+        return
     family_recs = [
-        r for r in records
+        r for r in filtered
         if (is_valid_record_dict(r) and get_canonical_key(r) is not None and get_canonical_key(r)[4] is not None)
     ]
     if not family_recs:
