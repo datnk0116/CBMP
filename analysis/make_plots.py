@@ -25,6 +25,7 @@ from analysis.make_tables import (
     get_pairing_identity,
     strict_int,
     normalize_solver_alias,
+    aggregate_repetitions,
 )
 
 def setup_matplotlib():
@@ -337,6 +338,9 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
     family_recs = [r for r in records if (is_optimal_status(r) and get_canonical_key(r) is not None and get_canonical_key(r)[4] is not None)]
     if not family_recs:
         return
+    # Aggregate repeated runs within each canonical configuration and relabel seed
+    # before pairing variants; never let a later repetition overwrite an earlier one.
+    family_recs = aggregate_repetitions(family_recs)
 
     def get_var(rec):
         key = get_canonical_key(rec)
@@ -363,7 +367,9 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
         var = get_var(r)
         if var == "other":
             continue
-        pairs_map.setdefault(base_key, {})[var] = r
+        if var in pairs_map.setdefault(base_key, {}):
+            raise ValueError(f"Duplicate aggregated family record for identity={base_key!r}, variant={var!r}")
+        pairs_map[base_key][var] = r
 
     variants = ["rotation", "rot_ref", "heur_ub", "all"]
     labels = ["Rotation", "Rot + Ref", "Heur UB", "All (SB+Heur)"]
