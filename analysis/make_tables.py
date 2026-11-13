@@ -735,6 +735,92 @@ def get_pairing_identity(record):
         enc, mode, eo = "order", "incremental", "commander"
     return (ds, solver, enc, mode, eo, seed)
 
+
+_ABLATION_VARIANT_LABELS = {
+    "table": {
+        (False, False, False): "none",
+        (True, False, False): "rotation",
+        (True, True, False): "rot_ref",
+        (False, False, True): "heur_ub",
+        (True, True, True): "all",
+    },
+    "family": {
+        (False, False, False): "none",
+        (True, False, False): "rotation",
+        (True, True, False): "rotation_reflection",
+        (False, False, True): "heuristic_ub",
+        (True, True, True): "all",
+    },
+    "plot": {
+        (False, False, False): "none",
+        (True, False, False): "rotation",
+        (True, True, False): "rot+ref",
+        (False, False, True): "heuristic-ub",
+        (True, True, True): "all (SB+Heur)",
+    },
+}
+
+
+def get_ablation_variant(rec_or_cfg, style="table"):
+    """
+    Single canonical source of truth for classifying ablation variants.
+    Resolves sb_rotation, sb_reflection, heuristic_ub from top-level fields and/or
+    nested config dict via canonical identity / resolve_field_with_conflict_check.
+    """
+    if not isinstance(rec_or_cfg, dict):
+        return "other"
+
+    rot = ref = heur = None
+    has_identity = any(k in rec_or_cfg for k in ("dataset", "solver", "method"))
+    if has_identity:
+        canon = get_canonical_key(rec_or_cfg)
+        if canon is None or canon[1] != "sat" or len(canon[3]) < 3:
+            return "other"
+        flags = canon[3]
+        rot, ref, heur = bool(flags[0]), bool(flags[1]), bool(flags[2])
+    else:
+        cfg = rec_or_cfg.get("config") if isinstance(rec_or_cfg.get("config"), dict) else rec_or_cfg
+        rec_view = rec_or_cfg if "config" in rec_or_cfg else {}
+        rot, c1 = resolve_field_with_conflict_check(rec_view, cfg, "sb_rotation", strict_bool, default=False)
+        ref, c2 = resolve_field_with_conflict_check(rec_view, cfg, "sb_reflection", strict_bool, default=False)
+        heur, c3 = resolve_field_with_conflict_check(rec_view, cfg, "heuristic_ub", strict_bool, default=False)
+        if c1 or c2 or c3 or rot is None or ref is None or heur is None:
+            return "other"
+
+    style_map = _ABLATION_VARIANT_LABELS.get(style, _ABLATION_VARIANT_LABELS["table"])
+    return style_map.get((bool(rot), bool(ref), bool(heur)), "other")
+
+
+def _ensure_aggregated_records(records, strict=True):
+    """
+    Ensures records are deduplicated on (canonical_key, rep) and aggregated across
+    multiple repetitions per canonical_key. Already-aggregated singleton records
+    (n_total is not None) are preserved without re-wrapping.
+    """
+    by_canon = {}
+    for idx, r in enumerate(records, start=1):
+        if not is_valid_record_dict(r):
+            logger.warning("_ensure_aggregated_records: skipped invalid record at index %d", idx)
+            continue
+        ckey = get_canonical_key(r)
+        if ckey is None:
+            logger.warning("[%s] Skipped record with invalid canonical identity", _format_rec_location(r))
+            continue
+        by_canon.setdefault(ckey, []).append(r)
+
+    result = []
+    for ckey in sorted(by_canon.keys(), key=lambda x: str(x)):
+        group = by_canon[ckey]
+        if len(group) == 1 and group[0].get("n_total") is not None:
+            result.append(group[0])
+        else:
+            deduped = resolve_duplicate_records(group, strict=strict)
+            agg = aggregate_repetition_group(deduped)
+            if agg is not None:
+                agg["canonical_key"] = ckey
+                result.append(agg)
+    return result
+
 def _format_rec_location(rec):
     if not isinstance(rec, dict):
         return "<unknown>:?"
@@ -1880,22 +1966,6 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
         print(f"[WARNING] Skipping {base_filename}: no records found for group '{group_name}'.")
         return None
 
-    def get_var_name(cfg):
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
-        if not rot and not ref and not heur:
-            return "none"
-        elif rot and not ref and not heur:
-            return "rotation"
-        elif rot and ref and not heur:
-            return "rot_ref"
-        elif not rot and not ref and heur:
-            return "heur_ub"
-        elif rot and ref and heur:
-            return "all"
-        return "other"
-
     recs_by_ds_var = {}
     meta = {}
     for r in ablation_recs:
@@ -1927,7 +1997,7 @@ def make_table_ablation(records, group_name="ablation_small", base_filename="tab
 
         ds = r["dataset"]
         meta[ds] = (r.get("N", 0), r.get("num_edges", 0))
-        var = get_var_name(cfg if cfg else r)
+        var = get_ablation_variant(r, style="table")
         if var == "other":
             continue
 
@@ -2323,23 +2393,6 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
     if isinstance(output_dirs, str):
         output_dirs = (output_dirs,)
 
-    def get_var(rec):
-        cfg = rec.get("config", {})
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
-        if not rot and not ref and not heur:
-            return "none"
-        elif rot and not ref and not heur:
-            return "rotation"
-        elif rot and ref and not heur:
-            return "rotation_reflection"
-        elif not rot and not ref and heur:
-            return "heuristic_ub"
-        elif rot and ref and heur:
-            return "all"
-        return "other"
-
     def _extract_seed(rec):
         if not isinstance(rec, dict):
             return None
@@ -2354,19 +2407,14 @@ def make_table_ablation_family(records, base_filename="table_ablation_family", o
         print("[WARNING] Skipping table_ablation_family: no records with relabel_seed found.")
         return None
 
+    family_recs = _ensure_aggregated_records(family_recs, strict=True)
+
     pairs_map = {}
     for r in family_recs:
         base_key = get_pairing_identity(r)
         if base_key is None or base_key[5] is None:
-            seed = _extract_seed(r)
-            if seed is None:
-                continue
-            cfg = r.get("config", {}) if isinstance(r.get("config"), dict) else {}
-            enc = str(r.get("encoding") or cfg.get("encoding", "order")).strip().lower()
-            mode = str(r.get("solving_mode") or cfg.get("solving_mode", "incremental")).strip().lower()
-            eo = str(r.get("eo_strategy") or cfg.get("eo_strategy", "commander")).strip().lower()
-            base_key = (r.get("dataset", ""), normalize_solver_alias(r.get("solver") or "cadical195"), enc, mode, eo, seed)
-        var = get_var(r)
+            continue
+        var = get_ablation_variant(r, style="family")
         if var == "other":
             continue
 
@@ -2547,23 +2595,6 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     if isinstance(output_dirs, str):
         output_dirs = (output_dirs,)
 
-    def get_var(rec):
-        cfg = rec.get("config", {})
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
-        if not rot and not ref and not heur:
-            return "none"
-        elif rot and not ref and not heur:
-            return "rotation"
-        elif rot and ref and not heur:
-            return "rotation_reflection"
-        elif not rot and not ref and heur:
-            return "heuristic_ub"
-        elif rot and ref and heur:
-            return "all"
-        return "other"
-
     def _extract_seed(rec):
         if not isinstance(rec, dict):
             return None
@@ -2577,6 +2608,9 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     if not family_recs:
         print("[WARNING] Skipping table_ablation_phases: no records with relabel_seed found.")
         return None
+
+    if all(get_canonical_key(r) is not None for r in family_recs):
+        family_recs = _ensure_aggregated_records(family_recs, strict=True)
 
     variants = ["none", "rotation", "rotation_reflection", "heuristic_ub", "all"]
     sizes = sorted(list(set(r.get("N", 0) for r in family_recs if r.get("N"))))
@@ -2602,7 +2636,7 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
         for var in variants:
             count = sum(
                 1 for r in family_recs
-                if r.get("N") == n and get_var(r) == var and is_optimal_status(r)
+                if r.get("N") == n and get_ablation_variant(r, style="family") == var and is_optimal_status(r)
                 and _clean_iter_times(r) is not None
             )
             if count < 1:
@@ -2623,7 +2657,7 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
             ratios = []
 
             for r in family_recs:
-                if r.get("N") == n and get_var(r) == var and is_optimal_status(r):
+                if r.get("N") == n and get_ablation_variant(r, style="family") == var and is_optimal_status(r):
                     cleaned_iter = _clean_iter_times(r)
                     if cleaned_iter is not None and len(cleaned_iter) > 0:
                         last_t = cleaned_iter[-1]
@@ -2765,8 +2799,9 @@ def make_table_methods_family(records, base_filename="table_methods_family", out
     if isinstance(output_dirs, str):
         output_dirs = (output_dirs,)
 
+    agg_records = _ensure_aggregated_records(records, strict=True)
     pairs_map = {}
-    for r in records:
+    for r in agg_records:
         if not is_valid_record_dict(r):
             continue
         canon = get_canonical_key(r)
@@ -2867,7 +2902,8 @@ def make_table_methods_large(records, base_filename="table_methods_large", outpu
     cpsat_recs = {}
     meta = {}
 
-    for r in records:
+    agg_records = _ensure_aggregated_records(records, strict=True)
+    for r in agg_records:
         if not is_valid_record_dict(r):
             continue
         canon = get_canonical_key(r)
@@ -2960,7 +2996,8 @@ def make_table_methods_large_seeds(records, base_filename="table_methods_large_s
     sat_map = {}
     cpsat_map = {}
 
-    for r in records:
+    agg_records = _ensure_aggregated_records(records, strict=True)
+    for r in agg_records:
         if not is_valid_record_dict(r):
             continue
         canon = get_canonical_key(r)

@@ -1141,3 +1141,77 @@ def test_mr12_validation_bijection_rejects_invalid_assignments():
 
     # Rejection of non-lists
     assert is_valid_assignment("012", n=3) is False
+
+
+def test_a2_canonical_ablation_variant_and_multi_rep_boxplot_invariance(tmp_path, monkeypatch):
+    """A2: plot_ablation_family_boxplots uses canonical flags (incl. top-level) and aggregates reps like tables."""
+    from analysis.make_plots import get_ablation_var_name, plot_ablation_family_boxplots
+    from analysis.make_tables import make_table_ablation_family
+    import matplotlib.axes
+
+    # 1. Top-level flags (not inside config) must be recognized identically to config flags
+    rec_top_rot_ref = {
+        "dataset": "d40", "solver": "cadical195", "N": 40, "relabel_seed": 0,
+        "status": "OPTIMAL", "solve_time": 2.0, "best_ub": 3,
+        "sb_rotation": True, "sb_reflection": True, "heuristic_ub": False,
+        "config": {},
+    }
+    assert get_ablation_var_name(rec_top_rot_ref) == "rot+ref"
+
+    # 2. Multi-repetition records on (base_key, var) must aggregate via median (2.0), NOT last-record-wins (100.0 / 1.0)
+    recs = []
+    for n_val, ds in [(40, "d40"), (50, "d50")]:
+        # Baseline 'none' with top-level flags and solve_time=4.0
+        recs.append({
+            "dataset": ds, "solver": "cadical195", "N": n_val, "relabel_seed": 0,
+            "status": "OPTIMAL", "solve_time": 4.0, "best_ub": 3, "rep": 1,
+            "sb_rotation": False, "sb_reflection": False, "heuristic_ub": False, "config": {},
+        })
+        # 'rotation', 'heur_ub', 'all' with top-level flags (solve_time=2.0 -> ratio 0.5)
+        for flags in [
+            {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+            {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": True},
+            {"sb_rotation": True, "sb_reflection": True, "heuristic_ub": True},
+        ]:
+            recs.append({
+                "dataset": ds, "solver": "cadical195", "N": n_val, "relabel_seed": 0,
+                "status": "OPTIMAL", "solve_time": 2.0, "best_ub": 3, "rep": 1,
+                **flags, "config": {},
+            })
+        # 'rot_ref' with 3 repetitions: [1.0, 2.0, 100.0] -> median is 2.0 (ratio 0.5)
+        for rep_i, st_val in [(1, 1.0), (2, 2.0), (3, 100.0)]:
+            recs.append({
+                "dataset": ds, "solver": "cadical195", "N": n_val, "relabel_seed": 0,
+                "status": "OPTIMAL", "solve_time": st_val, "best_ub": 3, "rep": rep_i,
+                "sb_rotation": True, "sb_reflection": True, "heuristic_ub": False, "config": {},
+            })
+
+    captured_fwd = []
+    orig_boxplot = matplotlib.axes.Axes.boxplot
+
+    def spy_boxplot(self, x, *args, **kwargs):
+        captured_fwd.append([list(col) for col in x])
+        return orig_boxplot(self, x, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", spy_boxplot)
+    plot_ablation_family_boxplots(recs, base_filename="bp_fwd", output_dirs=(str(tmp_path / "fwd"),))
+    assert len(captured_fwd) == 2
+    # rot_ref is index 1 in ["rotation", "rot_ref", "heur_ub", "all"]
+    assert captured_fwd[0][1] == [pytest.approx(0.5)]
+    assert captured_fwd[1][1] == [pytest.approx(0.5)]
+
+    captured_rev = []
+
+    def spy_boxplot_rev(self, x, *args, **kwargs):
+        captured_rev.append([list(col) for col in x])
+        return orig_boxplot(self, x, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "boxplot", spy_boxplot_rev)
+    plot_ablation_family_boxplots(list(reversed(recs)), base_filename="bp_rev", output_dirs=(str(tmp_path / "rev"),))
+    assert captured_fwd == captured_rev
+
+    # Family table must match plot aggregation (median 0.5, not raise DuplicateConflictError across distinct reps)
+    df_fam = make_table_ablation_family(recs, output_dirs=(str(tmp_path / "tab"),))
+    assert df_fam is not None
+    row_rr = df_fam[(df_fam["comparison_group"] == "variant vs none") & (df_fam["variant"] == "rotation_reflection")]
+    assert row_rr.iloc[0]["median_time_ratio"] == "0.5000"

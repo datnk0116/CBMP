@@ -19,10 +19,16 @@ from analysis.make_tables import (
     validate_solve_time,
     extract_repetition_solve_time,
     is_optimal_status,
+    is_valid_record_dict,
     normalize_status,
     validate_best_ub,
     get_canonical_key,
     get_pairing_identity,
+    get_ablation_variant,
+    resolve_duplicate_records,
+    aggregate_repetition_group,
+    aggregate_repetitions,
+    _ensure_aggregated_records,
     strict_int,
     normalize_solver_alias,
 )
@@ -55,21 +61,8 @@ def save_fig(fig, base_filename, output_dirs=("results_v2/figures",)):
     print(f"Figure saved: {base_filename}.png and {base_filename}.pdf in {output_dirs[0]}/")
     plt.close(fig)
 
-def get_ablation_var_name(cfg):
-    rot = cfg.get("sb_rotation", False)
-    ref = cfg.get("sb_reflection", False)
-    heur = cfg.get("heuristic_ub", False)
-    if not rot and not ref and not heur:
-        return "none"
-    elif rot and not ref and not heur:
-        return "rotation"
-    elif rot and ref and not heur:
-        return "rot+ref"
-    elif not rot and not ref and heur:
-        return "heuristic-ub"
-    elif rot and ref and heur:
-        return "all (SB+Heur)"
-    return "other"
+def get_ablation_var_name(rec_or_cfg):
+    return get_ablation_variant(rec_or_cfg, style="plot")
 
 def plot_cactus(records, group_name, category_key, title, base_filename, output_dirs=("results_v2/figures",)):
     """
@@ -334,33 +327,24 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
     Separate panels for N=40 and N=50.
     Variants compared to none: rotation, rot+ref, heur_ub, all.
     """
-    family_recs = [r for r in records if (is_optimal_status(r) and get_canonical_key(r) is not None and get_canonical_key(r)[4] is not None)]
+    family_recs = [
+        r for r in records
+        if (is_valid_record_dict(r) and get_canonical_key(r) is not None and get_canonical_key(r)[4] is not None)
+    ]
     if not family_recs:
         return
 
-    def get_var(rec):
-        cfg = rec.get("config", {})
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
-        if not rot and not ref and not heur:
-            return "none"
-        elif rot and not ref and not heur:
-            return "rotation"
-        elif rot and ref and not heur:
-            return "rot_ref"
-        elif not rot and not ref and heur:
-            return "heur_ub"
-        elif rot and ref and heur:
-            return "all"
-        return "other"
+    # Deduplicate on (canonical_key, rep) and aggregate multiple repetitions via median (matching tables)
+    agg_family_recs = _ensure_aggregated_records(family_recs, strict=False)
 
     pairs_map = {}
-    for r in family_recs:
+    for r in agg_family_recs:
+        if not is_optimal_status(r):
+            continue
         base_key = get_pairing_identity(r)
         if base_key is None or base_key[5] is None:
             continue
-        var = get_var(r)
+        var = get_ablation_variant(r, style="table")
         if var == "other":
             continue
         pairs_map.setdefault(base_key, {})[var] = r
