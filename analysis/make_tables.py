@@ -667,6 +667,8 @@ def normalize_status(val):
         return "NUMERIC_ERROR"
     elif s == "PARTIAL":
         return "PARTIAL"
+    elif s == "CONFLICT":
+        return "CONFLICT"
     elif s in ("UNKNOWN", "UNK"):
         return "UNKNOWN"
     else:
@@ -733,22 +735,88 @@ def get_pairing_identity(record):
         enc, mode, eo = "order", "incremental", "commander"
     return (ds, solver, enc, mode, eo, seed)
 
+def _format_rec_location(rec):
+    if not isinstance(rec, dict):
+        return "<unknown>:?"
+    f = rec.get("_file") or "<memory>"
+    ln = rec.get("_line")
+    return f"{f}:{ln if ln is not None else '?'}"
+
+
+def _merge_record_groups(rec_a, rec_b):
+    gs = set()
+    for r in (rec_a, rec_b):
+        if not isinstance(r, dict):
+            continue
+        if isinstance(r.get("groups"), (list, tuple, set)):
+            gs.update(str(g) for g in r["groups"])
+        if r.get("_group"):
+            gs.add(str(r["_group"]))
+    return sorted(gs)
+
+
+def _float_timing_differs(val_a, val_b):
+    if val_a is None and val_b is None:
+        return False
+    if val_a is None or val_b is None:
+        return True
+    return not math.isclose(float(val_a), float(val_b), rel_tol=1e-12, abs_tol=1e-12)
+
+
+def _build_conflict_record(rec_a, rec_b, reason_list):
+    """Builds a deterministic CONFLICT sentinel record independent of input order."""
+    # Pick deterministic base dictionary for identity fields
+    try:
+        repr_a = json.dumps({k: v for k, v in rec_a.items() if k not in ("_file", "_line", "_group", "groups")}, sort_keys=True, default=str)
+        repr_b = json.dumps({k: v for k, v in rec_b.items() if k not in ("_file", "_line", "_group", "groups")}, sort_keys=True, default=str)
+        base = dict(rec_a if repr_a <= repr_b else rec_b)
+    except Exception:
+        base = dict(rec_a)
+
+    sources = set()
+    for r in (rec_a, rec_b):
+        if isinstance(r, dict):
+            for s in r.get("_conflict_sources", []):
+                sources.add(tuple(s) if isinstance(s, (list, tuple)) else (str(s), "?"))
+            if r.get("_file") is not None or r.get("_line") is not None:
+                sources.add((str(r.get("_file") or "<memory>"), str(r.get("_line") if r.get("_line") is not None else "?")))
+
+    existing_reasons = set(reason_list)
+    for r in (rec_a, rec_b):
+        if isinstance(r, dict) and r.get("conflict_reason"):
+            for part in str(r["conflict_reason"]).split("; "):
+                if part:
+                    existing_reasons.add(part)
+
+    merged_groups = _merge_record_groups(rec_a, rec_b)
+    if merged_groups:
+        base["groups"] = merged_groups
+
+    base["status"] = "CONFLICT"
+    base["_conflict"] = True
+    base["conflict_reason"] = "; ".join(sorted(existing_reasons))
+    base["_conflict_sources"] = [list(s) for s in sorted(sources)]
+    base["solve_time"] = None
+    base["wall_time"] = None
+    base["encode_time"] = None
+    base["best_ub"] = -1
+    base["assignment"] = None
+    return base
+
+
 def pick_better_record(rec_a, rec_b, strict=False):
     """
     Deterministically resolves two execution records representing the same run (canonical_key, rep).
-    Symmetric and order-invariant: pick_better_record(A, B) == pick_better_record(B, A).
+    Symmetric and order-invariant: pick_better_record(A, B) matches pick_better_record(B, A).
 
-    Policy:
-    1. Divergent OPTIMAL best_ub -> raises DuplicateConflictError.
-    2. Valid OPTIMAL (with valid best_ub, no validation error) beats any non-OPTIMAL.
-    3. Status tier ranking:
-       OPTIMAL (tier 0) > FEASIBLE with valid UB (tier 1) > TIMEOUT (tier 2) >
-       INTERRUPTED (tier 3) > SIZE_LIMIT (tier 4) > UNAVAILABLE/LICENSE_ERROR (tier 5) >
-       INFEASIBLE (tier 6) > ERROR/UNKNOWN (tier 7).
-    4. For equal status tier:
-       - Record with genuine valid solve_time is preferred over one without.
-       - If both have valid solve_time: chooses min (solve_time, wall_time).
-       - Deterministic tie-breaking via sorted JSON string serialization.
+    Duplicate Resolution Policy (A1):
+    1. Exact duplicates (identical status, best_ub, assignment, solve_time, wall_time, validation_error):
+       deduplicate cleanly, merging group membership and logging dropped source.
+    2. Divergent status, best_ub, assignment, OR divergent runtime (solve_time / wall_time)
+       for the same (canonical_key, rep):
+       - Logs (file, line, reason) for the conflicting records.
+       - If strict=True: raises DuplicateConflictError.
+       - If strict=False: returns a deterministic CONFLICT sentinel record (never picks min/max runtime).
     """
     if rec_a is rec_b:
         return rec_a
@@ -759,78 +827,84 @@ def pick_better_record(rec_a, rec_b, strict=False):
 
     st_a = normalize_status(rec_a.get("status"))
     st_b = normalize_status(rec_b.get("status"))
+
+    # Propagate existing conflict deterministically
+    if st_a == "CONFLICT" or rec_a.get("_conflict") or st_b == "CONFLICT" or rec_b.get("_conflict"):
+        conflict_rec = _build_conflict_record(rec_a, rec_b, [])
+        msg = (
+            f"Duplicate conflict propagated at {_format_rec_location(rec_a)} vs "
+            f"{_format_rec_location(rec_b)}: {conflict_rec.get('conflict_reason', 'conflict')}"
+        )
+        logger.error(msg)
+        if strict:
+            raise DuplicateConflictError(msg)
+        return conflict_rec
+
     ub_a = validate_best_ub(rec_a.get("best_ub"))
     ub_b = validate_best_ub(rec_b.get("best_ub"))
     err_a = bool(rec_a.get("validation_error"))
     err_b = bool(rec_b.get("validation_error"))
+    asgn_a = rec_a.get("assignment")
+    asgn_b = rec_b.get("assignment")
+    t_a = validate_solve_time(rec_a.get("solve_time"))
+    t_b = validate_solve_time(rec_b.get("solve_time"))
+    w_a = validate_solve_time(rec_a.get("wall_time"))
+    w_b = validate_solve_time(rec_b.get("wall_time"))
 
-    is_opt_a = (st_a == "OPTIMAL" and ub_a is not None and not err_a)
-    is_opt_b = (st_b == "OPTIMAL" and ub_b is not None and not err_b)
+    # Also treat explicit None vs numeric or invalid non-None timing consistently:
+    # if one record has raw solve_time=None and other has numeric, t_a != t_b catches it.
+    reasons = []
+    if st_a != st_b:
+        pair = tuple(sorted((str(st_a), str(st_b))))
+        reasons.append(f"status mismatch ({pair[0]} vs {pair[1]})")
+    if ub_a != ub_b:
+        pair = tuple(sorted((str(ub_a), str(ub_b))))
+        reasons.append(f"best_ub mismatch ({pair[0]} vs {pair[1]})")
+    if err_a != err_b:
+        pair = tuple(sorted((str(err_a), str(err_b))))
+        reasons.append(f"validation_error mismatch ({pair[0]} vs {pair[1]})")
+    if asgn_a != asgn_b:
+        reasons.append("assignment mismatch")
+    if _float_timing_differs(t_a, t_b):
+        pair = tuple(sorted((str(t_a), str(t_b))))
+        reasons.append(f"solve_time mismatch ({pair[0]} vs {pair[1]})")
+    if _float_timing_differs(w_a, w_b):
+        pair = tuple(sorted((str(w_a), str(w_b))))
+        reasons.append(f"wall_time mismatch ({pair[0]} vs {pair[1]})")
 
-    # 1. Critical conflict check: both claim OPTIMAL but report different best_ub
-    if is_opt_a and is_opt_b and ub_a != ub_b:
-        msg = f"Duplicate OPTIMAL conflict: best_ub {ub_a} vs {ub_b}"
+    if reasons:
+        reasons_sorted = sorted(reasons)
+        loc_pair = tuple(sorted((_format_rec_location(rec_a), _format_rec_location(rec_b))))
+        msg = (
+            f"Duplicate conflict between {loc_pair[0]} and {loc_pair[1]}: "
+            f"{'; '.join(reasons_sorted)}"
+        )
         logger.error(msg)
-        raise DuplicateConflictError(msg)
+        if strict:
+            raise DuplicateConflictError(msg)
+        return _build_conflict_record(rec_a, rec_b, reasons_sorted)
 
-    # 2. Status tier ranking
-    def _status_tier(st, ub, err):
-        if err:
-            return 7
-        if st == "OPTIMAL" and ub is not None:
-            return 0
-        if st == "FEASIBLE" and ub is not None:
-            return 1
-        if st == "TIMEOUT":
-            return 2
-        if st == "INTERRUPTED":
-            return 3
-        if st == "SIZE_LIMIT":
-            return 4
-        if st in ("UNAVAILABLE", "LICENSE_ERROR"):
-            return 5
-        if st == "INFEASIBLE":
-            return 6
-        return 7
-
-    tier_a = _status_tier(st_a, ub_a, err_a)
-    tier_b = _status_tier(st_b, ub_b, err_b)
-
-    if tier_a < tier_b:
-        return rec_a
-    elif tier_b < tier_a:
-        return rec_b
-
-    # 3. Same status tier: compare timing and tie-break deterministically
-    t_a = extract_repetition_solve_time(rec_a)
-    t_b = extract_repetition_solve_time(rec_b)
-
-    has_t_a = (t_a is not None and t_a > 0)
-    has_t_b = (t_b is not None and t_b > 0)
-
-    if has_t_a and not has_t_b:
-        return rec_a
-    elif has_t_b and not has_t_a:
-        return rec_b
-
-    w_a = validate_solve_time(rec_a.get("wall_time")) or float("inf")
-    w_b = validate_solve_time(rec_b.get("wall_time")) or float("inf")
-
-    time_tuple_a = (t_a if has_t_a else float("inf"), w_a)
-    time_tuple_b = (t_b if has_t_b else float("inf"), w_b)
-
-    if time_tuple_a < time_tuple_b:
-        return rec_a
-    elif time_tuple_b < time_tuple_a:
-        return rec_b
-
-    # 4. Strict deterministic tie-breaker via canonical JSON string representation
+    # Identical core data -> exact duplicate, deduplicate deterministically
+    merged_groups = _merge_record_groups(rec_a, rec_b)
     try:
-        repr_a = json.dumps(rec_a, sort_keys=True, default=str)
-        repr_b = json.dumps(rec_b, sort_keys=True, default=str)
-        return rec_a if repr_a <= repr_b else rec_b
+        repr_a = json.dumps({k: v for k, v in rec_a.items() if k not in ("_file", "_line", "_group", "groups")}, sort_keys=True, default=str)
+        repr_b = json.dumps({k: v for k, v in rec_b.items() if k not in ("_file", "_line", "_group", "groups")}, sort_keys=True, default=str)
+        if repr_a <= repr_b:
+            winner, dropped = dict(rec_a), rec_b
+        else:
+            winner, dropped = dict(rec_b), rec_a
     except Exception:
-        return rec_a
+        winner, dropped = dict(rec_a), rec_b
+
+    if merged_groups:
+        winner["groups"] = merged_groups
+
+    logger.info(
+        "[%s] Exact duplicate dropped (identical data to %s)",
+        _format_rec_location(dropped),
+        _format_rec_location(winner),
+    )
+    return winner
 
 def resolve_duplicate_records(records, strict=False):
     """
@@ -838,11 +912,16 @@ def resolve_duplicate_records(records, strict=False):
     Input-order invariant.
     """
     by_run_id = {}
-    for r in records:
+    for idx, r in enumerate(records, start=1):
         if not is_valid_record_dict(r):
+            logger.warning("resolve_duplicate_records: skipped invalid record at index %d (non-dict or empty)", idx)
             continue
         run_id = get_run_identity(r)
         if run_id is None:
+            logger.warning(
+                "[%s] Skipped record with invalid canonical or repetition identity",
+                _format_rec_location(r),
+            )
             continue
         if run_id in by_run_id:
             by_run_id[run_id] = pick_better_record(by_run_id[run_id], r, strict=strict)
@@ -931,6 +1010,19 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
             continue
         rc = dict(r)
         st_norm = normalize_status(rc.get("status"))
+        if st_norm == "CONFLICT" or rc.get("_conflict"):
+            cat = "CONFLICT"
+            rc["status"] = "CONFLICT"
+            rc["_conflict"] = True
+            rc["solve_time"] = None
+            rc["wall_time"] = None
+            rc["encode_time"] = None
+            rc["best_ub"] = -1
+            rc["assignment"] = None
+            rc["_cat"] = cat
+            cleaned_reps.append(rc)
+            continue
+
         ub_val = validate_best_ub(rc.get("best_ub"))
         lb_val = validate_lower_bound(rc.get("lower_bound") if rc.get("lower_bound") is not None else rc.get("best_lb"))
 
@@ -955,6 +1047,7 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
     if n_total == 0:
         return None
 
+    n_conflict = sum(1 for r in reps if r["_cat"] == "CONFLICT" or r.get("_conflict"))
     n_optimal = sum(1 for r in reps if r["_cat"] == "OPTIMAL")
     n_timeout = sum(1 for r in reps if r["_cat"] == "TIMEOUT")
     n_interrupted = sum(1 for r in reps if r["_cat"] == "INTERRUPTED")
@@ -965,6 +1058,56 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
     n_unavailable = sum(1 for r in reps if r["_cat"] == "UNAVAILABLE")
     n_license_error = sum(1 for r in reps if r["_cat"] == "LICENSE_ERROR")
     n_unknown = sum(1 for r in reps if r["_cat"] == "UNKNOWN")
+
+    if n_conflict > 0:
+        conflict_reasons = sorted(
+            {str(r.get("conflict_reason")) for r in reps if r.get("conflict_reason")}
+        )
+        rep_base = sorted(
+            [r for r in reps if r["_cat"] == "CONFLICT"],
+            key=lambda x: str(x.get("conflict_reason", "")),
+        )[0]
+        logger.warning(
+            "aggregate_repetition_group: excluding entire conflicting group (dataset=%s, solver=%s) from aggregate and marking CONFLICT: %s",
+            rep_base.get("dataset"),
+            rep_base.get("solver"),
+            "; ".join(conflict_reasons) or "duplicate conflict",
+        )
+        all_groups = set()
+        for r in reps:
+            for g in r.get("groups", []):
+                all_groups.add(g)
+            if "_group" in r:
+                all_groups.add(r["_group"])
+        agg = dict(rep_base)
+        agg["status"] = "CONFLICT"
+        agg["_conflict"] = True
+        agg["conflict_reason"] = "; ".join(conflict_reasons) or "duplicate conflict"
+        agg["n_total"] = n_total
+        agg["n_algorithmic"] = 0
+        agg["n_optimal"] = 0
+        agg["n_timeout"] = 0
+        agg["n_interrupted"] = 0
+        agg["n_feasible"] = 0
+        agg["n_infeasible"] = 0
+        agg["n_error"] = 0
+        agg["n_size_limit"] = 0
+        agg["n_unavailable"] = 0
+        agg["n_license_error"] = 0
+        agg["n_unknown"] = 0
+        agg["solve_time"] = None
+        agg["solve_time_source"] = None
+        agg["timing_fallback"] = False
+        agg["wall_time"] = None
+        agg["effective_time"] = None
+        agg["effective_time_source"] = None
+        agg["encode_time"] = None
+        agg.pop("par2", None)
+        agg["best_ub"] = -1
+        agg["assignment"] = None
+        agg["groups"] = sorted(list(all_groups))
+        agg["reps"] = reps
+        return agg
 
     n_algorithmic = n_optimal + n_timeout + n_interrupted + n_feasible + n_infeasible + n_error
 
@@ -1523,6 +1666,8 @@ def format_cell_value(status, solve_time=None, best_ub=None, n_optimal=None, n_t
         return "NUM_ERR"
     elif st == "ERROR":
         return "ERR"
+    elif st == "CONFLICT":
+        return "CONFLICT"
     elif st == "UNKNOWN":
         return "UNK"
     else:
@@ -1599,8 +1744,8 @@ def compute_summary_stats(df_raw, column_names, baseline_col=None, timeout=600.0
             elif st == "SIZE_LIMIT":
                 sl_count += 1
                 # SIZE_LIMIT is reported separately in SL and not penalized in PAR2 as timeout
-            elif st in ("UNAVAILABLE", "LICENSE_ERROR", "UNKNOWN") or st is None:
-                # Solver environment unavailability, missing license, or unknown status excluded from algorithmic PAR2
+            elif st in ("UNAVAILABLE", "LICENSE_ERROR", "UNKNOWN", "CONFLICT") or st is None:
+                # Solver environment unavailability, missing license, unknown, or duplicate conflict excluded from algorithmic PAR2
                 pass
             else:
                 par2_val = validate_solve_time(rec.get("par2"))

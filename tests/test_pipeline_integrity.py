@@ -896,25 +896,114 @@ def test_mr2_duplicate_record_preserves_summary_stats(tmp_path):
     assert loaded_clean[0]["solve_time"] == loaded_dup[0]["solve_time"]
 
 
-def test_mr3_deduplication_tie_breaking_is_commutative():
-    """MR3: Deduplication tie-breaking is strictly commutative: pick_better_record(A, B) == pick_better_record(B, A)."""
-    # Case 1: OPTIMAL vs Failure
-    r_opt = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 5.0}
-    r_fail = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0}
-    assert pick_better_record(r_opt, r_fail) is r_opt
-    assert pick_better_record(r_fail, r_opt) is r_opt
+def test_mr3_deduplication_tie_breaking_is_commutative(caplog, tmp_path):
+    """MR3 (A1): Exact duplicates dedup cleanly; any divergent status/UB/assignment/runtime is a CONFLICT."""
+    import logging
 
-    # Case 2: Both OPTIMAL same UB, different solve times
-    r_fast = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 2.0}
-    r_slow = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 4.0}
-    assert pick_better_record(r_fast, r_slow) is r_fast
-    assert pick_better_record(r_slow, r_fast) is r_fast
+    # Case 1: Identical core data -> deduplicates cleanly regardless of order (only metadata like _line/groups differ)
+    r_id_a = {
+        "dataset": "d1", "solver": "cadical195", "status": "OPTIMAL",
+        "best_ub": 3, "assignment": [0, 1, 2], "solve_time": 2.0, "wall_time": 2.5,
+        "rep": 1, "groups": ["methods"], "_file": "a.jsonl", "_line": 1,
+    }
+    r_id_b = {
+        "dataset": "d1", "solver": "cadical195", "status": "OPTIMAL",
+        "best_ub": 3, "assignment": [0, 1, 2], "solve_time": 2.0, "wall_time": 2.5,
+        "rep": 1, "groups": ["solvers_small"], "_file": "a.jsonl", "_line": 2,
+    }
+    res_ab = pick_better_record(r_id_a, r_id_b, strict=True)
+    res_ba = pick_better_record(r_id_b, r_id_a, strict=True)
+    assert res_ab["status"] == "OPTIMAL"
+    assert res_ab["best_ub"] == 3
+    assert res_ab["solve_time"] == 2.0
+    assert sorted(res_ab["groups"]) == ["methods", "solvers_small"]
+    assert res_ba["status"] == res_ab["status"]
+    assert res_ba["solve_time"] == res_ab["solve_time"]
+    assert sorted(res_ba["groups"]) == ["methods", "solvers_small"]
 
-    # Case 3: Both TIMEOUT, one has valid timing, other is None
-    r_time = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0}
-    r_notime = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": None}
-    assert pick_better_record(r_time, r_notime) is r_time
-    assert pick_better_record(r_notime, r_time) is r_time
+    # Case 2: Different status on same (canonical_key, rep) -> conflict
+    r_opt = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 5.0, "rep": 1}
+    r_fail = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0, "rep": 1}
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_opt, r_fail, strict=True)
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_fail, r_opt, strict=True)
+    c_opt_fail_ab = pick_better_record(r_opt, r_fail, strict=False)
+    c_opt_fail_ba = pick_better_record(r_fail, r_opt, strict=False)
+    assert c_opt_fail_ab["status"] == "CONFLICT"
+    assert c_opt_fail_ba["status"] == "CONFLICT"
+
+    # Case 3: Both OPTIMAL same UB & status, DIFFERENT solve_time -> conflict (do NOT pick min/max)
+    r_fast = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 2.0, "rep": 1}
+    r_slow = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 3, "solve_time": 4.0, "rep": 1}
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_fast, r_slow, strict=True)
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_slow, r_fast, strict=True)
+    c_time_ab = pick_better_record(r_fast, r_slow, strict=False)
+    c_time_ba = pick_better_record(r_slow, r_fast, strict=False)
+    assert c_time_ab["status"] == "CONFLICT"
+    assert c_time_ba["status"] == "CONFLICT"
+    assert c_time_ab["solve_time"] is None
+    assert c_time_ba["solve_time"] is None
+
+    # Case 4: Both TIMEOUT same status, one has timing and other is None -> conflict
+    r_time = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": 600.0, "rep": 1}
+    r_notime = {"dataset": "d1", "solver": "cadical195", "status": "TIMEOUT", "solve_time": None, "rep": 1}
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_time, r_notime, strict=True)
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_notime, r_time, strict=True)
+    assert pick_better_record(r_time, r_notime, strict=False)["status"] == "CONFLICT"
+    assert pick_better_record(r_notime, r_time, strict=False)["status"] == "CONFLICT"
+
+    # Case 5: Same status & UB & runtime, DIFFERENT assignment -> conflict
+    r_asg1 = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 2, "assignment": [0, 1, 2], "solve_time": 1.0, "rep": 1}
+    r_asg2 = {"dataset": "d1", "solver": "cadical195", "status": "OPTIMAL", "best_ub": 2, "assignment": [2, 1, 0], "solve_time": 1.0, "rep": 1}
+    with pytest.raises(DuplicateConflictError):
+        pick_better_record(r_asg1, r_asg2, strict=True)
+    assert pick_better_record(r_asg1, r_asg2, strict=False)["status"] == "CONFLICT"
+
+    # Case 6: JSONL strict=False excludes entire conflicting group from aggregate & marks CONFLICT in CSV + logs file/line/reason
+    jsonl_fwd = tmp_path / "fwd.jsonl"
+    jsonl_rev = tmp_path / "rev.jsonl"
+    recs = [
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 1.5, "rep": 1, "groups": ["solvers_small"]},
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 3.5, "rep": 1, "groups": ["solvers_small"]},
+        # Even rep=2 of the same run group is tainted when rep=1 conflicted -> entire group marked CONFLICT!
+        {"dataset": "d1", "solver": "cadical195", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 2.0, "rep": 2, "groups": ["solvers_small"]},
+        # Non-conflicting solver on same dataset
+        {"dataset": "d1", "solver": "kissat", "method": "sat", "status": "OPTIMAL", "best_ub": 2, "solve_time": 1.0, "rep": 1, "groups": ["solvers_small"]},
+    ]
+    jsonl_fwd.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    jsonl_rev.write_text("\n".join(json.dumps(r) for r in reversed(recs)) + "\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        agg_fwd = load_records(str(jsonl_fwd), strict=False)
+        agg_rev = load_records(str(jsonl_rev), strict=False)
+
+    assert any("fwd.jsonl" in m and ("conflict" in m.lower() or "mismatch" in m.lower()) for m in caplog.messages)
+
+    by_sol_fwd = {r["solver"]: r for r in agg_fwd}
+    by_sol_rev = {r["solver"]: r for r in agg_rev}
+    assert by_sol_fwd["cadical195"]["status"] == "CONFLICT"
+    assert by_sol_rev["cadical195"]["status"] == "CONFLICT"
+    assert by_sol_fwd["cadical195"]["solve_time"] is None
+    assert by_sol_fwd["cadical195"].get("par2") is None
+    assert by_sol_fwd["kissat"]["status"] == "OPTIMAL"
+
+    from analysis.make_tables import make_table_solvers
+    out_fwd = str(tmp_path / "tab_fwd")
+    out_rev = str(tmp_path / "tab_rev")
+    df_fwd, sum_fwd, _ = make_table_solvers(agg_fwd, group_name="solvers_small", base_filename="table_solvers_small", output_dirs=(out_fwd,))
+    df_rev, sum_rev, _ = make_table_solvers(agg_rev, group_name="solvers_small", base_filename="table_solvers_small", output_dirs=(out_rev,))
+    pd.testing.assert_frame_equal(df_fwd, df_rev)
+    assert df_fwd.loc["d1", "cadical195"] == "CONFLICT"
+    # Solved count for cadical195 must be 0, and csv must contain CONFLICT
+    solved_row = dict(sum_fwd).get("Solved", {})
+    assert solved_row["cadical195"] == "0"
+    assert "CONFLICT" in (tmp_path / "tab_fwd" / "table_solvers_small.csv").read_text(encoding="utf-8")
+    assert "CONFLICT" in (tmp_path / "tab_fwd" / "table_solvers_small_data.csv").read_text(encoding="utf-8")
 
 
 def test_mr4_divergent_optimal_best_ub_raises_duplicate_conflict_error():
