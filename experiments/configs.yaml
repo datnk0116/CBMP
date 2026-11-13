@@ -346,3 +346,41 @@ groups:
       - name: "gurobi"
         type: "gurobi"
         sb_rotation: true
+
+  harwell_boeing_28:
+    description: "Harwell-Boeing 28 benchmark suite (NILS Table A.2; excludes 14_bus, 30_bus, and the 85 out-of-scope graphs)"
+    datasets:
+      - "jgl009"
+      - "rgg010"
+      - "jgl011"
+      - "can_24"
+      - "pores_1"
+      - "ibm32"
+      - "bcspwr01"
+      - "bcsstk01"
+      - "bcspwr02"
+      - "curtis54"
+      - "will57"
+      - "impcol_b"
+      - "ash85"
+      - "nos4"
+      - "dwt_234"
+      - "bcspwr03"
+      - "bcsstk06"
+      - "bcsstk07"
+      - "impcol_d"
+      - "can_445"
+      - "494_bus"
+      - "dwt_503"
+      - "sherman4"
+      - "dwt_592"
+      - "662_bus"
+      - "nos6"
+      - "685_bus"
+      - "can_715"
+    repetitions: 1
+    solver: "cadical195"
+    sb_rotation: true
+    sb_reflection: true
+    heuristic_ub: true
+    timeout: 600
