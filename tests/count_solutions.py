@@ -13,9 +13,13 @@ from sat_encodings import (
     monotonic_G,
     lower_upper_bound_G,
     biconditional_X_and_G,
+    build_pairwise_base_formula,
     break_rotation_symmetry,
+    break_reflection_symmetry_order,
+    break_reflection_symmetry_pairwise,
     break_reflection_symmetry,
     cyclic_edge,
+    cyclic_edge_pairwise,
 )
 from pysat.solvers import Cadical195
 from tests.brute_force import cyclic_bandwidth_bruteforce
@@ -50,6 +54,45 @@ def count_models_on_X(N, edges, UB, sb_rot, sb_ref):
 
     for u, v in edges:
         clauses.extend(cyclic_edge(N, X, G, u, v, UB))
+
+    solver = Cadical195()
+    solver.append_formula(clauses)
+
+    count = 0
+    while solver.solve():
+        model = set(solver.get_model())
+        blocking = []
+        for u in range(N):
+            for i in range(N):
+                var = X[u][i]
+                if var in model:
+                    blocking.append(-var)
+                    break
+        count += 1
+        solver.add_clause(blocking)
+
+    solver.delete()
+    return count
+
+
+def count_models_on_X_pairwise(N, edges, UB, sb_rot, sb_ref, eo_strategy="commander"):
+    """
+    Enumerate all distinct assignments of vertex label variables X_u,i (u in 0..N-1)
+    satisfying the Pairwise-encoded CBMP SAT formula for upper bound UB.
+    Auxiliary commander EO variables are projected out by blocking only X variables.
+    """
+    if not edges or UB <= 0:
+        return 0
+
+    clauses, X, _ = build_pairwise_base_formula(N, eo_strategy=eo_strategy)
+
+    if sb_rot:
+        clauses.extend(break_rotation_symmetry(X, 0))
+        if sb_ref:
+            clauses.extend(break_reflection_symmetry_pairwise(N, X))
+
+    for u, v in edges:
+        clauses.extend(cyclic_edge_pairwise(N, X, u, v, UB))
 
     solver = Cadical195()
     solver.append_formula(clauses)
@@ -122,7 +165,12 @@ def generate_benchmark_graphs():
 
     return graphs
 
-def run_solution_counting(output_csv="results/symmetry_counts.csv", print_table=True):
+def run_solution_counting(output_csv="results/symmetry_counts.csv", print_table=True, encoding="order"):
+    enc_norm = (encoding or "order").strip().lower()
+    if enc_norm not in ("order", "pairwise"):
+        raise ValueError(f"Unsupported encoding for solution counting: {encoding}")
+    count_fn = count_models_on_X if enc_norm == "order" else count_models_on_X_pairwise
+
     graphs = generate_benchmark_graphs()
     results = []
 
@@ -156,9 +204,9 @@ def run_solution_counting(output_csv="results/symmetry_counts.csv", print_table=
         for bound_type, UB in evaluations:
             is_trivial = UB > (N // 2)
 
-            c_none = count_models_on_X(N, edges, UB, sb_rot=False, sb_ref=False)
-            c_rot = count_models_on_X(N, edges, UB, sb_rot=True, sb_ref=False)
-            c_ref = count_models_on_X(N, edges, UB, sb_rot=True, sb_ref=True)
+            c_none = count_fn(N, edges, UB, sb_rot=False, sb_ref=False)
+            c_rot = count_fn(N, edges, UB, sb_rot=True, sb_ref=False)
+            c_ref = count_fn(N, edges, UB, sb_rot=True, sb_ref=True)
 
             if bound_type == "opt":
                 # Expect 0 models because distance strictly < opt is impossible
@@ -251,13 +299,13 @@ def run_solution_counting(output_csv="results/symmetry_counts.csv", print_table=
 
     return results
 
-def test_count_solutions_match_theory_and_unsat():
+def test_count_solutions_match_theory_and_unsat(tmp_path):
     """
-    Pytest verification:
+    Pytest verification (Order encoding):
     1. At UB = opt: exactly 0 models (UNSAT).
     2. At UB = opt + 1: rotation divides by N, reflection divides by 2.
     """
-    results = run_solution_counting(output_csv="results/symmetry_counts.csv", print_table=False)
+    results = run_solution_counting(output_csv=str(tmp_path / "symmetry_counts_order.csv"), print_table=False, encoding="order")
     for r in results:
         if r["bound_type"] == "opt":
             assert r["status"] == "UNSAT_OK", (
@@ -270,6 +318,38 @@ def test_count_solutions_match_theory_and_unsat():
                 f"ratio_rot={r['ratio_rot']} (expected {r['expected_rot']}), "
                 f"ratio_ref={r['ratio_ref']} (expected {r['expected_ref']})"
             )
+
+
+def test_count_solutions_pairwise_matches_order_and_theory(tmp_path):
+    """
+    A6: Pairwise encoding projected model counts on X must match Order encoding
+    exact counts across none / rotation / rotation+reflection and achieve
+    exact N (rotation) and 2 (reflection) reduction factors.
+    """
+    order_results = run_solution_counting(
+        output_csv=str(tmp_path / "symmetry_counts_order.csv"),
+        print_table=False,
+        encoding="order",
+    )
+    pairwise_results = run_solution_counting(
+        output_csv=str(tmp_path / "symmetry_counts_pairwise.csv"),
+        print_table=False,
+        encoding="pairwise",
+    )
+    assert len(pairwise_results) == len(order_results)
+
+    for ord_r, pw_r in zip(order_results, pairwise_results):
+        assert pw_r["graph"] == ord_r["graph"]
+        assert pw_r["bound_type"] == ord_r["bound_type"]
+        if pw_r["bound_type"] == "opt":
+            assert pw_r["status"] == "UNSAT_OK"
+        else:
+            assert pw_r["status"] == "MATCH_THEORY", (
+                f"Pairwise SB reduction failed on {pw_r['graph']}: {pw_r}"
+            )
+        assert pw_r["none_count"] == ord_r["none_count"]
+        assert pw_r["rot_count"] == ord_r["rot_count"]
+        assert pw_r["rot_ref_count"] == ord_r["rot_ref_count"]
 
 if __name__ == "__main__":
     run_solution_counting()

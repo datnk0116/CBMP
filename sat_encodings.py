@@ -214,7 +214,11 @@ def build_order_base_formula(
 
 def break_rotation_symmetry(X: Sequence[Sequence[int]], anchor_vertex: int = 0) -> List[List[int]]:
     """
-    Fix f(anchor_vertex) = 0 to break rotational symmetry.
+    Fix f(anchor_vertex) = 0 to break rotational symmetry on Z_N.
+
+    Indexing convention:
+      Code uses 0-based vertices/labels (f(0) = 0), which corresponds to 1-based
+      notation f(x_1) = 1 in the technical report.
     Valid for both Pairwise and Order encodings.
     """
     return [[X[anchor_vertex][0]]]
@@ -224,7 +228,11 @@ def break_reflection_symmetry_order(
 ) -> List[List[int]]:
     """
     After fixing f(0) = 0, enforce f(1) < f(N - 1) in Order Encoding.
-    Only valid for N >= 3.
+
+    Indexing & size convention:
+      - 0-based f(1) < f(N - 1) corresponds to 1-based f(x_2) < f(x_N) in the report.
+      - Requires N >= 3: for N <= 2, vertices 1 and N - 1 coincide (or wrap), so
+        enforcing f(1) < f(N - 1) is unsatisfiable; returns [] when N < 3.
     """
     if N < 3:
         return []
@@ -239,7 +247,10 @@ def break_reflection_symmetry_pairwise(
     """
     After fixing f(0) = 0, enforce f(1) < f(N - 1) in Pairwise Encoding.
     For all i >= j, prohibit X[1][i] and X[N-1][j]: -X[1][i] v -X[N-1][j].
-    Only valid for N >= 3.
+
+    Indexing & size convention:
+      - 0-based f(1) < f(N - 1) corresponds to 1-based f(x_2) < f(x_N) in the report.
+      - Requires N >= 3: returns [] when N < 3 to avoid contradicting f(1) = f(N - 1).
     """
     if N < 3:
         return []
