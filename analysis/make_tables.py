@@ -2718,20 +2718,33 @@ def make_table_ablation_phases(records, base_filename="table_ablation_phases", o
     return df
 
 def get_lb_degree(dataset_name):
-    """Compute lb_degree = ceil(Delta / 2) from datasets/<dataset_name>.mtx, excluding self-loops."""
+    """Compute lb_degree = ceil(Delta / 2) from datasets/<dataset_name>.mtx, excluding self-loops and symmetrizing undirected edges."""
     filepath = f"datasets/{dataset_name}.mtx" if not dataset_name.endswith(".mtx") else dataset_name
     if not os.path.exists(filepath):
         return 0
     try:
         from scipy.io import mmread
+        from scipy.sparse import issparse
         try:
-            mat = mmread(filepath, spmatrix=True).tocsr()
+            mat = mmread(filepath, spmatrix=True)
         except TypeError:
-            mat = mmread(filepath).tocsr()
-        mat.setdiag(0)
-        mat.eliminate_zeros()
-        degrees = np.diff(mat.indptr)
-        max_deg = int(degrees.max()) if len(degrees) > 0 else 0
+            mat = mmread(filepath)
+        n_rows = int(mat.shape[0])
+        if n_rows <= 0:
+            return 0
+        if issparse(mat):
+            rows, cols = mat.tocsr().nonzero()
+        else:
+            rows, cols = np.nonzero(mat)
+        mask = rows != cols
+        undirected_edges = {(min(int(u), int(v)), max(int(u), int(v))) for u, v in zip(rows[mask], cols[mask])}
+        if not undirected_edges:
+            return 0
+        deg = np.zeros(n_rows, dtype=np.int64)
+        for u, v in undirected_edges:
+            deg[u] += 1
+            deg[v] += 1
+        max_deg = int(deg.max()) if len(deg) > 0 else 0
         return int(math.ceil(max_deg / 2))
     except Exception:
         return 0
