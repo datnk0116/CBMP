@@ -42,9 +42,14 @@ groups:
   solvers_medium:
     description: "SAT solvers comparison on medium graphs (N=60, 80)"
     datasets:
-      - "494_bus_n60"
-      - "662_bus_n60"
-      - "662_bus_n80"
+      - name: "494_bus_n60"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "494_bus_n80"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "662_bus_n60"
+        relabel_seeds: [0, 1, 2, 3, 4]
+      - name: "662_bus_n80"
+        relabel_seeds: [0, 1, 2, 3, 4]
     repetitions: 1
     timeout: 600
     sb_rotation: true
