@@ -239,9 +239,6 @@ def solve_cplex(
         if verbose:
             print(f"ERROR: {err_msg}")
         return SolveResult(-1, stats)
-        if verbose:
-            print(f"CPLEX solve error: {e}")
-        return SolveResult(-1, stats)
 
     t_sol_end = time.perf_counter()
     solve_time = t_sol_end - t_sol_start

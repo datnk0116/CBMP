@@ -102,9 +102,21 @@ def solve_cplex_cp(
     Solve CBMP using IBM CPLEX CP Optimizer.
     """
     if isinstance(dataset, int) and not isinstance(dataset, bool):
-        edges = N
-        N = dataset
-        dataset = None
+        # Positional call: solve(N, edges, ...) or solve(6, edges=[...])
+        if isinstance(N, (list, tuple, set)):
+            edges = N
+            N = dataset
+            dataset = None
+        elif isinstance(N, int) and not isinstance(N, bool):
+            if N != dataset:
+                raise ValueError(f"Conflicting values for N: {dataset} vs {N}")
+            N = dataset
+            dataset = None
+        else:
+            if edges is None and N is not None:
+                edges = N
+            N = dataset
+            dataset = None
 
     if N is not None and edges is not None:
         N, edges = validate_and_normalize_graph(N, edges)

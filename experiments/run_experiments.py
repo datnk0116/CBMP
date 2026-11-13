@@ -676,8 +676,29 @@ def build_experiment_plan(
     plan = list(tasks_map.values())
     for task in plan:
         task["repetitions"] = max(task["group_reps"].values())
+        _check_relabel_supported(task)
 
     return plan, group_stats
+
+
+# Methods whose CLI entry points accept ``--relabel-seed``.
+RELABEL_SUPPORTED_METHODS = ("sat", "cpsat")
+
+
+def _check_relabel_supported(task):
+    """Fail loudly if a task requests a vertex relabeling its backend cannot apply.
+
+    The CPLEX MIP, CPLEX CP Optimizer and Gurobi baselines do not implement
+    vertex relabeling.  Previously such tasks either crashed in argparse
+    (cplex_cp, gurobi) or silently solved the *unrelabeled* graph while the
+    result record was still tagged with the seed (cplex).
+    """
+    if task.get("relabel_seed") is not None and task.get("method") not in RELABEL_SUPPORTED_METHODS:
+        raise ValueError(
+            f"Method '{task.get('method')}' does not support relabel_seed "
+            f"(dataset '{task.get('dataset')}', seed {task.get('relabel_seed')}). "
+            f"Only {RELABEL_SUPPORTED_METHODS} support vertex relabeling."
+        )
 
 def build_task_cmd(task, json_out_path):
     """Builds subprocess command line for a given task."""
@@ -736,8 +757,7 @@ def build_task_cmd(task, json_out_path):
         if "sb_rotation" in task["config_dict"]:
             sb_rot = bool(task["config_dict"]["sb_rotation"])
             cmd.append("--sb-rotation" if sb_rot else "--no-sb-rotation")
-        if task.get("relabel_seed") is not None and method in ("cpsat", "cplex_cp", "gurobi"):
-            cmd.extend(["--relabel-seed", str(task["relabel_seed"])])
+        _check_relabel_supported(task)
         return cmd
     else:
         raise ValueError(f"Unknown method: {method}")
