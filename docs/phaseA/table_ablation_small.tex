@@ -1,0 +1,21 @@
+% Table: Ablation Study: Small Graphs
+\begin{table}[htbp]
+\centering
+\caption{Ablation Study: Small Graphs}
+\label{tab:table_ablation_small}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Dataset & N & |E| & none & rotation & rot\_ref & heur\_ub & all \\
+\midrule
+14\_bus & 14 & 20 & 0.0016 & 0.0003 & 0.0003 & 0.0032 & 0.0002 \\
+30\_bus & 30 & 39 & 0.6624 & 0.1140 & 0.0537 & 0.6789 & 0.0527 \\
+494\_bus\_n40 & 40 & 52 & 2.2366 & 0.4966 & 1.0584 & 4.9084 & 0.7135 \\
+662\_bus\_n40 & 40 & 50 & 5.4982 & 0.2405 & 0.8778 & 9.8131 & 1.7468 \\
+\midrule
+\textbf{Solved} & - & - & 4 & 4 & 4 & 4 & 4 \\
+\textbf{mean time (s)} & - & - & 2.102 & 0.213 & 0.499 & 3.853 & 0.638 \\
+\textbf{Speedup (geom) [3/4]} & - & - & 1.00x & 8.42x & 5.47x & 0.63x & 4.99x \\
+\bottomrule
+\multicolumn{8}{l}{\footnotesize Speedup chỉ tính trên instance mà baseline >= 0.1s (3/4). Các variant chưa giải hết các instance này ghi '-'.} \\
+\end{tabular}
+\end{table}

@@ -1,26 +1,36 @@
-dataset,solver_or_method,canonical_config,best_ub,num_distinct_sources,validation_status
-14_bus,cadical195,"(False, False, False)",3,5,verified
-14_bus,cadical195,"(True, False, False)",3,5,verified
-14_bus,cadical195,"(True, True, False)",3,5,verified
-14_bus,cadical195,"(False, False, True)",3,5,verified
-14_bus,cadical195,"(True, True, True)",3,5,verified
-30_bus,cadical195,"(False, False, False)",4,5,verified
-30_bus,cadical195,"(True, False, False)",4,5,verified
-30_bus,cadical195,"(True, True, False)",4,5,verified
-30_bus,cadical195,"(False, False, True)",4,5,verified
-30_bus,cadical195,"(True, True, True)",4,5,verified
-494_bus_n40,cadical195,"(False, False, False)",5,5,verified
-494_bus_n40,cadical195,"(True, False, False)",5,5,verified
-494_bus_n40,cadical195,"(True, True, False)",5,5,verified
-494_bus_n40,cadical195,"(False, False, True)",5,5,verified
-494_bus_n40,cadical195,"(True, True, True)",5,5,verified
-662_bus_n40,cadical195,"(False, False, False)",7,5,verified
-662_bus_n40,cadical195,"(True, False, False)",7,5,verified
-662_bus_n40,cadical195,"(True, True, False)",7,5,verified
-662_bus_n40,cadical195,"(False, False, True)",7,5,verified
-662_bus_n40,cadical195,"(True, True, True)",7,5,verified
-662_bus_n60,cadical195,"(False, False, False)",9,5,verified
-662_bus_n60,cadical195,"(True, False, False)",9,5,verified
-662_bus_n60,cadical195,"(True, True, False)",9,5,verified
-662_bus_n60,cadical195,"(False, False, True)",9,5,verified
-662_bus_n60,cadical195,"(True, True, True)",9,5,verified
+dataset,relabel_seed,solver_or_method,canonical_config,best_ub,num_distinct_sources,validation_status
+14_bus,,cadical195,"('sat', ())",3,1,single_source
+30_bus,,cadical195,"('sat', ())",4,1,single_source
+494_bus_n40,,cadical195,"('sat', ())",5,1,single_source
+662_bus_n40,,cadical195,"('sat', ())",7,1,single_source
+662_bus_n60,,cadical195,"('sat', ())",9,1,single_source
+494_bus_n40,0,cadical195,"('sat', ())",5,1,single_source
+494_bus_n40,1,cadical195,"('sat', ())",5,1,single_source
+494_bus_n40,2,cadical195,"('sat', ())",5,1,single_source
+494_bus_n40,3,cadical195,"('sat', ())",5,1,single_source
+494_bus_n40,4,cadical195,"('sat', ())",5,1,single_source
+494_bus_n40,5,cadical195,"('sat', ())",5,1,single_source
+494_bus_n40,6,cadical195,"('sat', ())",5,1,single_source
+494_bus_n40,7,cadical195,"('sat', ())",5,1,single_source
+494_bus_n40,8,cadical195,"('sat', ())",5,1,single_source
+494_bus_n40,9,cadical195,"('sat', ())",5,1,single_source
+662_bus_n40,0,cadical195,"('sat', ())",7,1,single_source
+662_bus_n40,1,cadical195,"('sat', ())",7,1,single_source
+662_bus_n40,2,cadical195,"('sat', ())",7,1,single_source
+662_bus_n40,3,cadical195,"('sat', ())",7,1,single_source
+662_bus_n40,4,cadical195,"('sat', ())",7,1,single_source
+662_bus_n40,5,cadical195,"('sat', ())",7,1,single_source
+662_bus_n40,6,cadical195,"('sat', ())",7,1,single_source
+662_bus_n40,7,cadical195,"('sat', ())",7,1,single_source
+662_bus_n40,8,cadical195,"('sat', ())",7,1,single_source
+662_bus_n40,9,cadical195,"('sat', ())",7,1,single_source
+494_bus_n50,0,cadical195,"('sat', ())",6,1,single_source
+494_bus_n50,1,cadical195,"('sat', ())",6,1,single_source
+494_bus_n50,2,cadical195,"('sat', ())",6,1,single_source
+494_bus_n50,3,cadical195,"('sat', ())",6,1,single_source
+494_bus_n50,4,cadical195,"('sat', ())",6,1,single_source
+662_bus_n50,0,cadical195,"('sat', ())",8,1,single_source
+662_bus_n50,1,cadical195,"('sat', ())",8,1,single_source
+662_bus_n50,2,cadical195,"('sat', ())",8,1,single_source
+662_bus_n50,3,cadical195,"('sat', ())",8,1,single_source
+662_bus_n50,4,cadical195,"('sat', ())",8,1,single_source

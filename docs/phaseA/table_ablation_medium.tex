@@ -1,0 +1,18 @@
+% Table: Ablation Study: Medium Graph (662_bus_n60)
+\begin{table}[htbp]
+\centering
+\caption{Ablation Study: Medium Graph (662_bus_n60)}
+\label{tab:table_ablation_medium}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Dataset & N & |E| & none & rotation & rot\_ref & heur\_ub & all \\
+\midrule
+662\_bus\_n60 & 60 & 77 & 279.4412 & 46.4849 & 12.2716 & 74.4586 & 26.9702 \\
+\midrule
+\textbf{Solved} & - & - & 1 & 1 & 1 & 1 & 1 \\
+\textbf{mean time (s)} & - & - & 279.441 & 46.485 & 12.272 & 74.459 & 26.970 \\
+\textbf{Speedup (geom) [1/1]} & - & - & 1.00x & 6.01x & 22.77x & 3.75x & 10.36x \\
+\bottomrule
+\multicolumn{8}{l}{\footnotesize Speedup chỉ tính trên instance mà baseline >= 0.1s (1/1). Các variant chưa giải hết các instance này ghi '-'.} \\
+\end{tabular}
+\end{table}
