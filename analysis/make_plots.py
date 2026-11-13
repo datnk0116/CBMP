@@ -213,7 +213,14 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
     """
     Bar chart showing median solve time per configuration.
     """
-    ablation_recs = filter_records_by_group(records, group_name, caller_name=base_filename, require_optimal=True)
+    if group_name is None:
+        ablation_recs = [r for r in records if is_optimal_status(r)]
+    else:
+        ablation_recs = [
+            r for r in records
+            if group_name in r.get("groups", [])
+            and is_optimal_status(r)
+        ]
     if not ablation_recs:
         logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
         return
@@ -255,17 +262,17 @@ def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", bas
     """
     Plots number of SAT iterations and time spent on the final UNSAT iteration.
     """
-    if group_name is not None and any("groups" in r for r in records):
+    if group_name is None:
+        ablation_recs = [r for r in records if is_optimal_status(r)]
+    else:
         ablation_recs = [
             r for r in records
-            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+            if group_name in r.get("groups", [])
             and is_optimal_status(r)
         ]
-        if not ablation_recs:
-            logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
-            return
-    else:
-        ablation_recs = [r for r in records if is_optimal_status(r)]
+    if not ablation_recs:
+        logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
+        return
 
     if not ablation_recs:
         return
