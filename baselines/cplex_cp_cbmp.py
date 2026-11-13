@@ -351,31 +351,57 @@ def solve_cplex_cp(
         stats["assignment"] = assignment
         if is_timelimit:
             status = "TIMEOUT"
+            stats["termination_reason"] = "time_limit"
         elif is_abort_stop:
             status = "INTERRUPTED"
+            stats["termination_reason"] = "interrupted"
+        elif is_fail_stop:
+            status = "FEASIBLE"
+            stats["termination_reason"] = "fail_stop_with_incumbent"
+            stats["warning"] = (
+                f"CP Optimizer reported failure/exception (status='{sol_status}', "
+                f"stop_cause='{stop_cause}', fail_status='{fail_status}') "
+                f"after finding a validated feasible incumbent (best_ub={actual_bw})"
+            )
         else:
             # Stopped by node limit, iteration limit, or other search limit with valid incumbent preserved
             status = "FEASIBLE"
+            stats["termination_reason"] = "search_limit"
     elif has_solution and not valid_solution:
         # Solution claimed but failed validation
         status = "ERROR"
         best_ub = -1
         stats["assignment"] = None
+        stats["termination_reason"] = "validation_error"
     else:
         # No solution found
         best_ub = -1
         stats["assignment"] = None
         if is_infeasible:
             status = "INFEASIBLE"
+            stats["termination_reason"] = "infeasible"
         elif is_timelimit:
             status = "TIMEOUT"
+            stats["termination_reason"] = "time_limit"
         elif is_abort_stop:
             status = "INTERRUPTED"
+            stats["termination_reason"] = "interrupted"
+        elif is_fail_stop:
+            status = "ERROR"
+            stats["termination_reason"] = "fail_stop"
+            stats["error"] = (
+                f"CP Optimizer failed with status '{sol_status}', "
+                f"stop cause '{stop_cause}', fail status '{fail_status}' without solution"
+            )
         else:
             # Generic search limits without solution and without time-limit evidence,
-            # or unclassified/failed/unknown termination -> ERROR
+            # or unclassified/unknown termination -> ERROR
             status = "ERROR"
-            stats["error"] = f"CP Optimizer terminated with status '{sol_status}', stop cause '{stop_cause}' without solution"
+            stats["termination_reason"] = "unknown_or_no_solution"
+            stats["error"] = (
+                f"CP Optimizer terminated with status '{sol_status}', "
+                f"stop cause '{stop_cause}', fail status '{fail_status}' without solution"
+            )
 
     if status == "OPTIMAL" and best_lb is None:
         best_lb = best_ub

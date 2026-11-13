@@ -1155,3 +1155,53 @@ def test_gurobi_optimal_with_invalid_assignment_yields_error(monkeypatch, mock_g
     assert stats["termination_reason"] == "validation_error"
     assert stats["best_ub"] == -1
     assert stats["assignment"] is None
+
+
+def test_cplex_cp_jobfailed_with_valid_incumbent_records_stop_reason_metadata(mock_cpo_environment):
+    """
+    A5: When CP Optimizer terminates with JobFailed or Exception fail_status
+    yet has a valid validated incumbent, status remains FEASIBLE and the
+    stop/failure cause must be recorded in metadata (not swallowed).
+    """
+    class JobFailedWithIncumbentSolution(FakeCpoSolution):
+        def __init__(self, fail_status="Exception", **kwargs):
+            super().__init__(**kwargs)
+            self._fail_status = fail_status
+
+        def get_fail_status(self):
+            return self._fail_status
+
+    sol_incumbent = JobFailedWithIncumbentSolution(
+        solve_status="JobFailed",
+        stop_cause="Fail",
+        fail_status="Exception",
+        has_solution=True,
+        assignment=[1, 2, 3],
+        obj_val=1,
+        obj_bound=0,
+    )
+    with patch("docplex.cp.model.CpoModel.solve", return_value=sol_incumbent):
+        res, stats = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats["status"] == "FEASIBLE"
+    assert stats["best_ub"] == 1
+    assert stats["assignment"] == [0, 1, 2]
+    assert stats["termination_reason"] == "fail_stop_with_incumbent"
+    assert "warning" in stats
+    assert "JobFailed" in stats["warning"]
+    assert "Exception" in stats["warning"]
+
+    # Without incumbent under JobFailed -> ERROR with detailed termination metadata
+    sol_no_incumbent = JobFailedWithIncumbentSolution(
+        solve_status="JobFailed",
+        stop_cause="Fail",
+        fail_status="Exception",
+        has_solution=False,
+    )
+    with patch("docplex.cp.model.CpoModel.solve", return_value=sol_no_incumbent):
+        res2, stats2 = solve_cplex_cp(N=3, edges=[(0, 1), (1, 2)], timeout=5.0, verbose=False)
+
+    assert stats2["status"] == "ERROR"
+    assert stats2["best_ub"] == -1
+    assert stats2["termination_reason"] == "fail_stop"
+    assert "Exception" in stats2["error"]
