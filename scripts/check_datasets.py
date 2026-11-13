@@ -13,14 +13,16 @@ import yaml
 import argparse
 from pathlib import Path
 
-def find_referenced_datasets(config_path):
-    """Extract all explicit dataset names referenced across all groups in the config."""
+def find_referenced_datasets(config_path, groups=None):
+    """Extract dataset names from all groups or a selected subset."""
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     referenced = set()
-    groups = config.get("groups", {})
-    for grp_name, grp_cfg in groups.items():
+    config_groups = config.get("groups", {})
+    selected_names = None if groups is None else set(groups)
+    selected = config_groups.items() if selected_names is None else ((name, cfg) for name, cfg in config_groups.items() if name in selected_names)
+    for grp_name, grp_cfg in selected:
         ds = grp_cfg.get("datasets")
         if isinstance(ds, list):
             for d in ds:
@@ -34,7 +36,7 @@ def find_referenced_datasets(config_path):
 
     return sorted(list(referenced))
 
-def validate_datasets(config_path="experiments/configs.yaml", dataset_dir="datasets"):
+def validate_datasets(config_path="experiments/configs.yaml", dataset_dir="datasets", groups=None, dataset_names=None):
     """
     Check all referenced datasets in config against dataset_dir.
     Returns:
@@ -45,7 +47,7 @@ def validate_datasets(config_path="experiments/configs.yaml", dataset_dir="datas
     if not os.path.isfile(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    referenced = find_referenced_datasets(config_path)
+    referenced = sorted(set(dataset_names)) if dataset_names is not None else find_referenced_datasets(config_path, groups=groups)
     missing = []
     found = []
 
