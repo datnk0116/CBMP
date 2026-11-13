@@ -25,6 +25,7 @@ from analysis.make_tables import (
     get_pairing_identity,
     strict_int,
     normalize_solver_alias,
+    aggregate_repetitions,
 )
 
 def setup_matplotlib():
@@ -213,17 +214,17 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
     """
     Bar chart showing median solve time per configuration.
     """
-    if group_name is not None and any("groups" in r for r in records):
+    if group_name is None:
+        ablation_recs = [r for r in records if is_optimal_status(r)]
+    else:
         ablation_recs = [
             r for r in records
-            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+            if group_name in r.get("groups", [])
             and is_optimal_status(r)
         ]
-        if not ablation_recs:
-            logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
-            return
-    else:
-        ablation_recs = [r for r in records if is_optimal_status(r)]
+    if not ablation_recs:
+        logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
+        return
 
     if not ablation_recs:
         return
@@ -262,17 +263,17 @@ def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", bas
     """
     Plots number of SAT iterations and time spent on the final UNSAT iteration.
     """
-    if group_name is not None and any("groups" in r for r in records):
+    if group_name is None:
+        ablation_recs = [r for r in records if is_optimal_status(r)]
+    else:
         ablation_recs = [
             r for r in records
-            if (group_name in r.get("groups", []) or (group_name == "ablation_small" and "ablation" in r.get("groups", [])))
+            if group_name in r.get("groups", [])
             and is_optimal_status(r)
         ]
-        if not ablation_recs:
-            logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
-            return
-    else:
-        ablation_recs = [r for r in records if is_optimal_status(r)]
+    if not ablation_recs:
+        logger.warning("No records found for group '%s'. Skipping %s.", group_name, base_filename)
+        return
 
     if not ablation_recs:
         return
@@ -337,12 +338,15 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
     family_recs = [r for r in records if (is_optimal_status(r) and get_canonical_key(r) is not None and get_canonical_key(r)[4] is not None)]
     if not family_recs:
         return
+    # Aggregate repeated runs within each canonical configuration and relabel seed
+    # before pairing variants; never let a later repetition overwrite an earlier one.
+    family_recs = aggregate_repetitions(family_recs)
 
     def get_var(rec):
-        cfg = rec.get("config", {})
-        rot = cfg.get("sb_rotation", False)
-        ref = cfg.get("sb_reflection", False)
-        heur = cfg.get("heuristic_ub", False)
+        key = get_canonical_key(rec)
+        if key is None or not isinstance(key[3], (tuple, list)) or len(key[3]) < 3:
+            return "other"
+        rot, ref, heur = key[3][:3]
         if not rot and not ref and not heur:
             return "none"
         elif rot and not ref and not heur:
@@ -363,7 +367,9 @@ def plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_famil
         var = get_var(r)
         if var == "other":
             continue
-        pairs_map.setdefault(base_key, {})[var] = r
+        if var in pairs_map.setdefault(base_key, {}):
+            raise ValueError(f"Duplicate aggregated family record for identity={base_key!r}, variant={var!r}")
+        pairs_map[base_key][var] = r
 
     variants = ["rotation", "rot_ref", "heur_ub", "all"]
     labels = ["Rotation", "Rot + Ref", "Heur UB", "All (SB+Heur)"]
