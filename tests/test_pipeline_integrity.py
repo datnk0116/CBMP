@@ -1259,3 +1259,122 @@ def test_a3_plot_group_filter_no_fallback_when_groups_missing(tmp_path, caplog):
     assert not os.path.exists(os.path.join(out_dir, "cactus_empty.png"))
     assert not os.path.exists(os.path.join(out_dir, "box_empty.png"))
     assert any("ablation_small" in msg or "solvers_small" in msg for msg in caplog.messages)
+
+
+def test_a4_ablation_plots_lock_canonical_identity_and_aggregate_reps(tmp_path):
+    """
+    A4: Ablation bar plots must:
+    - Refuse to mix multiple solvers, encodings, solving modes, EO strategies, or seeds
+      in a single group (raise ValueError).
+    - Aggregate repetitions per canonical_key so multi-rep datasets receive equal weight
+      matching tables.
+    - Not hardcode 'UNSAT' claims on final iteration titles when UNSAT proof is unverified.
+    """
+    import inspect
+    import numpy as np
+    from analysis.make_plots import (
+        plot_ablation_median_time,
+        plot_ablation_iterations_and_unsat,
+    )
+
+    out_dir = str(tmp_path / "figs")
+
+    # 1. Mixed solvers inside same group must raise ValueError
+    mixed_solver_recs = [
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.4, 0.6],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+        {
+            "dataset": "d2", "solver": "kissat", "encoding": "order", "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 2.0, "best_ub": 4, "num_iterations": 3, "per_iter_times": [0.5, 0.7, 0.8],
+            "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+        },
+    ]
+    with pytest.raises(ValueError):
+        plot_ablation_median_time(mixed_solver_recs, group_name="ablation_small", base_filename="mix_s_m", output_dirs=(out_dir,))
+    with pytest.raises(ValueError):
+        plot_ablation_iterations_and_unsat(mixed_solver_recs, group_name="ablation_small", base_filename="mix_s_i", output_dirs=(out_dir,))
+
+    # 2. Mixed encodings or relabel seeds must raise ValueError
+    mixed_enc_recs = [
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.4, 0.6],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "pairwise", "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.5, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.7, 0.8],
+            "config": {"sb_rotation": True, "sb_reflection": False, "heuristic_ub": False},
+        },
+    ]
+    with pytest.raises(ValueError):
+        plot_ablation_median_time(mixed_enc_recs, group_name="ablation_small", base_filename="mix_e_m", output_dirs=(out_dir,))
+
+    mixed_seed_recs = [
+        {
+            "dataset": "d1", "solver": "cadical195", "encoding": "order", "relabel_seed": 0, "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [0.4, 0.6],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+        {
+            "dataset": "d2", "solver": "cadical195", "encoding": "order", "relabel_seed": 1, "groups": ["ablation_small"],
+            "status": "OPTIMAL", "solve_time": 1.2, "best_ub": 4, "num_iterations": 2, "per_iter_times": [0.5, 0.7],
+            "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False},
+        },
+    ]
+    with pytest.raises(ValueError):
+        plot_ablation_iterations_and_unsat(mixed_seed_recs, group_name="ablation_small", base_filename="mix_seed_i", output_dirs=(out_dir,))
+
+    # 3. Multi-rep aggregation must give equal weight per canonical dataset:
+    # d1 has 3 reps with solve_time=10.0, d2 has 1 rep with solve_time=2.0.
+    # Unaggregated raw median([10, 10, 10, 2]) == 10.0; aggregated median([10.0, 2.0]) == 6.0.
+    captured_medians = []
+    captured_ax2_titles = []
+    orig_bar = None
+    import matplotlib.axes
+    orig_bar = matplotlib.axes.Axes.bar
+    orig_set_title = matplotlib.axes.Axes.set_title
+
+    def spy_bar(self, x, height, *args, **kwargs):
+        captured_medians.append(list(height))
+        return orig_bar(self, x, height, *args, **kwargs)
+
+    def spy_set_title(self, label, *args, **kwargs):
+        captured_ax2_titles.append(str(label))
+        return orig_set_title(self, label, *args, **kwargs)
+
+    rep_recs = [
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"], "repetition": 1,
+         "status": "OPTIMAL", "solve_time": 10.0, "best_ub": 3, "num_iterations": 4, "per_iter_times": [2.0, 4.0],
+         "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"], "repetition": 2,
+         "status": "OPTIMAL", "solve_time": 10.0, "best_ub": 3, "num_iterations": 4, "per_iter_times": [2.0, 4.0],
+         "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "d1", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"], "repetition": 3,
+         "status": "OPTIMAL", "solve_time": 10.0, "best_ub": 3, "num_iterations": 4, "per_iter_times": [2.0, 4.0],
+         "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+        {"dataset": "d2", "solver": "cadical195", "encoding": "order", "groups": ["ablation_small"], "repetition": 1,
+         "status": "OPTIMAL", "solve_time": 2.0, "best_ub": 3, "num_iterations": 2, "per_iter_times": [1.0, 1.0],
+         "config": {"sb_rotation": False, "sb_reflection": False, "heuristic_ub": False}},
+    ]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(matplotlib.axes.Axes, "bar", spy_bar)
+        mp.setattr(matplotlib.axes.Axes, "set_title", spy_set_title)
+        plot_ablation_median_time(rep_recs, group_name="ablation_small", base_filename="rep_med", output_dirs=(out_dir,))
+        plot_ablation_iterations_and_unsat(rep_recs, group_name="ablation_small", base_filename="rep_iter", output_dirs=(out_dir,))
+
+    # First bar call is plot_ablation_median_time; index 0 is variant "none"
+    assert np.isclose(captured_medians[0][0], 6.0)
+    # Second bar call (ax1 in iterations) -> mean([4, 2]) == 3.0 (not 3.5)
+    assert np.isclose(captured_medians[1][0], 3.0)
+    # Third bar call (ax2 in iterations) -> mean([4.0, 1.0]) == 2.5 (not 3.25)
+    assert np.isclose(captured_medians[2][0], 2.5)
+
+    # 4. Neither default signature title nor subplot title claims unproven "UNSAT"
+    sig = inspect.signature(plot_ablation_iterations_and_unsat)
+    assert "UNSAT" not in sig.parameters["title"].default
+    assert all("UNSAT" not in t for t in captured_ax2_titles)

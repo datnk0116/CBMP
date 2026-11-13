@@ -1188,6 +1188,8 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
         agg["effective_time"] = None
         agg["effective_time_source"] = None
         agg["encode_time"] = None
+        agg["num_iterations"] = None
+        agg["last_iter_time"] = None
         agg.pop("par2", None)
         agg["best_ub"] = -1
         agg["assignment"] = None
@@ -1312,6 +1314,31 @@ def aggregate_repetition_group(reps, default_timeout=600.0):
         agg["encode_time"] = float(np.median(encode_times))
     else:
         agg["encode_time"] = validate_solve_time(rep_chosen.get("encode_time"))
+
+    iter_counts = []
+    last_iter_times = []
+    for r in rep_pool:
+        it = r.get("num_iterations")
+        if isinstance(it, (int, float)) and not isinstance(it, bool) and math.isfinite(it) and it >= 0:
+            iter_counts.append(float(it))
+        t_last = validate_solve_time(r.get("last_iter_time"))
+        if t_last is None:
+            per_iter = r.get("per_iter_times")
+            if isinstance(per_iter, list) and per_iter:
+                t_last = validate_solve_time(per_iter[-1])
+        if t_last is not None:
+            last_iter_times.append(t_last)
+
+    if iter_counts:
+        med_iter = float(np.median(iter_counts))
+        agg["num_iterations"] = int(med_iter) if med_iter.is_integer() else med_iter
+    else:
+        agg["num_iterations"] = None
+
+    if last_iter_times:
+        agg["last_iter_time"] = float(np.median(last_iter_times))
+    else:
+        agg["last_iter_time"] = None
 
     par2_val = compute_repetition_par2(reps, default_timeout=default_timeout)
     if par2_val is not None:

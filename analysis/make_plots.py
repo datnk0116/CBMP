@@ -220,11 +220,56 @@ def plot_scatter_sb_vs_nosb(records, group_name="ablation_small", base_filename=
 
     save_fig(fig, base_filename, output_dirs=output_dirs)
 
+def _prepare_homogeneous_ablation_records(records, group_name, caller_name):
+    """
+    Filter ablation records by group, verify a single non-variant SAT configuration
+    (method, solver, encoding, relabel_seed, solving_mode, eo_strategy, seed)
+    across valid canonical records, and aggregate repetitions per canonical key.
+    """
+    ablation_recs = filter_records_by_group(records, group_name, caller_name=caller_name, require_optimal=True)
+    if not ablation_recs:
+        return []
+
+    canon_recs = []
+    non_var_configs = set()
+    for r in ablation_recs:
+        ck = get_canonical_key(r)
+        if ck is None:
+            continue
+        if ck[1] != "sat":
+            continue
+        pi = get_pairing_identity(r)
+        if pi is None:
+            continue
+        # Lock all non-variant axes: method, solver, encoding, solving_mode, eo_strategy, relabel_seed
+        non_var_configs.add((ck[1], pi[1], pi[2], pi[3], pi[4], pi[5]))
+        canon_recs.append(r)
+
+    if len(non_var_configs) > 1:
+        raise ValueError(
+            f"{caller_name}: group '{group_name}' mixes multiple non-variant configurations: "
+            f"{sorted(str(c) for c in non_var_configs)}"
+        )
+
+    if not canon_recs:
+        logger.warning("%s: no valid canonical SAT records found for group '%s'", caller_name, group_name)
+        return []
+
+    agg_recs = _ensure_aggregated_records(canon_recs, strict=False)
+    opt_agg = [r for r in agg_recs if is_optimal_status(r)]
+    if not opt_agg:
+        logger.warning("%s: no aggregated OPTIMAL records for group '%s'", caller_name, group_name)
+        return []
+    return opt_agg
+
+
 def plot_ablation_median_time(records, group_name="ablation_small", base_filename="ablation_median_time_small", title="Ablation Study: Median Solve Time Across Configurations (Small Graphs)", output_dirs=("results_v2/figures",)):
     """
     Bar chart showing median solve time per configuration.
     """
-    ablation_recs = filter_records_by_group(records, group_name, caller_name=f"plot_ablation_median_time({base_filename})", require_optimal=True)
+    ablation_recs = _prepare_homogeneous_ablation_records(
+        records, group_name, caller_name=f"plot_ablation_median_time({base_filename})"
+    )
     if not ablation_recs:
         return
 
@@ -232,7 +277,7 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
     times_by_var = {v: [] for v in order}
 
     for r in ablation_recs:
-        var = get_ablation_var_name(r.get("config", {}))
+        var = get_ablation_var_name(r)
         if var in times_by_var:
             t = extract_repetition_solve_time(r)
             if t is not None and t > 0:
@@ -258,11 +303,13 @@ def plot_ablation_median_time(records, group_name="ablation_small", base_filenam
 
     save_fig(fig, base_filename, output_dirs=output_dirs)
 
-def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)", output_dirs=("results_v2/figures",)):
+def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and Final Iteration Time (Small Graphs)", output_dirs=("results_v2/figures",)):
     """
     Plots number of SAT iterations and time spent on the final SAT iteration.
     """
-    ablation_recs = filter_records_by_group(records, group_name, caller_name=f"plot_ablation_iterations_and_unsat({base_filename})", require_optimal=True)
+    ablation_recs = _prepare_homogeneous_ablation_records(
+        records, group_name, caller_name=f"plot_ablation_iterations_and_unsat({base_filename})"
+    )
     if not ablation_recs:
         return
 
@@ -271,16 +318,18 @@ def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", bas
     unsat_times = {v: [] for v in order}
 
     for r in ablation_recs:
-        var = get_ablation_var_name(r.get("config", {}))
+        var = get_ablation_var_name(r)
         if var in iter_counts:
             it = r.get("num_iterations")
-            if isinstance(it, int) and not isinstance(it, bool) and it >= 0:
-                iter_counts[var].append(it)
-            per_iter = r.get("per_iter_times", [])
-            if isinstance(per_iter, list) and per_iter:
-                t_unsat = validate_solve_time(per_iter[-1])
-                if t_unsat is not None and t_unsat > 0:
-                    unsat_times[var].append(t_unsat)
+            if isinstance(it, (int, float)) and not isinstance(it, bool) and math.isfinite(it) and it >= 0:
+                iter_counts[var].append(float(it))
+            t_last = validate_solve_time(r.get("last_iter_time"))
+            if t_last is None:
+                per_iter = r.get("per_iter_times", [])
+                if isinstance(per_iter, list) and per_iter:
+                    t_last = validate_solve_time(per_iter[-1])
+            if t_last is not None and t_last > 0:
+                unsat_times[var].append(t_last)
 
     avg_iters = [float(np.mean(iter_counts[v])) if iter_counts[v] else 0.0 for v in order]
     avg_unsat = [float(np.mean(unsat_times[v])) if unsat_times[v] else 0.0 for v in order]
@@ -307,7 +356,7 @@ def plot_ablation_iterations_and_unsat(records, group_name="ablation_small", bas
             ax2.text(bar.get_x() + bar.get_width() / 2, val + (max_unsat * 0.02), f"{val:.4f}s", ha="center", va="bottom", fontsize=9, fontweight="bold")
         else:
             ax2.text(bar.get_x() + bar.get_width() / 2, max_unsat * 0.02, "-", ha="center", va="bottom", fontsize=9, fontweight="bold")
-    ax2.set_title("Mean Time of Final (UNSAT) Iteration", pad=8, fontweight="bold")
+    ax2.set_title("Mean Time of Final SAT Iteration", pad=8, fontweight="bold")
     ax2.set_ylabel("Time (seconds)")
     ax2.set_ylim([0, max_unsat * 1.2])
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
@@ -494,9 +543,9 @@ def main():
     plot_ablation_median_time(records, group_name="ablation_small", base_filename="ablation_median_time_small", title="Ablation Study: Median Solve Time Across Configurations (Small Graphs)", output_dirs=output_dirs)
     plot_ablation_median_time(records, group_name="ablation_medium", base_filename="ablation_median_time_medium", title="Ablation Study: Solve Time Across Configurations (662_bus_n60)", output_dirs=output_dirs)
 
-    # 4. Iterations & UNSAT time
-    plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)", output_dirs=output_dirs)
-    plot_ablation_iterations_and_unsat(records, group_name="ablation_medium", base_filename="ablation_iterations_and_unsat_medium", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (662_bus_n60)", output_dirs=output_dirs)
+    # 4. Iterations & final iteration time
+    plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and Final Iteration Time (Small Graphs)", output_dirs=output_dirs)
+    plot_ablation_iterations_and_unsat(records, group_name="ablation_medium", base_filename="ablation_iterations_and_unsat_medium", title="Impact of Symmetry Breaking on SAT Iterations and Final Iteration Time (662_bus_n60)", output_dirs=output_dirs)
 
     # 5. Ablation Family boxplots
     plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_family", output_dirs=output_dirs)
