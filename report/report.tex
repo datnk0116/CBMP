@@ -353,6 +353,9 @@ On medium graphs ($N = 60, 80$), solver performance diverges sharply. As shown i
 \label{fig:cactus_solvers}
 \end{figure}
 
+\subsection{Pairwise Encoding vs. Order Encoding}
+The repository provides two SAT formulations for CBMP: direct Pairwise Encoding and Order Encoding. Both configurations use CaDiCaL~195, the same incremental solving mode, symmetry-breaking settings, and heuristic upper-bound initialization on the configured small instances. A quantitative comparison must be generated from the corresponding raw experiment records; no runtime, CNF size, or optimality values are inferred from configuration alone. The analysis pipeline is responsible for exporting per-instance results, including solver status, best validated bandwidth, solving time, and encoding statistics when those fields are available. Missing measurements are reported as unavailable rather than estimated.
+
 \subsection{Method Comparison: SAT vs. CP-SAT vs. CPLEX}
 Table~\ref{tab:table_methods} compares our best SAT configuration (CaDiCaL~195 with rotation, reflection, and RCM upper bound) against OR-Tools CP-SAT and IBM CPLEX across 7 small and medium instances.
 
@@ -641,5 +644,19 @@ L.~Perron and V.~Furnon, ``OR-Tools,'' Google, version 9.15, \url{https://develo
 
 \bibitem{cplex2026}
 IBM Corp., ``IBM ILOG CPLEX Optimization Studio CPLEX User's Manual,'' version 22.2.0.0, \url{https://www.ibm.com/docs/en/icos}.\end{thebibliography}
+
+\section*{Data Availability}
+The source code and benchmark configuration for this study are publicly available at
+\url{https://github.com/datnk0116/CBMP}. The repository contains the CBMP implementations,
+SAT and exact-baseline modules, datasets, experiment configuration files, automated tests,
+and analysis scripts. The experiment runner writes raw JSONL records and environment metadata
+to the configured output directory (by default \texttt{results\_v2/}); this output directory
+is excluded from version control by the repository's ignore rules unless the user explicitly
+archives and commits the finalized results. Consequently, raw benchmark records are not claimed
+to be included in the public repository unless separately published with a referenced commit.
+Tables and figures can be regenerated from an available \texttt{runs.jsonl} file using
+\texttt{analysis/make\_tables.py} and \texttt{analysis/make\_plots.py}, after installing
+the dependencies listed in \texttt{requirements.txt}. Solver-dependent results may require
+the corresponding external solver and a valid license.
 
 \end{document}
