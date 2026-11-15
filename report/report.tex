@@ -41,7 +41,7 @@
 \author{Student: Lê Nam Huy\\24021516}
 % Abstract
 \begin{abstract}
-The Cyclic Bandwidth Minimization Problem (CBMP) is an NP-hard graph layout problem that seeks an injective assignment of graph vertices to positions arranged on a circle such that the maximum cyclic distance between adjacent vertices is minimized. In this paper, we propose a scalable Boolean Satisfiability (SAT) framework for CBMP. We formulate CBMP through an iterative feasibility search that combines Order Encoding for distance constraints, Commander Encoding for bijective permutation constraints, and dual symmetry-breaking techniques (rotation and reflection) designed to prune the $2N$-fold dihedral symmetry of the cyclic search space. In addition, an initial upper bound is seeded using the Reverse Cuthill--McKee (RCM) heuristic layout. We conduct an exhaustive experimental campaign across 16 benchmark instances derived from power transmission networks, comparing five CDCL SAT solvers (CaDiCaL~195, Glucose~4, MapleChrono, MiniSat~2.2, and Lingeling) against state-of-the-art baselines: Constraint Programming (OR-Tools CP-SAT) and Mixed-Integer Linear Programming (IBM ILOG CPLEX). Our findings show that rotation and reflection symmetry breaking achieve up to a $22.77\times$ speedup on medium boundary instances and reduce median runtime by over $59\%$ across randomized graph families. Furthermore, the best SAT configuration proves global optimality on instances where CP-SAT times out (e.g., \texttt{662\_bus\_n100}), while CPLEX is severely constrained by model size limits.
+The Cyclic Bandwidth Minimization Problem (CBMP) is a graph-layout optimization problem that assigns vertices to positions on a cycle while minimizing the maximum cyclic distance over all edges. This work presents an iterative SAT-based feasibility framework using Order Encoding for distance constraints, Commander Encoding for exactly-one constraints, and rotation/reflection symmetry breaking; a Reverse Cuthill--McKee (RCM) layout supplies an initial upper bound. The repository also contains implementations of Pairwise Encoding, OR-Tools CP-SAT, IBM CPLEX MIP, CPLEX CP Optimizer, and a Gurobi baseline, together with experiment and analysis scripts. Historical tables in this report summarize earlier exploratory runs, including reported speedups for symmetry breaking. However, the currently tracked raw-data archive contains only a four-instance pilot and does not contain the raw runs needed to reproduce all historical tables. Consequently, those quantitative comparisons are reported as provisional historical results rather than as a fully reproducible benchmark campaign. The report identifies the missing evidence and specifies the archive and validation procedure required for a complete evaluation.
 \end{abstract}
 
 \begin{keywords}
@@ -274,6 +274,20 @@ To minimize the number of iterations required to reach the optimum, we seed the 
 The RCM layout is evaluated via Eq.~(\ref{eq:cyclic_distance}) to obtain an initial bandwidth $\text{UB}_{\text{rcm}}$. If the heuristic permutation is valid, we set $\text{UB} = \text{UB}_{\text{rcm}}$; otherwise, the search defaults to the trivial bound $\text{UB} = \lfloor N/2 \rfloor + 1$.
 
 \section{Experiments}
+
+\paragraph{Evidence and reproducibility status.}
+The numerical tables and plots in this section are retained from earlier exploratory
+runs. At the current repository revision, the tracked raw archive contains only four
+pilot records (\texttt{14\_bus}, \texttt{30\_bus}, \texttt{494\_bus}, and
+\texttt{662\_bus}, with a 60-second limit). It does not contain the raw repetition
+records needed to independently regenerate the ablation, solver-family, phase, or
+large-instance tables below. These historical derived values must therefore be
+interpreted as provisional and are not claimed as independently reproduced by the
+currently tracked data. The final benchmark conclusions should be updated only after
+the complete raw JSONL, environment metadata, generated tables, and figures have been
+archived and validated. The exact-solver/encoding analysis also requires both
+\texttt{encodings} and \texttt{exact\_solvers} group records; the analysis script
+retains this group provenance when constructing matched comparisons.
 % =========================================================================
 
 \subsection{Experimental Setup}
@@ -607,7 +621,7 @@ Our empirical findings reveal clear trade-offs:
 
 In this work, we presented an exact SAT-based framework for the Cyclic Bandwidth Minimization Problem (CBMP). By integrating Order Encoding for circular distance bounds, Commander Encoding for bijective permutation constraints, and mathematically sound rotation and reflection symmetry breaking, our approach prunes the $2N$-fold dihedral symmetry inherent to circular layouts.
 
-We evaluated the framework on 16 benchmark graphs against state-of-the-art SAT, CP, and MIP solvers. Our findings establish that:
+The report preserves historical comparisons on 16 benchmark instances, but the tracked raw archive currently contains only the four-instance pilot described in the Experiments section. The following quantitative statements summarize those historical tables and should not be interpreted as independently reproduced by the current archive:
 \begin{enumerate}
     \item CaDiCaL~195 is the top-performing SAT engine for CBMP, solving medium and large instances where Glucose~4, MiniSat~2.2, and MapleChrono time out.
     \item Dual symmetry breaking achieves up to a $22.77\times$ speedup on medium boundary graphs and reduces median solve time across randomized graph families by more than $59\%$.
