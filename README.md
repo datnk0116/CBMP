@@ -63,8 +63,8 @@ CBMP/
 │   ├── calibrate.py        # Thử nghiệm hiệu chuẩn thời gian và tài nguyên
 │   └── make_subgraphs.py   # Tạo các đồ thị con cảm ứng liên thông
 ├── tests/                  # Bộ test tự động (brute force, baselines, mocked CP/Gurobi, encodings)
-├── results/                # Kết quả chạy thực nghiệm gốc
-├── results_v2/             # Kết quả tạm thời khi chạy local (mặc định bị loại khỏi Git)
+├── results/                # Kết quả và archive thực nghiệm đã chọn lọc
+├── results_v2/             # Kết quả chạy tạm; mặc định bị loại khỏi Git
 ├── report/                 # Báo cáo khoa học LaTeX & hình ảnh
 ├── requirements.txt
 ├── pytest.ini
@@ -118,7 +118,7 @@ Nếu thiếu file (ví dụ chưa có `14_bus.mtx`), script sẽ báo lỗi rõ
 
 ## 5. Chạy thực nghiệm (Running Experiments)
 
-File cấu hình tại `experiments/configs.yaml` định nghĩa nhiều nhóm thực nghiệm (SAT solver comparison, exact-solver comparison, encoding comparison, ablation và các nhóm mở rộng). Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình. Mặc định toàn bộ kết quả được ghi vào thư mục `results_v2/` (đã được cấu hình trong `.gitignore`). Bạn có thể tùy chỉnh thư mục xuất qua cờ `--output-dir`.
+File cấu hình tại `experiments/configs.yaml` định nghĩa nhiều nhóm thực nghiệm (SAT solver comparison, exact-solver comparison, encoding comparison, ablation và các nhóm mở rộng). Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình. Mặc định toàn bộ kết quả được ghi vào thư mục `results_v2/` (được cấu hình trong `.gitignore`, không tự động commit). Bạn có thể tùy chỉnh thư mục xuất qua cờ `--output-dir`.
 
 ### Xem trước kế hoạch chạy (Dry Run)
 ```bash
@@ -180,7 +180,7 @@ python experiments/run_experiments.py --group all --record-metadata
 > - `--retry-failed`: Mặc định `--resume` bỏ qua mọi record đã có, kể cả timeout/interrupted. Khi thêm `--retry-failed`, runner giữ lại kết quả `OPTIMAL` hợp lệ, `INFEASIBLE`, `SIZE_LIMIT`, `UNAVAILABLE`, `LICENSE_ERROR` và `FEASIBLE` có incumbent hợp lệ; runner chạy lại `TIMEOUT`, `MEMOUT`, `ERROR`, `INTERRUPTED`, `UNKNOWN`, `FEASIBLE` thiếu incumbent hợp lệ và record có `validation_error`.
 
 > [!NOTE]
-> Mặc định runner ghi dữ liệu vào `results_v2/` và không can thiệp vào `results/`.
+> Mặc định runner ghi dữ liệu vào `results_v2/` và không can thiệp vào `results/`. Thư mục `results_v2/` là vùng làm việc tạm, không phải official archive.
 > Sử dụng cờ `--record-metadata` khi chạy runner để tự động lưu git commit hash, timeout, và đường dẫn cấu hình vào `results_v2/env.json` cũng như đầu file `results_v2/runs.jsonl`.
 
 ---
@@ -217,6 +217,8 @@ python analysis/make_plots.py results_v2/runs.jsonl --output-dir results_v2/figu
 ---
 
 ## 7. Hoàn thiện kết quả (Finalize)
+
+**Trạng thái dữ liệu tại branch hiện tại (15/11/2026):** `results_v2/` đang có 44 records (24 OPTIMAL, 12 TIMEOUT, 4 UNAVAILABLE, 3 SIZE_LIMIT, 1 FEASIBLE), thuộc các nhóm `encodings`, `exact_solvers` và `solvers_medium`. Metadata ghi nhận commit nguồn `41271c4119a306ace4b42e734093ea773ab30bc2-dirty`; do đó đây là dữ liệu từ working tree dirty, chưa đủ điều kiện gắn nhãn reproducible/final. Không chuyển nguyên trạng thành `results/final/`. Cần tái chạy hoặc xác minh snapshot mã nguồn dirty trước khi phát hành official archive.
 
 Khi toàn bộ thực nghiệm sạch trong `results_v2/` đã hoàn thành và được kiểm chứng hợp lệ:
 1. Lưu trữ kết quả pilot cũ (chạy trên 4 đồ thị: `14_bus`, `30_bus`, `494_bus`, `662_bus`, timeout 60s, không ghi `git_commit`):
