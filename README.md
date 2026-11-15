@@ -220,23 +220,22 @@ python analysis/make_plots.py results_v2/runs.jsonl --output-dir results_v2/figu
 
 **Trạng thái dữ liệu tại branch hiện tại (15/11/2026):** `results_v2/` đang có 44 records (24 OPTIMAL, 12 TIMEOUT, 4 UNAVAILABLE, 3 SIZE_LIMIT, 1 FEASIBLE), thuộc các nhóm `encodings`, `exact_solvers` và `solvers_medium`. Metadata ghi nhận commit nguồn `41271c4119a306ace4b42e734093ea773ab30bc2-dirty`; do đó đây là dữ liệu từ working tree dirty, chưa đủ điều kiện gắn nhãn reproducible/final. Không chuyển nguyên trạng thành `results/final/`. Cần tái chạy hoặc xác minh snapshot mã nguồn dirty trước khi phát hành official archive.
 
-Khi toàn bộ thực nghiệm sạch trong `results_v2/` đã hoàn thành và được kiểm chứng hợp lệ:
-1. Lưu trữ kết quả pilot cũ (chạy trên 4 đồ thị: `14_bus`, `30_bus`, `494_bus`, `662_bus`, timeout 60s, không ghi `git_commit`):
-   - Để tránh lồng thư mục (do `results/` cũ đang chứa thư mục con `results/pilot/` bên trong):
-     ```bash
-     # Nếu results/pilot tồn tại, tách riêng thư mục pilot trước:
-     git mv results/pilot results_pilot
-
-     # Sau đó di chuyển phần còn lại (bảng biểu, đồ thị cũ):
-     git mv results results_pilot_tables
-     ```
-     *(Ghi chú: Nếu di chuyển trực tiếp cả thư mục thì dùng `git mv results results_pilot_old`, chứa results/pilot/ lồng bên trong).*
-2. Sao chép kết quả chính thức từ `results_v2/` sang `results/` và commit:
+Chỉ phát hành official archive sau khi tất cả điều kiện sau được thỏa mãn:
+1. Chốt và commit mã nguồn sạch; không chạy benchmark khi working tree dirty.
+2. Chạy các nhóm còn thiếu hoặc retry các trạng thái tạm thời theo đúng cấu hình, trên cùng commit sạch.
+3. Lưu metadata mới, trong đó `git_commit` phải trùng HEAD và `git_dirty` phải là `false`.
+4. Kiểm tra từng JSONL record, independent solution validation, matched pairs, timeout/license statuses và đối chiếu bảng/hình.
+5. Chỉ sau khi các kiểm tra trên đạt, sao chép raw runs và metadata vào `results/final/`, sinh lại tables/figures từ đúng archive, rồi commit:
    ```bash
-   cp -r results_v2 results
-   git add results_pilot results_pilot_tables results
-   git commit -m "chore: archive pilot results and commit finalized experiment results"
+   mkdir -p results/final
+   cp results_v2/runs.jsonl results/final/runs.jsonl
+   cp results_v2/env.json results/final/env.json
+   python analysis/make_tables.py results/final/runs.jsonl --output-dir results/final/tables
+   python analysis/make_plots.py results/final/runs.jsonl --output-dir results/final/figures
+   git add results/final
+   git commit -m "data: archive validated final CBMP experiments"
    ```
+Không dùng các lệnh trên với batch hiện tại vì metadata của nó ghi `git_dirty=true`.
 
 ---
 
