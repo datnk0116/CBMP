@@ -1,4 +1,4 @@
-# Pinned to environment configuration matching results/env.json
+# Dependency constraints validated in the current macOS arm64 environment (Python 3.12.16).
 python-sat==1.9.dev21
 scipy==1.18.1
 numpy>=2.0,<2.5
