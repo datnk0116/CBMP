@@ -1,7 +1,15 @@
-__pycache__/*
-.venv/*
-.vscode/*
-ref/*
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+# Virtual environments and local IDE state
+.venv/
+CBMP/
+.vscode/
+
+# LaTeX build products
 *.aux
 *.log
 *.out
@@ -11,14 +19,15 @@ ref/*
 *.synctex.gz
 *.pdf
 
-# python / macOS
-__pycache__/
-*.pyc
-.pytest_cache/
-.DS_Store
+# Local references and generated experiment outputs
+ref/
+results_v2/
+results/smoke/
+calibration/
+pilot_ablation/
+analysis/tables/
+analysis/figures/
+*.bak
 
-# environments
-CBMP/
-.venv/
-
-
+# Keep the curated official archive trackable.
+# Do not ignore results/final: raw runs, metadata, tables and figures belong there.
