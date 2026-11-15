@@ -2178,7 +2178,11 @@ def make_table_encoding_comparison(
             if not is_valid_record_dict(candidate):
                 continue
             candidate_groups = candidate.get("groups", record.get("groups", []))
-            if "encodings" not in candidate_groups:
+            # The exact_solvers group deliberately includes both SAT encodings
+            # alongside CP-SAT/CPLEX/Gurobi. Include those SAT rows here so the
+            # encoding comparison is complete even when a task was not also
+            # scheduled by the standalone encodings group.
+            if not {"encodings", "exact_solvers"}.intersection(candidate_groups):
                 continue
             if _encoding_comparison_identity(candidate) is not None:
                 raw_encoding_records.append(candidate)
