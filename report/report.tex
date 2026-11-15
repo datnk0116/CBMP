@@ -680,9 +680,11 @@ The medium SAT and exact-baseline groups can be run with
 Regenerate tables and plots from the resulting \texttt{runs.jsonl} using
 \texttt{analysis/make\_tables.py} and \texttt{analysis/make\_plots.py}.
 The default \texttt{results\_v2/} output is git-ignored; after checking JSONL integrity,
-solver statuses, and independent solution validation, archive the final \texttt{runs.jsonl},
-\texttt{env.json}, generated tables, and figures in a tracked results location before
-claiming those raw data are publicly available.
+solver statuses, and independent solution validation, archive the final \texttt{runs.jsonl}, \texttt{env.json}, generated tables, and figures in
+\texttt{results/final/} after checking JSONL integrity, solver statuses, and independent
+solution validation. Temporary run directories remain ignored; the final archive path is
+explicitly allowed by the repository ignore rules so the validated artifacts can be committed.
+
 
 The plotting pipeline uses CNSPlots (\texttt{cnsplots>=0.8.0}) for the encoding
 comparison when both encodings have valid OPTIMAL records. No such encoding records or

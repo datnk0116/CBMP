@@ -30,3 +30,7 @@ results/smoke/
 /pilot_ablation/
 analysis/tables/
 analysis/figures/
+
+# Allow only explicitly archived, validated final experiment outputs.
+!results/final/
+!results/final/figures/*.pdf
