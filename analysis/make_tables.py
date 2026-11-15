@@ -1972,11 +1972,13 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
     if not method_recs:
         return
 
-    methods = ["sat_best", "cpsat", "cplex"]
+    methods = ["sat_best", "cpsat", "cplex", "cplex_cp", "gurobi"]
 
     sat_candidates = {}
     cpsat_candidates = {}
     cplex_candidates = {}
+    cplex_cp_candidates = {}
+    gurobi_candidates = {}
     meta = {}
 
     for r in method_recs:
@@ -1987,7 +1989,11 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
 
         if sol == "cp_sat" or m in ("cpsat", "cp_sat"):
             cpsat_candidates.setdefault(ds, []).append(r)
-        elif sol == "cplex" or m == "cplex":
+        elif sol == "cplex_cp" or m == "cplex_cp":
+            cplex_cp_candidates.setdefault(ds, []).append(r)
+        elif sol == "gurobi" or m == "gurobi":
+            gurobi_candidates.setdefault(ds, []).append(r)
+        elif sol == "cplex" or m in ("cplex", "cplex_mip"):
             cplex_candidates.setdefault(ds, []).append(r)
         elif (m == "sat" or sol in ("cadical195", "glucose4", "kissat", "minisat22", "maplechrono", "lingeling")) and m not in ("cpsat", "cp_sat", "cplex", "cplex_cp", "gurobi") and sol not in ("cp_sat", "cplex", "cplex_cp", "gurobi"):
             sat_candidates.setdefault(ds, []).append(r)
@@ -1996,7 +2002,9 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
 
     data_by_ds = {}
     all_ds = sorted(
-        list(set(list(sat_candidates.keys()) + list(cpsat_candidates.keys()) + list(cplex_candidates.keys()))),
+        list(set(list(sat_candidates.keys()) + list(cpsat_candidates.keys()) +
+                 list(cplex_candidates.keys()) + list(cplex_cp_candidates.keys()) +
+                 list(gurobi_candidates.keys()))),
         key=lambda d: (meta.get(d, (0, 0))[0], d)
     )
 
@@ -2087,7 +2095,7 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
             if cp_aggs:
                 data_by_ds[ds]["cpsat"] = sorted(cp_aggs, key=_sat_rank)[0]
 
-        # 3. Select cplex
+        # 3. Select CPLEX MIP
         cand_cpl = cplex_candidates.get(ds, [])
         if cand_cpl:
             cpl_by_config = {}
@@ -2112,6 +2120,30 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
                         cpl_aggs.append(agg)
             if cpl_aggs:
                 data_by_ds[ds]["cplex"] = sorted(cpl_aggs, key=_sat_rank)[0]
+
+        # 4. Select CPLEX CP and Gurobi independently.
+        for method_name, candidates in (
+            ("cplex_cp", cplex_cp_candidates),
+            ("gurobi", gurobi_candidates),
+        ):
+            selected = []
+            grouped = {}
+            for record in candidates.get(ds, []):
+                key = get_canonical_key(record)
+                if key is not None:
+                    grouped.setdefault(key, []).append(record)
+            for _, cfg_recs in sorted(grouped.items(), key=lambda item: str(item[0])):
+                ordered = sorted(cfg_recs, key=lambda x: (
+                    get_repetition_identity(x) or 1,
+                    validate_solve_time(x.get("solve_time")) or float("inf"),
+                    validate_solve_time(x.get("wall_time")) or float("inf"),
+                    str(x),
+                ))
+                agg = ordered[0] if len(ordered) == 1 else aggregate_repetition_group(ordered)
+                if agg is not None:
+                    selected.append(agg)
+            if selected:
+                data_by_ds[ds][method_name] = sorted(selected, key=_sat_rank)[0]
 
     ds_sorted = all_ds
 
@@ -2161,7 +2193,11 @@ def make_table_methods(records, output_dirs=("results_v2/tables",)):
     ]
 
     note = f"SL = Size Limit (vượt giới hạn CPLEX Community Edition, loại khỏi PAR2). Speedup chỉ tính trên instance mà baseline >= 0.1s ({n_used}/{n_total}). Các method chưa giải hết các instance này ghi '-'."
-    export_table(df_display, summary, "Comparison of Methods: SAT vs CP-SAT vs CPLEX", "table_methods", output_dirs=output_dirs, note=note, df_raw=df_raw)
+    export_table(
+        df_display, summary,
+        "Comparison of Methods: SAT vs CP-SAT vs CPLEX MIP vs CPLEX CP vs Gurobi",
+        "table_methods", output_dirs=output_dirs, note=note, df_raw=df_raw
+    )
     return df_display, summary, df_raw
 
 def make_table_ablation_family(records, base_filename="table_ablation_family", output_dirs=("results_v2/tables",)):
