@@ -42,11 +42,13 @@
 % Abstract
 \begin{abstract}
 The Cyclic Bandwidth Minimization Problem (CBMP) is an NP-hard graph layout problem that seeks an injective assignment of graph vertices to positions arranged on a circle such that the maximum cyclic distance between adjacent vertices is minimized. In this paper, we propose a scalable Boolean Satisfiability (SAT) framework for CBMP. We formulate CBMP through an iterative feasibility search that combines Order Encoding for distance constraints, Commander Encoding for bijective permutation constraints, and dual symmetry-breaking techniques (rotation and reflection) designed to prune the $2N$-fold dihedral symmetry of the cyclic search space. In addition, an initial upper bound is seeded using the Reverse Cuthill--McKee (RCM) heuristic layout. We conduct an exhaustive experimental campaign across 16 benchmark instances derived from power transmission networks, comparing five CDCL SAT solvers (CaDiCaL~195, Glucose~4, MapleChrono, MiniSat~2.2, and Lingeling) against state-of-the-art baselines: Constraint Programming (OR-Tools CP-SAT) and Mixed-Integer Linear Programming (IBM ILOG CPLEX). Our findings show that rotation and reflection symmetry breaking achieve up to a $22.77\times$ speedup on medium boundary instances and reduce median runtime by over $59\%$ across randomized graph families. Furthermore, the best SAT configuration proves global optimality on instances where CP-SAT times out (e.g., \texttt{662\_bus\_n100}), while CPLEX is severely constrained by model size limits.
-
-\maketitle
+\end{abstract}
 
 \begin{keywords}
 Cyclic Bandwidth Minimization \sep Propositional Satisfiability \sep Order Encoding \sep Commander Encoding \sep Symmetry Breaking \sep Constraint Programming
+\end{keywords}
+
+\maketitle
 
 % Main text
 \section{Method}
