@@ -58,15 +58,60 @@ def save_fig(fig, base_filename, output_dirs=("results_v2/figures",)):
     plt.close(fig)
 
 def plot_encoding_comparison(records, output_dirs=("results_v2/figures",)):
-    """Create a CNSPlots comparison of measured OPTIMAL runtimes for both encodings."""
+    """
+    Draw CNSPlots boxplots only when both encodings have validated OPTIMAL samples.
+
+    The figure annotation reports recorded status counts for each encoding, so the
+    OPTIMAL-only runtime view does not conceal FEASIBLE, TIMEOUT, or solver errors.
+    """
     selected = []
+    status_names = (
+        "OPTIMAL", "FEASIBLE", "TIMEOUT", "INTERRUPTED", "INFEASIBLE",
+        "SIZE_LIMIT", "UNAVAILABLE", "LICENSE_ERROR", "ERROR", "NUMERIC_ERROR",
+        "UNKNOWN", "PARTIAL",
+    )
+    status_counts = {
+        encoding: {status: 0 for status in status_names}
+        for encoding in ("order", "pairwise")
+    }
     for record in records:
-        groups = record.get("groups", [])
-        if "encodings" not in groups or not is_optimal_status(record):
+        if "encodings" not in record.get("groups", []):
             continue
-        config = record.get("config", {})
-        encoding = str(config.get("encoding") or record.get("encoding") or "").lower()
+        canon = get_canonical_key(record)
+        if canon is None or canon[1] != "sat":
+            continue
+        config = record.get("config", {}) if isinstance(record.get("config"), dict) else {}
+        encoding = str(config.get("encoding") or record.get("encoding") or "").strip().lower()
         if encoding not in ("order", "pairwise"):
+            continue
+
+        status = "ERROR" if record.get("validation_error") else (normalize_status(record.get("status")) or "UNKNOWN")
+        count_fields = {
+            "OPTIMAL": "n_optimal",
+            "FEASIBLE": "n_feasible",
+            "TIMEOUT": "n_timeout",
+            "INTERRUPTED": "n_interrupted",
+            "INFEASIBLE": "n_infeasible",
+            "SIZE_LIMIT": "n_size_limit",
+            "UNAVAILABLE": "n_unavailable",
+            "LICENSE_ERROR": "n_license_error",
+            "ERROR": "n_error",
+            "NUMERIC_ERROR": "n_error",
+            "UNKNOWN": "n_unknown",
+        }
+        # Aggregated records expose the actual population counters; raw records count as one.
+        explicit_counts = False
+        for category, field in count_fields.items():
+            value = strict_int(record.get(field), min_val=0)
+            if value is not None:
+                status_counts[encoding][category] += value
+                explicit_counts = True
+        if not explicit_counts:
+            status_counts[encoding][status] += 1
+
+        if status != "OPTIMAL" or record.get("validation_error"):
+            continue
+        if validate_best_ub(record.get("best_ub")) is None:
             continue
         runtime = extract_repetition_solve_time(record)
         if runtime is None or not math.isfinite(runtime) or runtime <= 0:
@@ -76,8 +121,25 @@ def plot_encoding_comparison(records, output_dirs=("results_v2/figures",)):
             "encoding": encoding,
             "solve_time": float(runtime),
         })
-    if not selected:
-        logger.warning("No valid OPTIMAL encoding records; skipping CNSPlots encoding comparison.")
+
+    samples = {
+        encoding: sum(1 for row in selected if row["encoding"] == encoding)
+        for encoding in ("order", "pairwise")
+    }
+    coverage = "; ".join(
+        f"{encoding}: " + ", ".join(
+            f"{status}={count}"
+            for status, count in status_counts[encoding].items()
+            if count > 0
+        )
+        for encoding in ("order", "pairwise")
+    )
+    if not all(samples[encoding] > 0 for encoding in ("order", "pairwise")):
+        logger.warning(
+            "Skipping CNSPlots encoding comparison: at least one validated OPTIMAL sample "
+            "is required for both encodings. Samples=%s; recorded statuses: %s",
+            samples, coverage or "no records",
+        )
         return
 
     df = pd.DataFrame(selected)
@@ -86,14 +148,19 @@ def plot_encoding_comparison(records, output_dirs=("results_v2/figures",)):
         cns.setup_matplotlib()
         fig, ax = plt.subplots(figsize=(8, 5))
         cns.boxplot(data=df, x="encoding", y="solve_time", hue="encoding", ax=ax)
-        ax.set_title("Pairwise vs. Order Encoding (OPTIMAL runs only)")
+        ax.set_title("Pairwise vs. Order Encoding (validated OPTIMAL runs)")
         ax.set_xlabel("SAT encoding")
         ax.set_ylabel("Solve time (seconds)")
-        fig.tight_layout()
+        ax.text(
+            0.0, -0.24,
+            f"OPTIMAL samples: order={samples['order']}, pairwise={samples['pairwise']}\n"
+            f"All recorded statuses: {coverage}",
+            transform=ax.transAxes, ha="left", va="top", fontsize=8,
+        )
+        fig.tight_layout(rect=(0, 0.15, 1, 1))
         fig.savefig(os.path.join(out_dir, "cnsplots_encoding_comparison.png"), dpi=300, bbox_inches="tight")
         fig.savefig(os.path.join(out_dir, "cnsplots_encoding_comparison.pdf"), bbox_inches="tight")
         plt.close(fig)
-
 
 def get_ablation_var_name(cfg):
     rot = cfg.get("sb_rotation", False)

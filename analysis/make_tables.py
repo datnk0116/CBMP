@@ -1966,6 +1966,220 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
     export_table(df_display, summary, title, base_filename, output_dirs=output_dirs, note=note, df_raw=df_raw)
     return df_display, summary, df_raw
 
+
+def _encoding_comparison_identity(record):
+    """Return encoding and controlled-configuration identity for a SAT record."""
+    canon = get_canonical_key(record)
+    if canon is None:
+        return None
+    dataset, method, solver, flags, seed = canon
+    if method != "sat" or not isinstance(flags, (tuple, list)):
+        return None
+    if len(flags) == 6:
+        rot, ref, heur, encoding, solving_mode, eo_strategy = flags
+    elif len(flags) == 3:
+        rot, ref, heur = flags
+        encoding, solving_mode, eo_strategy = "order", "incremental", "commander"
+    else:
+        return None
+    encoding = str(encoding).strip().lower()
+    if encoding not in ("order", "pairwise"):
+        return None
+    controls = (
+        dataset, solver, seed, bool(rot), bool(ref), bool(heur),
+        str(solving_mode), str(eo_strategy),
+    )
+    return encoding, controls
+
+
+def make_table_encoding_comparison(
+    records,
+    base_filename="table_encoding_comparison",
+    output_dirs=("results_v2/tables",),
+):
+    """
+    Export per-record status coverage and a strict Pairwise-vs-Order paired summary.
+    Runtime ratios require matched OPTIMAL records with equal validated bandwidths.
+    """
+    if isinstance(output_dirs, str):
+        output_dirs = (output_dirs,)
+
+    selected = []
+    by_control = {}
+    for record in records:
+        if not is_valid_record_dict(record) or "encodings" not in record.get("groups", []):
+            continue
+        identity = _encoding_comparison_identity(record)
+        if identity is None:
+            continue
+        encoding, controls = identity
+        status = "ERROR" if record.get("validation_error") else (normalize_status(record.get("status")) or "UNKNOWN")
+        ub = validate_best_ub(record.get("best_ub"))
+        if status in ("ERROR", "NUMERIC_ERROR", "UNKNOWN", "UNAVAILABLE",
+                      "LICENSE_ERROR", "SIZE_LIMIT", "INFEASIBLE"):
+            ub = None
+
+        def count_field(field, default):
+            value = strict_int(record.get(field), min_val=0)
+            return default if value is None else value
+
+        selected.append({
+            "dataset": controls[0],
+            "encoding": encoding,
+            "solver": controls[1],
+            "relabel_seed": controls[2],
+            "sb_rotation": controls[3],
+            "sb_reflection": controls[4],
+            "heuristic_ub": controls[5],
+            "solving_mode": controls[6],
+            "eo_strategy": controls[7],
+            "status": status,
+            "best_validated_ub": ub,
+            "solve_time_s": validate_solve_time(extract_repetition_solve_time(record)),
+            "wall_time_s": validate_solve_time(record.get("wall_time")),
+            "encode_time_s": validate_solve_time(record.get("encode_time")),
+            "num_vars": strict_int(record.get("num_vars"), min_val=0),
+            "num_clauses": strict_int(record.get("num_clauses"), min_val=0),
+            "n_total": count_field("n_total", 1),
+            "n_optimal": count_field("n_optimal", int(status == "OPTIMAL")),
+            "n_feasible": count_field("n_feasible", int(status == "FEASIBLE")),
+            "n_timeout": count_field("n_timeout", int(status == "TIMEOUT")),
+            "n_interrupted": count_field("n_interrupted", int(status == "INTERRUPTED")),
+            "n_infeasible": count_field("n_infeasible", int(status == "INFEASIBLE")),
+            "n_error": count_field("n_error", int(status in ("ERROR", "NUMERIC_ERROR"))),
+            "n_size_limit": count_field("n_size_limit", int(status == "SIZE_LIMIT")),
+            "n_unavailable": count_field("n_unavailable", int(status == "UNAVAILABLE")),
+            "n_license_error": count_field("n_license_error", int(status == "LICENSE_ERROR")),
+            "n_unknown": count_field("n_unknown", int(status == "UNKNOWN")),
+        })
+
+        enc_map = by_control.setdefault(controls, {})
+        if encoding in enc_map:
+            enc_map[encoding] = pick_better_record(enc_map[encoding], record, strict=True)
+        else:
+            enc_map[encoding] = record
+
+    if not selected:
+        logger.warning(
+            "No raw records in experiment group 'encodings'; no quantitative encoding tables generated."
+        )
+        return None
+
+    detail_columns = [
+        "dataset", "encoding", "solver", "relabel_seed",
+        "sb_rotation", "sb_reflection", "heuristic_ub", "solving_mode", "eo_strategy",
+        "status", "best_validated_ub", "solve_time_s", "wall_time_s", "encode_time_s",
+        "num_vars", "num_clauses", "n_total", "n_optimal", "n_feasible",
+        "n_timeout", "n_interrupted", "n_infeasible", "n_error",
+        "n_size_limit", "n_unavailable", "n_license_error", "n_unknown",
+    ]
+    detail_df = pd.DataFrame(selected, columns=detail_columns)
+    detail_df = detail_df.sort_values(
+        ["dataset", "encoding", "solver", "relabel_seed"],
+        key=lambda col: col.map(lambda value: "" if value is None or pd.isna(value) else str(value)),
+        kind="stable",
+    )
+    detail_df.index = detail_df.apply(
+        lambda row: (
+            f"{row['dataset']} / {row['encoding']} / {row['solver']} / "
+            f"seed={row['relabel_seed']} / SB={row['sb_rotation']},{row['sb_reflection']} / "
+            f"RCM={row['heuristic_ub']}"
+        ),
+        axis=1,
+    )
+    detail_df.index.name = "dataset / encoding / configuration"
+
+    pair_acc = {}
+    for controls, enc_map in by_control.items():
+        dataset = controls[0]
+        acc = pair_acc.setdefault(dataset, {
+            "n_control_configs": 0,
+            "n_both_encodings": 0,
+            "n_paired_optimal_runtime": 0,
+            "n_timeout_pairs": 0,
+            "n_feasible_pairs": 0,
+            "n_other_nonoptimal_pairs": 0,
+            "n_optimal_pairs_missing_timing": 0,
+            "n_unmatched_control_configs": 0,
+            "n_equal_optimum_pairs": 0,
+            "n_mismatched_optimum_pairs": 0,
+            "order_times": [],
+            "pairwise_times": [],
+            "runtime_ratios_pairwise_over_order": [],
+        })
+        acc["n_control_configs"] += 1
+        if "order" not in enc_map or "pairwise" not in enc_map:
+            acc["n_unmatched_control_configs"] += 1
+            continue
+
+        acc["n_both_encodings"] += 1
+        order_rec, pairwise_rec = enc_map["order"], enc_map["pairwise"]
+        order_status = "ERROR" if order_rec.get("validation_error") else (normalize_status(order_rec.get("status")) or "UNKNOWN")
+        pairwise_status = "ERROR" if pairwise_rec.get("validation_error") else (normalize_status(pairwise_rec.get("status")) or "UNKNOWN")
+
+        if "TIMEOUT" in (order_status, pairwise_status):
+            acc["n_timeout_pairs"] += 1
+        if "FEASIBLE" in (order_status, pairwise_status):
+            acc["n_feasible_pairs"] += 1
+
+        if order_status == "OPTIMAL" and pairwise_status == "OPTIMAL":
+            order_ub = validate_best_ub(order_rec.get("best_ub"))
+            pairwise_ub = validate_best_ub(pairwise_rec.get("best_ub"))
+            if order_ub is None or pairwise_ub is None:
+                acc["n_other_nonoptimal_pairs"] += 1
+            elif order_ub != pairwise_ub:
+                acc["n_mismatched_optimum_pairs"] += 1
+            else:
+                acc["n_equal_optimum_pairs"] += 1
+                order_time = validate_solve_time(extract_repetition_solve_time(order_rec))
+                pairwise_time = validate_solve_time(extract_repetition_solve_time(pairwise_rec))
+                if order_time is None or pairwise_time is None or order_time <= 0 or pairwise_time <= 0:
+                    acc["n_optimal_pairs_missing_timing"] += 1
+                else:
+                    acc["n_paired_optimal_runtime"] += 1
+                    acc["order_times"].append(order_time)
+                    acc["pairwise_times"].append(pairwise_time)
+                    acc["runtime_ratios_pairwise_over_order"].append(pairwise_time / order_time)
+        elif "TIMEOUT" not in (order_status, pairwise_status) and "FEASIBLE" not in (order_status, pairwise_status):
+            acc["n_other_nonoptimal_pairs"] += 1
+
+    pair_rows = []
+    for dataset, acc in sorted(pair_acc.items()):
+        order_times = acc.pop("order_times")
+        pairwise_times = acc.pop("pairwise_times")
+        ratios = acc.pop("runtime_ratios_pairwise_over_order")
+        pair_rows.append({
+            "dataset": dataset,
+            **acc,
+            "median_order_s_paired_optimal": float(np.median(order_times)) if order_times else None,
+            "median_pairwise_s_paired_optimal": float(np.median(pairwise_times)) if pairwise_times else None,
+            "median_pairwise_over_order": float(np.median(ratios)) if ratios else None,
+        })
+
+    note = (
+        "Runtime ratios use only matched OPTIMAL pairs with equal validated bandwidths "
+        "and positive finite solve times. Other statuses and unmatched configurations "
+        "are counted explicitly and are not treated as solved pairs."
+    )
+    export_table(
+        detail_df, [],
+        "Pairwise vs Order Encoding: Per-instance results",
+        base_filename, output_dirs=output_dirs, note=note,
+    )
+    pair_df = pd.DataFrame(pair_rows).set_index("dataset")
+    export_table(
+        pair_df, [],
+        "Pairwise vs Order Encoding: Matched-instance summary",
+        f"{base_filename}_pairs", output_dirs=output_dirs, note=note,
+    )
+    print(
+        f"Encoding tables saved: {base_filename} and {base_filename}_pairs; "
+        f"{len(detail_df)} records and {sum(row['n_paired_optimal_runtime'] for row in pair_rows)} paired OPTIMAL runtimes."
+    )
+    return detail_df, pair_df
+
+
+
 def make_table_methods(records, output_dirs=("results_v2/tables",)):
     """Generate Methods comparison table (SAT vs CP-SAT vs CPLEX)."""
     method_group_names = {"methods", "exact_solvers", "cplex_cp", "gurobi"}
@@ -2962,6 +3176,7 @@ def main():
     make_table_ablation_phases(records, base_filename="table_ablation_phases", output_dirs=output_dirs)
     make_table_solvers(records, group_name="solvers_small", base_filename="table_solvers_small", title="SAT Solver Performance Comparison (Small Graphs)", output_dirs=output_dirs)
     make_table_solvers(records, group_name="solvers_medium", base_filename="table_solvers_medium", title="SAT Solver Performance Comparison (Medium Graphs)", output_dirs=output_dirs)
+    make_table_encoding_comparison(records, output_dirs=output_dirs)
     make_table_methods(records, output_dirs=output_dirs)
     make_table_per_dataset(records, output_dirs=output_dirs)
     make_table_methods_family(records, output_dirs=output_dirs)

@@ -1,4 +1,4 @@
-\documentclass[a4paper]{cas-sc}
+\documentclass[a4paper,fleqn]{cas-sc}
 
 \usepackage[authoryear,longnamesfirst]{natbib}
 \usepackage[utf8]{inputenc}
@@ -317,7 +317,7 @@ Dataset & $N$ & $|E|$ & CaDiCaL 195 & Glucose 4 & MapleChrono & MiniSat 2.2 & Li
 \end{table}
 
 \subsection{SAT Solver Comparison}
-Table~\ref{tab:table_solvers_small} and Table~\ref{tab:table_solvers_medium} present the comparison among the five SAT solvers on small and medium graphs, respectively. The medium-graph configuration includes the four target instances \texttt{494\_bus\_n60}, \texttt{494\_bus\_n80}, \texttt{662\_bus\_n60}, and \texttt{662\_bus\_n80}; the table is regenerated from the raw records available for the selected experiment group, and no absent run is imputed.
+Table~\ref{tab:table_solvers_small} and Table~\ref{tab:table_solvers_medium} present the comparison among the five SAT solvers on small and medium graphs, respectively. The medium-graph configuration includes four target instances. The table retains three previously reported rows and explicitly marks \texttt{494\_bus\_n80} as having no tracked run. The available committed pilot JSONL has no \texttt{solvers\_medium} records; therefore, the historical timings and status cells below cannot be independently regenerated from the currently tracked raw results.
 
 On small graphs ($N \le 40$), all five solvers comfortably solve all instances within seconds. Glucose~4 and CaDiCaL~195 exhibit the fastest runtimes, achieving geometric mean speedups of $1.21\times$ and $1.00\times$, while MapleChrono and Lingeling require roughly $3\text{--}4\times$ longer.
 
@@ -331,6 +331,7 @@ On small graphs ($N \le 40$), all five solvers comfortably solve all instances w
 Dataset & $N$ & $|E|$ & CaDiCaL 195 & Glucose 4 & MapleChrono & MiniSat 2.2 & Lingeling \\
 \midrule
 \texttt{494\_bus\_n60} & 60 & 76 & \textbf{34.14} & TO(7) & 596.66 & TO(7) & 215.29 \\
+\texttt{494\_bus\_n80} & 80 & 97 & -- & -- & -- & -- & -- \\
 \texttt{662\_bus\_n60} & 60 & 77 & \textbf{26.84} & TO(9) & TO(9) & TO(9) & 112.73 \\
 \texttt{662\_bus\_n80} & 80 & 105 & \textbf{45.77} & TO(11) & TO(11) & TO(10) & 191.41 \\
 \midrule
@@ -338,11 +339,11 @@ Dataset & $N$ & $|E|$ & CaDiCaL 195 & Glucose 4 & MapleChrono & MiniSat 2.2 & Li
 \textbf{PAR2 (s)} & - & - & \textbf{35.59} & 1200.00 & 998.89 & 1200.00 & 173.14 \\
 \textbf{Speedup (geom) [3/3]} & - & - & \textbf{1.00$\times$} & - & - & - & 0.21$\times$ \\
 \bottomrule
-\multicolumn{8}{l}{\footnotesize Note: TO($k$) indicates timeout at 600s with incumbent bound $k$. PAR2 assigns 1200s penalty for timeouts.} \\
+\multicolumn{8}{l}{\footnotesize TO($k$): timeout at 600s with incumbent $k$; PAR2 assigns 1200s to a timeout. --: no tracked run, not a timeout. Table values are retained historical summaries and cannot be reconstructed from the four-record pilot JSONL.} \\
 \end{tabular}
 \end{table}
 
-On medium graphs ($N = 60, 80$), solver performance diverges sharply. The generated table reports results for each configured instance with an available validated record. Summary counts and PAR2 values must be interpreted against the number of records actually present; an instance without a raw run is not counted as a timeout or as a solved case. This prevents the narrative from treating the three historically reported instances as the complete four-instance configuration.
+On medium graphs ($N = 60, 80$), solver performance diverges sharply. The three populated rows are historical reported results, not a newly regenerated summary from the tracked pilot file. The fourth configured dataset is displayed as missing rather than assigned a fabricated status. No claim is made that these historical summaries are reproducible from the currently committed raw data. This prevents the narrative from treating the three historically reported instances as the complete four-instance configuration.
 
 \begin{figure}
 \centering
@@ -354,40 +355,47 @@ On medium graphs ($N = 60, 80$), solver performance diverges sharply. The genera
 \end{figure}
 
 \subsection{Pairwise Encoding vs. Order Encoding}
-The repository provides two SAT formulations for CBMP: direct Pairwise Encoding and Order Encoding. Both configurations use CaDiCaL~195, the same incremental solving mode, symmetry-breaking settings, and heuristic upper-bound initialization on the configured small instances. A quantitative comparison must be generated from the corresponding raw experiment records; no runtime, CNF size, or optimality values are inferred from configuration alone. The analysis pipeline is responsible for exporting per-instance results, including solver status, best validated bandwidth, solving time, and encoding statistics when those fields are available. The current published report does not yet contain a verified quantitative result table or runtime plot for this comparison because the raw JSONL records are not part of the tracked repository state. Missing measurements are reported as unavailable rather than estimated. Run `python experiments/run_experiments.py --group encodings --timeout 600 --record-metadata`, then regenerate the plot and tables from the resulting `runs.jsonl` before adding quantitative claims.
+The repository provides direct Pairwise Encoding and Order Encoding for CBMP. The configured \texttt{encodings} group holds solver (CaDiCaL~195), incremental solving mode, symmetry-breaking flags, RCM upper-bound heuristic, and timeout constant across both formulations; the encoding itself is the controlled factor. The analysis pipeline exports per-instance status, validated incumbent or optimum, solve time, wall time, encoding time, and variable/clause counts when those measurements are present. A paired summary matches records by dataset, solver, relabeling seed, symmetry settings, heuristic, solving mode, and EO strategy. Runtime ratios are computed only when both formulations prove the same validated optimum and have finite positive solve times.
+
+The tracked raw file \texttt{results/pilot/runs.jsonl} contains four \texttt{per\_dataset} pilot records and no records from the \texttt{encodings} group. Therefore, there is currently no evidence in the committed raw results from which to populate a quantitative Pairwise-vs-Order comparison. No runtime, CNF size, optimum, timeout, or paired sample is inferred from configuration. Run \texttt{python experiments/run\_experiments.py --group encodings --timeout 600 --record-metadata}, then regenerate the per-instance and paired encoding tables before adding quantitative claims.
+
+\paragraph{CNSPlots visualization.}
+The plotting pipeline uses the CNSPlots \texttt{boxplot} API for validated OPTIMAL runtimes and reports the status coverage and sample counts for both encodings. It skips the comparison chart unless both encodings have at least one valid OPTIMAL runtime. Because no \texttt{encodings} records are currently committed, no CNSPlots encoding-comparison figure is claimed or embedded in this report.
 
 \subsection{Method Comparison: SAT vs. CP-SAT vs. CPLEX}
-Table~\ref{tab:table_methods} is generated from available validated records for Best SAT, OR-Tools CP-SAT, IBM CPLEX MIP, IBM CPLEX CP Optimizer, and Gurobi. The latter two baselines are included when corresponding records from their dedicated experiment groups exist; missing records are shown as unavailable rather than fabricated.
+The target comparison comprises Best SAT, OR-Tools CP-SAT, IBM CPLEX MIP, IBM CPLEX CP Optimizer, and Gurobi. The tracked raw pilot file does not contain records from the \texttt{exact\_solvers}, \texttt{cplex\_cp}, or \texttt{gurobi} groups. The table therefore retains legacy SAT/CP-SAT/CPLEX MIP values for context and marks CPLEX CP and Gurobi as missing; it is not a newly regenerated exact-solver benchmark summary.
 
 % --- TABLE 3: METHODS COMPARISON ---
 \begin{table}
 \centering
 \caption{Comparison of Exact Methods: Best SAT vs. CP-SAT vs. CPLEX MIP/CP vs. Gurobi}
 \label{tab:table_methods}
-\begin{tabular}{lrrrrr}
+\begin{tabular}{lrrrrrrr}
 \toprule
-Dataset & $N$ & $|E|$ & Best SAT & CP-SAT & CPLEX \\
+Dataset & $N$ & $|E|$ & Best SAT & CP-SAT & CPLEX MIP & CPLEX CP & Gurobi \\
 \midrule
-\texttt{14\_bus} & 14 & 20 & \textbf{0.0004} & 0.0328 & 0.4610 \\
-\texttt{30\_bus} & 30 & 39 & \textbf{0.0547} & 0.2842 & SL \\
-\texttt{494\_bus\_n40} & 40 & 52 & \textbf{0.7132} & 1.3461 & SL \\
-\texttt{662\_bus\_n40} & 40 & 50 & 1.7629 & \textbf{0.5772} & SL \\
-\texttt{494\_bus\_n60} & 60 & 76 & 34.1434 & \textbf{5.2765} & SL \\
-\texttt{662\_bus\_n60} & 60 & 77 & 26.8385 & \textbf{5.5421} & SL \\
-\texttt{662\_bus\_n80} & 80 & 105 & \textbf{45.7719} & 101.2120 & SL \\
+\texttt{14\_bus} & 14 & 20 & \textbf{0.0004} & 0.0328 & 0.4610 & -- & -- \\
+\texttt{30\_bus} & 30 & 39 & \textbf{0.0547} & 0.2842 & SL & -- & -- \\
+\texttt{494\_bus\_n40} & 40 & 52 & \textbf{0.7132} & 1.3461 & SL & -- & -- \\
+\texttt{662\_bus\_n40} & 40 & 50 & 1.7629 & \textbf{0.5772} & SL & -- & -- \\
+\texttt{494\_bus\_n60} & 60 & 76 & 34.1434 & \textbf{5.2765} & SL & -- & -- \\
+\texttt{662\_bus\_n60} & 60 & 77 & 26.8385 & \textbf{5.5421} & SL & -- & -- \\
+\texttt{662\_bus\_n80} & 80 & 105 & \textbf{45.7719} & 101.2120 & SL & -- & -- \\
 \midrule
-\textbf{Solved} & - & - & \textbf{7/7} & \textbf{7/7} & 1/7 \\
-\textbf{Size Limit (SL)} & - & - & 0 & 0 & \textbf{6} \\
-\textbf{Mean Time (s)} & - & - & \textbf{15.612} & 16.324 & - \\
-\textbf{Speedup (geom) [5/7]} & - & - & 1.00$\times$ & \textbf{1.87$\times$} & - \\
+\textbf{Solved} & - & - & \textbf{7/7} & \textbf{7/7} & 1/7 & -- & -- \\
+\textbf{Size Limit (SL)} & - & - & 0 & 0 & \textbf{6} & -- & -- \\
+\textbf{Mean Time (s)} & - & - & \textbf{15.612} & 16.324 & - & -- & -- \\
+\textbf{Speedup (geom) [5/7]} & - & - & 1.00$\times$ & \textbf{1.87$\times$} & - & -- & -- \\
 \bottomrule
-\multicolumn{6}{l}{\footnotesize SL: Exceeded Community Edition limit ($\le 1000$ variables/constraints). Speedup computed over instances $\ge 0.1\text{s}$.} \\
+\multicolumn{8}{l}{\footnotesize SL: CPLEX MIP Community Edition size limit. --: no committed run record for CPLEX CP/Gurobi. Historical SAT/CP-SAT/CPLEX MIP values cannot be regenerated from the tracked pilot JSONL; this is not a verified exact\_solvers summary.} \\
 \end{tabular}
 \end{table}
 
 \paragraph{CPLEX MIP Baseline:} CPLEX solves only \texttt{14\_bus} ($N=14$, 0.461~s). For all instances with $N \ge 30$, CPLEX exceeds the 1000-variable Community Edition threshold and aborts with a Size Limit (SL) status. This illustrates the acute modeling overhead of MIP for non-linear cyclic distance metrics.
 
 \paragraph{SAT vs. CP-SAT:} Both Best SAT and CP-SAT solve all 7 instances to global optimality. CP-SAT demonstrates fast filtering on the $N=60$ instances (\texttt{494\_bus\_n60}: 5.28~s vs. 34.14~s; \texttt{662\_bus\_n60}: 5.54~s vs. 26.84~s), leveraging integer domain propagation. However, as graph size scales to $N=80$ (\texttt{662\_bus\_n80}), SAT decisively outperforms CP-SAT (45.77~s vs. 101.21~s, a $2.21\times$ speedup for SAT). Across all 7 instances, SAT achieves a lower mean runtime (15.61~s vs. 16.32~s).
+
+\paragraph{CPLEX CP Optimizer and Gurobi:} Both are implemented as distinct exact baselines and are configured in the experiment pipeline. No raw execution record for either solver is present in the tracked pilot data, so their cells are intentionally marked missing. CPLEX CP and Gurobi must not be interpreted as timed out or unavailable without an actual execution record.
 
 % --- TABLE 4: METHODS LARGE ---
 \begin{table}
@@ -643,19 +651,43 @@ A.~Ignatiev, A.~Morgado, and J.~Marques-Silva, ``PySAT: A Python toolkit for pro
 L.~Perron and V.~Furnon, ``OR-Tools,'' Google, version 9.15, \url{https://developers.google.com/optimization}.
 
 \bibitem{cplex2026}
-IBM Corp., ``IBM ILOG CPLEX Optimization Studio CPLEX User's Manual,'' version 22.2.0.0, \url{https://www.ibm.com/docs/en/icos}.\section*{Data Availability}
-The source code and benchmark configuration for this study are publicly available at
-\url{https://github.com/datnk0116/CBMP}. The repository contains the CBMP implementations,
-SAT and exact-baseline modules, datasets, experiment configuration files, automated tests,
-and analysis scripts. The experiment runner writes raw JSONL records and environment metadata
-to the configured output directory (by default \texttt{results\_v2/}); this output directory
-is excluded from version control by the repository's ignore rules unless the user explicitly
-archives and commits the finalized results. Consequently, raw benchmark records are not claimed
-to be included in the public repository unless separately published with a referenced commit.
-Tables and figures can be regenerated from an available \texttt{runs.jsonl} file using
-\texttt{analysis/make\_tables.py} and \texttt{analysis/make\_plots.py}, after installing
-the dependencies listed in \texttt{requirements.txt}. Solver-dependent results may require
-the corresponding external solver and a valid license.
+IBM Corp., ``IBM ILOG CPLEX Optimization Studio CPLEX User's Manual,'' version 22.2.0.0, \url{https://www.ibm.com/docs/en/icos}.
+\end{thebibliography}
 
-\begin{thebibliography}{15}
+\section*{Data Availability}
+The source code, benchmark datasets, configurations, tests, and analysis scripts are available at
+\url{https://github.com/datnk0116/CBMP/tree/fix/assignment2-compliance}. This statement refers to the
+\texttt{fix/assignment2-compliance} branch based on \texttt{main} commit
+\texttt{129295d77ea3e2c0dcbdf91b799fdf9ddf22b2a6}.
+
+The tracked raw experiment file is \texttt{results/pilot/runs.jsonl}, accompanied by
+\texttt{results/pilot/env.json}. It contains four pilot runs only: CaDiCaL~195 on
+\texttt{14\_bus} and \texttt{30\_bus} (OPTIMAL), and on \texttt{494\_bus} and
+\texttt{662\_bus} (TIMEOUT under the pilot's 60-second limit). It does not contain
+the full raw runs for \texttt{solvers\_medium}, \texttt{encodings}, or
+\texttt{exact\_solvers}. The checked-in \texttt{results/tables/} and
+\texttt{results/figures/} directories are retained historical outputs; the complete
+JSONL records supporting every value in the manuscript are not currently committed.
+Accordingly, these summaries are not claimed to be reproducible from the tracked pilot
+records alone.
+
+The \texttt{encodings} experiment is configured in \texttt{experiments/configs.yaml}.
+To generate its raw data, install dependencies with
+\texttt{pip install -r requirements.txt}, then run
+\texttt{python experiments/run\_experiments.py --group encodings --timeout 600 --record-metadata}.
+The medium SAT and exact-baseline groups can be run with
+\texttt{--group solvers\_medium} and \texttt{--group exact\_solvers}, respectively.
+Regenerate tables and plots from the resulting \texttt{runs.jsonl} using
+\texttt{analysis/make\_tables.py} and \texttt{analysis/make\_plots.py}.
+The default \texttt{results\_v2/} output is git-ignored; after checking JSONL integrity,
+solver statuses, and independent solution validation, archive the final \texttt{runs.jsonl},
+\texttt{env.json}, generated tables, and figures in a tracked results location before
+claiming those raw data are publicly available.
+
+The plotting pipeline uses CNSPlots (\texttt{cnsplots>=0.8.0}) for the encoding
+comparison when both encodings have valid OPTIMAL records. No such encoding records or
+CNSPlots comparison figure are currently present in the tracked pilot outputs. CPLEX MIP,
+CPLEX CP Optimizer, and Gurobi runs require their respective external solver installations
+and applicable academic/commercial licenses; unavailable or unlicensed runs must retain
+their explicit status rather than being represented as timeouts.
 \end{document}
