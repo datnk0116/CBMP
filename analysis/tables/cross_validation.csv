@@ -1,3 +1,0 @@
-dataset,solver_or_method,groups,best_ub,agreed
-g1,cadical195,solvers,3,False
-g1,glucose4,solvers,4,False
