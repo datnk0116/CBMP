@@ -180,7 +180,7 @@ python experiments/run_experiments.py --group all --record-metadata
 > - `--retry-failed`: Mặc định `--resume` bỏ qua mọi record đã có, kể cả timeout/interrupted. Khi thêm `--retry-failed`, runner giữ lại kết quả `OPTIMAL` hợp lệ, `INFEASIBLE`, `SIZE_LIMIT`, `UNAVAILABLE`, `LICENSE_ERROR` và `FEASIBLE` có incumbent hợp lệ; runner chạy lại `TIMEOUT`, `MEMOUT`, `ERROR`, `INTERRUPTED`, `UNKNOWN`, `FEASIBLE` thiếu incumbent hợp lệ và record có `validation_error`.
 
 > [!NOTE]
-> Mặc định runner ghi dữ liệu vào `results_v2/` và không can thiệp vào `results/`. Thư mục `results_v2/` là vùng làm việc tạm, không phải official archive.
+> Mặc định runner ghi dữ liệu vào `results_v2/` và không can thiệp vào `results/`. Thư mục `results_v2/` là vùng làm việc tạm, không phải official archive. Batch 44 records hiện tại đã được commit để bảo toàn bằng chứng kiểm tra; `.gitignore` chỉ ngăn các output mới chưa được track, không tự bỏ theo dõi những file đã commit.
 > Sử dụng cờ `--record-metadata` khi chạy runner để tự động lưu git commit hash, timeout, và đường dẫn cấu hình vào `results_v2/env.json` cũng như đầu file `results_v2/runs.jsonl`.
 
 ---
