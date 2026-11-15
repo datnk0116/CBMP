@@ -317,7 +317,7 @@ Dataset & $N$ & $|E|$ & CaDiCaL 195 & Glucose 4 & MapleChrono & MiniSat 2.2 & Li
 \end{table}
 
 \subsection{SAT Solver Comparison}
-Table~\ref{tab:table_solvers_small} and Table~\ref{tab:table_solvers_medium} present the comparison among the five SAT solvers on small and medium graphs, respectively.
+Table~\ref{tab:table_solvers_small} and Table~\ref{tab:table_solvers_medium} present the comparison among the five SAT solvers on small and medium graphs, respectively. The medium-graph configuration includes the four target instances \texttt{494\_bus\_n60}, \texttt{494\_bus\_n80}, \texttt{662\_bus\_n60}, and \texttt{662\_bus\_n80}; the table is regenerated from the raw records available for the selected experiment group, and no absent run is imputed.
 
 On small graphs ($N \le 40$), all five solvers comfortably solve all instances within seconds. Glucose~4 and CaDiCaL~195 exhibit the fastest runtimes, achieving geometric mean speedups of $1.21\times$ and $1.00\times$, while MapleChrono and Lingeling require roughly $3\text{--}4\times$ longer.
 
@@ -342,7 +342,7 @@ Dataset & $N$ & $|E|$ & CaDiCaL 195 & Glucose 4 & MapleChrono & MiniSat 2.2 & Li
 \end{tabular}
 \end{table}
 
-On medium graphs ($N = 60, 80$), solver performance diverges sharply. As shown in Table~\ref{tab:table_solvers_medium}, CaDiCaL~195 demonstrates clear superiority, solving all three instances in under 46~seconds with a PAR2 score of 35.59~seconds. Lingeling also solves all three instances but takes substantially longer (PAR2 173.14~s). In contrast, Glucose~4 and MiniSat~2.2 fail to prove optimality on any medium graph, timing out at 600~seconds on all three instances (PAR2 1200~s). MapleChrono solves only \texttt{494\_bus\_n60} (596.66~s) and times out on the remaining two. This divergence highlights that CDCL inprocessing techniques and restart policies in CaDiCaL~195 are essential for reasoning over large cyclic permutation structures.
+On medium graphs ($N = 60, 80$), solver performance diverges sharply. The generated table reports results for each configured instance with an available validated record. Summary counts and PAR2 values must be interpreted against the number of records actually present; an instance without a raw run is not counted as a timeout or as a solved case. This prevents the narrative from treating the three historically reported instances as the complete four-instance configuration.
 
 \begin{figure}
 \centering
