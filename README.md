@@ -276,7 +276,12 @@ Kết quả biên dịch là `report/report.pdf`. Số trang phụ thuộc nội
 
 ---
 
-## 10. Ghi chú mã nguồn cũ (Legacy)
+## 10. Ghi chú về tài liệu audit và mã nguồn cũ
+
+- `reports/code_quality_audit.md` là báo cáo audit kỹ thuật được giữ lại làm tài liệu tham khảo lịch sử. Các ghi chú audit ngắn từ `fix/audit4` đã được loại bỏ vì chỉ lặp lại trạng thái branch/HEAD/test cũ.
+- Backup JSONL cũ trong `results_v2/` không còn được giữ cạnh file dữ liệu chính; lịch sử đầy đủ vẫn có trong Git commit trước khi dọn. File `runs.jsonl` hiện tại và `env.json` được giữ nguyên.
+
+## 11. Ghi chú mã nguồn cũ (Legacy)
 
 - `legacy/bmp.py`: Là phiên bản triển khai CBMP đời đầu, không còn module nào trong dự án phụ thuộc hoặc import file này. Đã được chuyển vào thư mục `legacy/` để bảo tồn lịch sử phát triển.
 
