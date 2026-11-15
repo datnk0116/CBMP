@@ -142,7 +142,12 @@ def collect_environment_info(output_path="results_v2/env.json", timeout=None, co
         info["ram_gb"] = "Unknown"
 
     # Solver & Package versions
-    packages = ["python-sat", "scipy", "numpy", "ortools", "docplex", "cplex", "pyyaml", "pytest"]
+    # Record every runtime/analysis dependency so env.json is sufficient to
+    # audit the plotting and table-generation environment as well as solvers.
+    packages = [
+        "python-sat", "scipy", "numpy", "ortools", "docplex", "cplex",
+        "pyyaml", "pytest", "pandas", "matplotlib", "networkx", "cnsplots",
+    ]
     pkg_versions = {}
     for p in packages:
         try:
