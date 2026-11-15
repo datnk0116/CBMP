@@ -293,7 +293,7 @@ retains this group provenance when constructing matched comparisons.
 \subsection{Experimental Setup}
 
 \paragraph{Hardware and Software Environment:}
-All experiments were executed on an Apple M4 platform featuring 10 CPU cores and 16.0~GB of unified memory, running macOS~15.7.4 (Darwin 24.6.0 arm64). The implementation environment is Python~3.14.10, PySAT (\texttt{python-sat} 1.9.dev21), Google OR-Tools~9.15.6755, IBM ILOG CPLEX~22.2.0.0 via \texttt{docplex}~2.32.264, SciPy~1.18.1, and NumPy~2.5.4.
+All experiments were executed on an Apple M4 platform featuring 10 CPU cores and 16.0~GB of unified memory, running macOS~15.7.4 (Darwin 24.6.0 arm64). The implementation environment recorded for the exploratory batch is Python~3.12.16, PySAT (\texttt{python-sat} 1.9.dev21), Google OR-Tools~9.15.6755, IBM ILOG CPLEX~22.2.0.0 via \texttt{docplex}~2.32.264, SciPy~1.18.1, and NumPy~2.4.6. These versions describe the 44-record exploratory batch metadata, not a clean final benchmark run.
 
 \paragraph{Benchmark Datasets:}
 We evaluate 16 MatrixMarket graphs derived from standard IEEE power system test cases: \texttt{14\_bus} ($N=14$), \texttt{30\_bus} ($N=30$), \texttt{494\_bus} ($N=494$), and \texttt{662\_bus} ($N=662$), alongside their connected induced subgraphs with $N \in \{40, 50, 60, 80, 100, 150\}$. Graph properties are summarized in Table~\ref{tab:table_per_dataset}.
