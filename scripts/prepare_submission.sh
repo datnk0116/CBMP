@@ -19,11 +19,6 @@ echo "Repository: $ROOT"
 echo "Branch:     $BRANCH"
 echo "Commit:     $(git rev-parse HEAD)"
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "[ERROR] python3 not found."
-  exit 2
-fi
-
 PYTHON="${PYTHON:-python3}"
 "$PYTHON" - <<'PY'
 import sys
@@ -33,11 +28,11 @@ if sys.version_info < (3, 10):
 PY
 
 echo
-echo "== 1/5 Repository whitespace check =="
+echo "== 1/5 Whitespace check =="
 git diff --check
 
 echo
-echo "== 2/5 Dataset integrity check =="
+echo "== 2/5 Dataset integrity =="
 "$PYTHON" scripts/check_datasets.py
 
 echo
@@ -59,37 +54,37 @@ else
 fi
 
 echo
-echo "== 5/5 Final evidence archive check =="
+echo "== 5/5 Official benchmark archive =="
 if [[ ! -s results/final/runs.jsonl ]]; then
   echo "[BLOCKER] results/final/runs.jsonl is missing or empty."
-  echo "Do NOT copy results_v2/runs.jsonl into results/final: its metadata marks the source as dirty."
-else
-  "$PYTHON" - <<'PY'
+  echo "The 44 exploratory records in results_v2 are dirty-source data and must not be copied here."
+  echo "Run the configured experiments from this clean commit before claiming a reproducible final archive."
+  exit 3
+fi
+
+"$PYTHON" - <<'PY'
 import json
 from pathlib import Path
 p = Path("results/final/runs.jsonl")
-records = []
+count = 0
 for line_no, line in enumerate(p.read_text().splitlines(), 1):
     if not line.strip():
         continue
     try:
-        row = json.loads(line)
+        record = json.loads(line)
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSONL at {p}:{line_no}: {exc}")
-    if not isinstance(row, dict):
+    if not isinstance(record, dict):
         raise SystemExit(f"Expected JSON object at {p}:{line_no}")
-    records.append(row)
-if not records:
-    raise SystemExit("Final JSONL contains no records.")
-print(f"Valid JSONL records: {len(records)}")
+    count += 1
+if count == 0:
+    raise SystemExit("Official JSONL archive contains no records.")
+env = Path("results/final/env.json")
+if not env.is_file() or not env.stat().st_size:
+    raise SystemExit("Official results/final/env.json is missing or empty.")
+print(f"[OK] {count} valid JSONL records and environment metadata found.")
 PY
-  if [[ ! -s results/final/env.json ]]; then
-    echo "[BLOCKER] results/final/env.json is missing or empty."
-  fi
-fi
 
 echo
-echo "== Summary =="
-echo "Checks completed. Review any [WARN]/[BLOCKER] above."
-echo "Current git status:"
+echo "[PASS] Preflight completed."
 git status --short
