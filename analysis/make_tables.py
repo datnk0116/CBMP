@@ -1968,7 +1968,11 @@ def make_table_solvers(records, group_name="solvers_small", base_filename="table
 
 def make_table_methods(records, output_dirs=("results_v2/tables",)):
     """Generate Methods comparison table (SAT vs CP-SAT vs CPLEX)."""
-    method_recs = [r for r in records if "methods" in r.get("groups", [])]
+    method_group_names = {"methods", "exact_solvers", "cplex_cp", "gurobi"}
+    method_recs = [
+        r for r in records
+        if method_group_names.intersection(r.get("groups", []))
+    ]
     if not method_recs:
         return
 
