@@ -11,6 +11,7 @@ import argparse
 import platform
 import subprocess
 from pathlib import Path
+from importlib.metadata import PackageNotFoundError, version as package_version
 from typing import Any, Dict
 
 # Setup module logger
@@ -151,11 +152,13 @@ def collect_environment_info(output_path="results_v2/env.json", timeout=None, co
     pkg_versions = {}
     for p in packages:
         try:
-            mod_name = "yaml" if p == "pyyaml" else ("pysat" if p == "python-sat" else p)
-            m = __import__(mod_name)
-            pkg_versions[p] = getattr(m, "__version__", "installed")
-        except Exception:
+            # Distribution metadata is more reliable than module __version__
+            # attributes (which are absent for some otherwise installed packages).
+            pkg_versions[p] = package_version(p)
+        except PackageNotFoundError:
             pkg_versions[p] = "not installed"
+        except Exception as exc:
+            pkg_versions[p] = f"version lookup failed: {type(exc).__name__}"
     info["packages"] = pkg_versions
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
