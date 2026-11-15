@@ -43,6 +43,7 @@ groups:
     description: "SAT solvers comparison on medium graphs (N=60, 80)"
     datasets:
       - "494_bus_n60"
+      - "494_bus_n80"
       - "662_bus_n60"
       - "662_bus_n80"
     repetitions: 1
