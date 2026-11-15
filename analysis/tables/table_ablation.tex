@@ -1,0 +1,18 @@
+% Table: Ablation Study: Symmetry Breaking and Initial Upper Bound
+\begin{table}[htbp]
+\centering
+\caption{Ablation Study: Symmetry Breaking and Initial Upper Bound}
+\label{tab:table_ablation}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Dataset & N & |E| & none & rotation & rot\_ref & heur\_ub & all \\
+\midrule
+14\_bus & 14 & 20 & 0.0017 & 0.0003 & 0.0002 & 0.0030 & 0.0002 \\
+30\_bus & 30 & 39 & 0.6557 & 0.1169 & 0.0543 & 0.6887 & 0.0546 \\
+\midrule
+\textbf{Solved} & - & - & 2 & 2 & 2 & 2 & 2 \\
+\textbf{PAR2 (s)} & - & - & 0.329 & 0.059 & 0.027 & 0.346 & 0.027 \\
+\textbf{Speedup (geom)} & - & - & 1.00x & 5.95x & 9.33x & 0.74x & 9.74x \\
+\bottomrule
+\end{tabular}
+\end{table}

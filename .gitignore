@@ -21,23 +21,4 @@ __pycache__/
 CBMP/
 .venv/
 
-# experiment outputs (commit bảng/hình cuối cùng sau)
-results/*.jsonl
-results/final/
-results/smoke/
-/results_v2/
-/calibration/
-/pilot_ablation/
-analysis/tables/
-analysis/figures/
 
-# Allow only the official, validated experiment archive. Keep other outputs ignored.
-!results/final/
-!results/final/runs.jsonl
-!results/final/env.json
-!results/final/tables/
-!results/final/tables/*.csv
-!results/final/tables/*.tex
-!results/final/figures/
-!results/final/figures/*.png
-!results/final/figures/*.pdf
