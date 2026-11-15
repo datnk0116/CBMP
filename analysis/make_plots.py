@@ -6,6 +6,7 @@ import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import cnsplots as cns
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,44 @@ def save_fig(fig, base_filename, output_dirs=("results_v2/figures",)):
         fig.savefig(pdf_path, bbox_inches="tight")
     print(f"Figure saved: {base_filename}.png and {base_filename}.pdf in {output_dirs[0]}/")
     plt.close(fig)
+
+def plot_encoding_comparison(records, output_dirs=("results_v2/figures",)):
+    """Create a CNSPlots comparison of measured OPTIMAL runtimes for both encodings."""
+    selected = []
+    for record in records:
+        groups = record.get("groups", [])
+        if "encodings" not in groups or not is_optimal_status(record):
+            continue
+        config = record.get("config", {})
+        encoding = str(config.get("encoding") or record.get("encoding") or "").lower()
+        if encoding not in ("order", "pairwise"):
+            continue
+        runtime = extract_repetition_solve_time(record)
+        if runtime is None or not math.isfinite(runtime) or runtime <= 0:
+            continue
+        selected.append({
+            "dataset": str(record.get("dataset", "unknown")),
+            "encoding": encoding,
+            "solve_time": float(runtime),
+        })
+    if not selected:
+        logger.warning("No valid OPTIMAL encoding records; skipping CNSPlots encoding comparison.")
+        return
+
+    df = pd.DataFrame(selected)
+    for out_dir in output_dirs if not isinstance(output_dirs, str) else (output_dirs,):
+        os.makedirs(out_dir, exist_ok=True)
+        cns.setup_matplotlib()
+        fig, ax = plt.subplots(figsize=(8, 5))
+        cns.boxplot(data=df, x="encoding", y="solve_time", hue="encoding", ax=ax)
+        ax.set_title("Pairwise vs. Order Encoding (OPTIMAL runs only)")
+        ax.set_xlabel("SAT encoding")
+        ax.set_ylabel("Solve time (seconds)")
+        fig.tight_layout()
+        fig.savefig(os.path.join(out_dir, "cnsplots_encoding_comparison.png"), dpi=300, bbox_inches="tight")
+        fig.savefig(os.path.join(out_dir, "cnsplots_encoding_comparison.pdf"), bbox_inches="tight")
+        plt.close(fig)
+
 
 def get_ablation_var_name(cfg):
     rot = cfg.get("sb_rotation", False)
@@ -520,6 +559,9 @@ def main():
     # 4. Iterations & UNSAT time
     plot_ablation_iterations_and_unsat(records, group_name="ablation_small", base_filename="ablation_iterations_and_unsat_small", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (Small Graphs)", output_dirs=output_dirs)
     plot_ablation_iterations_and_unsat(records, group_name="ablation_medium", base_filename="ablation_iterations_and_unsat_medium", title="Impact of Symmetry Breaking on SAT Iterations and UNSAT Proof Time (662_bus_n60)", output_dirs=output_dirs)
+
+    # 5. CNSPlots-based encoding comparison (uses measured OPTIMAL records only)
+    plot_encoding_comparison(records, output_dirs=output_dirs)
 
     # 5. Ablation Family boxplots
     plot_ablation_family_boxplots(records, base_filename="boxplot_ablation_family", output_dirs=output_dirs)
