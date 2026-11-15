@@ -709,8 +709,9 @@ already contains the CPLEX CP Optimizer and Gurobi formulations; the standalone
 with resume enabled after \texttt{exact\_solvers}, to avoid duplicate execution IDs.
 Because \texttt{encodings} and \texttt{exact\_solvers} both contain SAT Order and
 Pairwise tasks, run \texttt{encodings} first and then run \texttt{exact\_solvers}
-with \texttt{--resume}; the methods analysis uses the \texttt{encodings} records
-for the SAT baseline.
+with \texttt{--resume}. The encoding-comparison analysis accepts SAT records from
+both groups and deduplicates identical canonical run/repetition identities; the
+methods analysis also uses these records when selecting the SAT baseline.
 
 Install dependencies using \texttt{pip install -r requirements.txt}. Run
 \texttt{python experiments/run\_experiments.py --group encodings --timeout 600 --record-metadata},
