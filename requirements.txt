@@ -10,3 +10,4 @@ cplex==22.2.0.0
 pandas>=2.0.0
 matplotlib>=3.8.0
 networkx>=3.0
+cnsplots>=0.8.0
