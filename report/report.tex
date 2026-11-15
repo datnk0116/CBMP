@@ -666,41 +666,53 @@ IBM Corp., ``IBM ILOG CPLEX Optimization Studio CPLEX User's Manual,'' version 2
 \end{thebibliography}
 
 \section*{Data Availability}
-The source code, benchmark datasets, configurations, tests, and analysis scripts are available at
-\url{https://github.com/datnk0116/CBMP/tree/fix/assignment2-compliance}. This statement refers to the
-\texttt{fix/assignment2-compliance} branch based on \texttt{main} commit
+The repository source code, datasets, benchmark configurations, automated tests, and
+analysis scripts are available on the
+\texttt{fix/assignment2-compliance} branch:
+\url{https://github.com/datnk0116/CBMP/tree/fix/assignment2-compliance}.
+This branch is based on \texttt{main} commit
 \texttt{129295d77ea3e2c0dcbdf91b799fdf9ddf22b2a6}.
 
-The tracked raw experiment file is \texttt{results/pilot/runs.jsonl}, accompanied by
-\texttt{results/pilot/env.json}. It contains four pilot runs only: CaDiCaL~195 on
-\texttt{14\_bus} and \texttt{30\_bus} (OPTIMAL), and on \texttt{494\_bus} and
-\texttt{662\_bus} (TIMEOUT under the pilot's 60-second limit). It does not contain
-the full raw runs for \texttt{solvers\_medium}, \texttt{encodings}, or
-\texttt{exact\_solvers}. The checked-in \texttt{results/tables/} and
-\texttt{results/figures/} directories are retained historical outputs; the complete
-JSONL records supporting every value in the manuscript are not currently committed.
-Accordingly, these summaries are not claimed to be reproducible from the tracked pilot
-records alone.
+The only tracked raw experiment file currently verified in the repository is
+\texttt{results/pilot/runs.jsonl}; its corresponding environment metadata is
+\texttt{results/pilot/env.json}. The pilot JSONL contains four \texttt{per\_dataset}
+records only. It is not the raw data for the \texttt{encodings},
+\texttt{solvers\_medium}, \texttt{exact\_solvers}, \texttt{cplex\_cp}, or
+\texttt{gurobi} experiments. Existing tables and figures are historical derived
+artifacts and must not be treated as a substitute for those missing raw runs.
 
-The \texttt{encodings} experiment is configured in \texttt{experiments/configs.yaml}.
-To generate its raw data, install dependencies with
-\texttt{pip install -r requirements.txt}, then run
-\texttt{python experiments/run\_experiments.py --group encodings --timeout 600 --record-metadata}.
-The medium SAT and exact-baseline groups can be run with
-\texttt{--group solvers\_medium} and \texttt{--group exact\_solvers}, respectively.
-Regenerate tables and plots from the resulting \texttt{runs.jsonl} using
-\texttt{analysis/make\_tables.py} and \texttt{analysis/make\_plots.py}.
-The default \texttt{results\_v2/} output is git-ignored; after checking JSONL integrity,
-solver statuses, and independent solution validation, archive the final \texttt{runs.jsonl}, \texttt{env.json}, generated tables, and figures in
-\texttt{results/final/} after checking JSONL integrity, solver statuses, and independent
-solution validation. Temporary run directories remain ignored; the final archive path is
-explicitly allowed by the repository ignore rules so the validated artifacts can be committed.
+When the requested experiments have been executed and validated, the official archive
+location is \texttt{results/final/runs.jsonl} with environment metadata at
+\texttt{results/final/env.json}. Derived CSV/LaTeX tables belong in
+\texttt{results/final/tables/}, and PNG/PDF figures belong in
+\texttt{results/final/figures/}. These final-archive files are not currently committed.
+Temporary \texttt{results\_v2/} outputs remain excluded from version control.
 
+The planned configuration groups are \texttt{encodings},
+\texttt{solvers\_medium}, and \texttt{exact\_solvers}. The exact-solver configuration
+already contains the CPLEX CP Optimizer and Gurobi formulations; the standalone
+\texttt{cplex\_cp} and \texttt{gurobi} groups are targeted subsets and should be run
+with resume enabled after \texttt{exact\_solvers}, to avoid duplicate execution IDs.
+Because \texttt{encodings} and \texttt{exact\_solvers} both contain SAT Order and
+Pairwise tasks, run \texttt{encodings} first and then run \texttt{exact\_solvers}
+with \texttt{--resume}; the methods analysis uses the \texttt{encodings} records
+for the SAT baseline.
 
-The plotting pipeline uses CNSPlots (\texttt{cnsplots>=0.8.0}) for the encoding
-comparison when both encodings have valid OPTIMAL records. No such encoding records or
-CNSPlots comparison figure are currently present in the tracked pilot outputs. CPLEX MIP,
-CPLEX CP Optimizer, and Gurobi runs require their respective external solver installations
-and applicable academic/commercial licenses; unavailable or unlicensed runs must retain
-their explicit status rather than being represented as timeouts.
+Install dependencies using \texttt{pip install -r requirements.txt}. Run
+\texttt{python experiments/run\_experiments.py --group encodings --timeout 600 --record-metadata},
+then \texttt{python experiments/run\_experiments.py --group solvers\_medium --timeout 600 --record-metadata},
+then \texttt{python experiments/run\_experiments.py --group exact\_solvers --timeout 600 --record-metadata --resume}.
+The standalone subsets may then be checked with
+\texttt{python experiments/run\_experiments.py --group cplex\_cp --timeout 600 --record-metadata --resume}
+and
+\texttt{python experiments/run\_experiments.py --group gurobi --timeout 600 --record-metadata --resume}.
+After checking JSONL integrity, all solver statuses, and independent solution validation,
+archive the raw runs and environment metadata to \texttt{results/final/} and regenerate
+the analysis tables and plots from that archive. No missing run is to be inferred from
+a configuration entry, a pilot run, or a historical table.
+
+CPLEX MIP, CPLEX CP Optimizer, and Gurobi require the corresponding solver binaries
+and applicable licenses. Missing binaries must be reported as \texttt{UNAVAILABLE};
+missing or invalid commercial entitlements must be reported as \texttt{LICENSE\_ERROR};
+neither status is a timeout.
 \end{document}

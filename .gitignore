@@ -31,6 +31,13 @@ results/smoke/
 analysis/tables/
 analysis/figures/
 
-# Allow only explicitly archived, validated final experiment outputs.
+# Allow only the official, validated experiment archive. Keep other outputs ignored.
 !results/final/
+!results/final/runs.jsonl
+!results/final/env.json
+!results/final/tables/
+!results/final/tables/*.csv
+!results/final/tables/*.tex
+!results/final/figures/
+!results/final/figures/*.png
 !results/final/figures/*.pdf
