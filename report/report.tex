@@ -1,12 +1,13 @@
 \documentclass[a4paper]{cas-sc}
 
-\usepackage[numbers]{natbib}
+\usepackage[authoryear,longnamesfirst]{natbib}
 \usepackage[utf8]{inputenc}
 \usepackage{enumitem}
-\usepackage{lmodern}
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{amssymb}
+\usepackage{lmodern}
+\usepackage{hyperref}
 \usepackage{microtype}
 \usepackage{indentfirst}
 \usepackage{float}
@@ -15,7 +16,6 @@
 \usepackage{booktabs}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
-\usepackage{hyperref}
 
 \setlength{\parindent}{2em}
 \setlist[enumerate]{listparindent=\parindent,itemindent=\parindent}
@@ -32,118 +32,189 @@
 \def\textpagefraction{.001}
 
 % Short title
-\shorttitle{A SAT Solving Approach to the Cyclic Bandwidth Minimization Problem}    
+\shorttitle{A SAT solving approach to CBMP}    
 % Short author
 \shortauthors{Lê Nam Huy}  
 % Main title of the paper
-\title [mode = title]{A SAT Solving Approach to the Cyclic Bandwidth Minimization Problem}  
+\title [mode = title]{A SAT solving approach to the Cyclic Bandwidth Minimization Problem}  
 % Author
 \author{Student: Lê Nam Huy\\24021516}
-
+% Abstract
 \begin{abstract}
 The Cyclic Bandwidth Minimization Problem (CBMP) is an NP-hard graph layout problem that seeks an injective assignment of graph vertices to positions arranged on a circle such that the maximum cyclic distance between adjacent vertices is minimized. In this paper, we propose a scalable Boolean Satisfiability (SAT) framework for CBMP. We formulate CBMP through an iterative feasibility search that combines Order Encoding for distance constraints, Commander Encoding for bijective permutation constraints, and dual symmetry-breaking techniques (rotation and reflection) designed to prune the $2N$-fold dihedral symmetry of the cyclic search space. In addition, an initial upper bound is seeded using the Reverse Cuthill--McKee (RCM) heuristic layout. We conduct an exhaustive experimental campaign across 16 benchmark instances derived from power transmission networks, comparing five CDCL SAT solvers (CaDiCaL~195, Glucose~4, MapleChrono, MiniSat~2.2, and Lingeling) against state-of-the-art baselines: Constraint Programming (OR-Tools CP-SAT) and Mixed-Integer Linear Programming (IBM ILOG CPLEX). Our findings show that rotation and reflection symmetry breaking achieve up to a $22.77\times$ speedup on medium boundary instances and reduce median runtime by over $59\%$ across randomized graph families. Furthermore, the best SAT configuration proves global optimality on instances where CP-SAT times out (e.g., \texttt{662\_bus\_n100}), while CPLEX is severely constrained by model size limits.
-\end{abstract}
-
-\begin{keywords}
-Cyclic Bandwidth Minimization \sep Propositional Satisfiability \sep Order Encoding \sep Commander Encoding \sep Symmetry Breaking \sep Constraint Programming
-\end{keywords}
 
 \maketitle
 
-% =========================================================================
-\section{Introduction}
-% =========================================================================
+\begin{keywords}
+Cyclic Bandwidth Minimization \sep Propositional Satisfiability \sep Order Encoding \sep Commander Encoding \sep Symmetry Breaking \sep Constraint Programming
 
-Graph layout problems seek to embed the vertices of a graph into a host metric space while minimizing a geometric objective defined over the edges \citep{diaz2002survey}. A prominent member of this family is the \textit{Bandwidth Minimization Problem} (BMP), where vertices are assigned to integer positions on a linear line such that the maximum length of any edge is minimized. When the host topology is wrapped into a ring or circle, the problem becomes the \textit{Cyclic Bandwidth Minimization Problem} (CBMP) \citep{leung1984cyclic}.
-
-\subsection{Problem Context and Motivation}
-CBMP arises naturally in numerous practical domains:
-\begin{enumerate}
-    \item \textbf{VLSI Design and Circular Layouts}: In circular integrated circuit design, macrocells and logical modules are arranged in a ring to facilitate routing channels and minimize the maximum interconnect length, which directly impacts capacitive load and propagation delay \citep{kahng2011vlsilayout}.
-    \item \textbf{Interconnection Networks and Ring Topologies}: Metropolitan area networks (MANs), optical ring networks (SONET/SDH), and distributed ring-based multicomputer architectures rely on circular vertex embeddings to minimize packet hop counts and prevent communication bottlenecks \citep{leung1984cyclic}.
-    \item \textbf{Matrix Bandwidth and Wavefront Reduction}: In scientific computing and finite element analysis, permuting sparse symmetric matrices to reduce their cyclic envelope accelerates iterative linear system solvers and parallel sparse matrix-vector multiplications.
-\end{enumerate}
-
-CBMP is known to be NP-hard in the general case, even when restricted to trees with maximum degree 3 or caterpillar graphs \citep{leung1984cyclic, diaz2002survey}. Consequently, exact methods face substantial combinatorial challenges due to the factorial size of the permutation search space ($N!$) and the cyclic distance metric.
-
-\subsection{Research Objective and Proposed Approach}
-Existing exact methodologies predominantly rely on branch-and-bound linear integer programming or dedicated constraint programming formulations. However, propositional satisfiability (SAT) solvers have demonstrated remarkable efficiency in combinatorial search due to Conflict-Driven Clause Learning (CDCL), two-literal watching, and learned clause management \citep{biere2021handbook}.
-
-In this work, we design, implement, and rigorously evaluate an exact SAT-based optimization framework for CBMP. We model the problem as a sequence of decision problems, shrinking the candidate cyclic bandwidth bound $\text{UB}$ iteratively until the formula becomes unsatisfiable (UNSAT), thereby establishing global optimality. To ensure scalability, our approach integrates:
-\begin{itemize}
-    \item A compact CNF encoding combining \textbf{Commander Encoding} for the bijective vertex-to-label cardinality constraints and \textbf{Order Encoding} for cyclic distance bounds, resulting in $\mathcal{O}(|E| \cdot N + N^2)$ clauses.
-    \item \textbf{Dual symmetry breaking}: Fixing an anchor vertex at label 0 (rotation symmetry breaking) and ordering the relative placement of two distinct adjacent positions (reflection symmetry breaking), eliminating the $2N$-fold dihedral search space redundancy.
-    \item \textbf{Heuristic upper bounding}: Seeding the iterative search with a valid permutation generated by the Reverse Cuthill--McKee (RCM) heuristic \citep{cuthill1969rcm}, reducing the number of costly SAT iterations.
-\end{itemize}
-
-\subsection{Summary of Contributions}
-The main contributions of this paper are:
-\begin{enumerate}
-    \item \textbf{Principled SAT Formulation}: A mathematically rigorous and clause-efficient encoding for CBMP combining Commander and Order representations.
-    \item \textbf{Symmetry Breaking and Formal Solution Counting}: Correct mathematical formulation of rotation and reflection symmetry breaking, validated by exact solution enumeration on benchmark topologies confirming the theoretical reduction ratios ($N$ and $2$).
-    \item \textbf{Extensive Empirical Evaluation}: A reproducible benchmark suite over 16 MatrixMarket graphs comparing 5 CDCL SAT solvers, OR-Tools CP-SAT, and IBM CPLEX across multiple seeds and graph families.
-    \item \textbf{Phase and Ablation Analyses}: A granular decomposition showing that the final UNSAT iteration dominates total runtime ($60\%\text{--}90\%$), explaining why symmetry breaking provides decisive speedups (up to $22.77\times$).
-\end{enumerate}
-
-% =========================================================================
-\section{Background}
-% =========================================================================
-
-\subsection{Graph Notation and Cyclic Bandwidth}
-Let $G = (V, E)$ be a simple, connected, undirected graph with vertex set $V = \{v_0, v_1, \dots, v_{N-1}\}$ ($|V| = N$) and edge set $E$ ($|E| = M$). Let $\Delta$ denote the maximum vertex degree of $G$.
-
-A \textit{labeling} or \textit{layout} of $G$ is a bijection $f: V \to \{0, 1, \dots, N-1\}$. Under this labeling, the positions $0, 1, \dots, N-1$ are arranged consecutively along a cycle $\mathcal{C}_N$. For any two labels $i, j \in \{0, \dots, N-1\}$, the \textit{cyclic distance} is defined as:
-\begin{equation}
-    d(i, j) = \min\bigl(|i - j|,\; N - |i - j|\bigr).
-    \label{eq:cyclic_distance}
-\end{equation}
-The cyclic distance satisfies $0 \le d(i, j) \le \lfloor N/2 \rfloor$ for all $i, j$.
-
-The \textit{cyclic bandwidth of $G$ under layout $f$}, denoted $B_c(G, f)$, is the maximum cyclic distance between adjacent vertices:
-\begin{equation}
-    B_c(G, f) = \max_{(u, v) \in E} d\bigl(f(u), f(v)\bigr).
-\end{equation}
-The \textit{Cyclic Bandwidth Minimization Problem} (CBMP) asks for a layout $f^*$ that attains the minimum cyclic bandwidth:
-\begin{equation}
-    B_c(G) = \min_{f} B_c(G, f).
-\end{equation}
-
-\subsection{Theoretical Lower Bounds}
-A well-known structural lower bound for cyclic bandwidth is derived from the maximum vertex degree $\Delta$. For any vertex $u$ with degree $\operatorname{deg}(u)$, its neighbors must be assigned distinct labels along the cycle. Since the cyclic distance cannot exceed the available positions on either side of $f(u)$, we have:
-\begin{equation}
-    B_c(G) \ge LB_{\text{degree}} = \left\lceil \frac{\Delta}{2} \right\rceil.
-    \label{eq:lb_degree}
-\end{equation}
-While stronger lower bounds based on graph density or spectral properties exist, $LB_{\text{degree}}$ provides a reliable, immediate baseline against which upper bounds can be checked.
-
-\subsection{SAT and Propositional Logic}
-A Boolean variable $x$ takes values in $\{\text{true}, \text{false}\}$. A literal is a variable $x$ or its negation $\neg x$. A clause is a disjunction of literals, and a formula in Conjunctive Normal Form (CNF) is a conjunction of clauses. A SAT solver determines whether a CNF formula is satisfiable (SAT) or unsatisfiable (UNSAT). Modern solvers use Conflict-Driven Clause Learning (CDCL) \citep{biere2021handbook}, which incorporates unit propagation, non-chronological backtracking, conflict clause learning, and dynamic variable selection heuristics (e.g., VSIDS).
-
-Cardinality constraints enforce that at least one (ALO), at most one (AMO), or exactly one (EO) literal in a set $X = \{x_1, \dots, x_n\}$ evaluates to true.
-
-\subsection{Symmetries in Cyclic Embeddings}
-For any layout $f: V \to \{0, \dots, N-1\}$, rotating all labels by an offset $c \in \{0, \dots, N-1\}$ via $f_{\text{rot}}(u) = (f(u) + c) \bmod N$ leaves all pairwise cyclic distances $d(f_{\text{rot}}(u), f_{\text{rot}}(v))$ unchanged. Similarly, reflecting all labels across diameter 0 via $f_{\text{ref}}(u) = (N - f(u)) \bmod N$ preserves all cyclic distances. The automorphism group of the cycle $\mathcal{C}_N$ is the dihedral group $D_N$, containing $2N$ isometric symmetries ($N$ rotations and $N$ reflections). Without symmetry breaking, every valid layout belongs to an equivalence class of size up to $2N$, forcing the SAT solver to repeatedly explore symmetric subtrees during search and UNSAT proofs.
-
-% =========================================================================
+% Main text
 \section{Method}
-% =========================================================================
 
-Our SAT encoding models the decision problem: given a graph $G = (V, E)$ and an integer bound $K \in [1, \lfloor N/2 \rfloor]$, does there exist a layout $f: V \to \{0, \dots, N-1\}$ such that $d(f(u), f(v)) \le K$ for all $(u, v) \in E$?
+    \subsection{Label assignment constraint}
+        Each vertex $u$ corresponds to $N$ label variables $X_u=\left\{x_u^1,x_u^2,\dots,x_u^N\right\}$, where $x_u^k$ is true if vertex $u$ is assigned label $k$. Given $N$ vertices and $N$ unique labels, a valid assignment is one where \textit{each label $k$ is assigned to Exactly One vertex}, which can be expressed as the conjunction of an At Most One (AMO) constraint and an At Least One (ALO) constraint upon the sets of variables corresponding to each label $k$. Specifically, let $X^k = \{x_1^k, x_2^k, \dots, x_N^k\}$ be the variables representing the assignment of label $k$ to each vertex. For each $k$, the constraint is encoded as $\text{AMO}(X^k) \wedge \text{ALO}(X^k)$.
 
-\subsection{Decision Variables}
-We employ two families of Boolean variables:
-\begin{enumerate}
-    \item \textbf{Direct label variables} $X = \{x_u^i \mid u \in \{0, \dots, N-1\},\; i \in \{0, \dots, N-1\}\}$, where:
-    \begin{equation}
-        x_u^i = \text{true} \iff f(u) = i.
-    \end{equation}
-    There are $N^2$ direct variables.
-    \item \textbf{Order variables} $G = \{g_u^i \mid u \in \{0, \dots, N-1\},\; i \in \{0, \dots, N\}\}$, where:
-    \begin{equation}
-        g_u^i = \text{true} \iff f(u) \ge i.
-    \end{equation}
-    There are $N(N + 1)$ order variables.
-\end{enumerate}
+        \subsubsection{At Least One (ALO)}
+            \noindent A single clause can be used to express $\text{ALO}(X^k)$:
+            \begin{equation}
+                \text{ALO}(X^k) = \bigvee_{u=1}^{N} x_u^k.
+            \end{equation}
+
+        \subsubsection{At Most One (AMO)}
+            \noindent This report discusses 2 ways to encode $\text{AMO}(X^k)$:
+            \begin{itemize}
+                \item \textbf{Pairwise:} explicitly encode that if one variable is true, every other variable must be false:
+                
+                \begin{equation}
+                    \text{AMO}(X^k) = \bigwedge_{u=1}^{N-1}
+                    \bigwedge_{v=u+1}^{N}
+                    \left(x_u^k \rightarrow \neg x_v^k\right)
+                \end{equation}
+
+                Or in CNF:
+                \begin{equation}
+                    \text{AMO}(X^k) = \bigwedge_{u=1}^{N-1}
+                    \bigwedge_{v=u+1}^{N}
+                    \left(\neg x_u^k \vee \neg x_v^k\right)
+                \end{equation}
+
+                It uses no auxiliary variables but needs $\binom{N}{2} = O(N^2)$ binary clauses.
+
+                \item \textbf{Product:} arrange the $N$ variables in a $p \times q$ grid ($pq \ge N$, typically $p \approx q \approx \lceil\sqrt{N}\rceil$) and introduce row variables $r_1,\dots,r_p$ and column variables $c_1,\dots,c_q$. The variable in cell $(a,b)$ implies both its row and its column:
+                    \begin{equation}
+                        x_{a,b} \rightarrow r_a, \qquad x_{a,b} \rightarrow c_b.
+                    \end{equation}
+                    Then $\text{AMO}(r_1,\dots,r_p)$ and $\text{AMO}(c_1,\dots,c_q)$ are enforced (recursively with the product encoding, or pairwise when small). Two true variables would have to differ in a row or a column, violating one of the two AMO constraints. This uses $O(\sqrt{N})$ auxiliary variables and $O(N)$ clauses, far fewer clauses than pairwise for large $N$.
+            \end{itemize}
+
+
+    \subsection{Label range constraint}
+        Given a graph $G(V,E)$ with $|V|=N$ and a bandwidth upper bound $\text{UB}$, we consider an assignment $A$ valid if every edge satisfies a bandwidth constraint, namely, the distance between the labels of its vertices must be less than UB.
+        
+        Let $a(u)=i$ and $a(v)=j$. In CBMP, labels lie on a circle and the distance between two labels is:
+        \begin{equation}
+            d(i,j) = \min\bigl(|i-j|,\; N-|i-j|\bigr).
+            \label{eq:cyclic_distance}
+        \end{equation}
+        An edge $(u,v)\in E$ satisfies the bandwidth constraint if $d(i,j) \le \text{UB}-1$ (equivalently, $d(i,j) < \text{UB}$). The general approach to encoding this constraint involves fixing one vertex's label and applying a \textbf{label range constraint} on the other vertex. Specifically, for each $i$, if $a(u)=i$, then $a(v) \in [i-\text{UB}+1,\, i+\text{UB}-1] \bmod N$.
+        
+        \vspace{1em}
+
+        Note that since $d(i,j)$ is symmetric, applying these constraints in one direction ($u \to v$) is sufficient. 
+
+        \paragraph{\textbf{Direct encoding.}}
+            The direct encoding explicitly forbids every pair of labels that are too far apart. Specifically, for each edge $(u,v)\in E$ and all assignments $a(u)=i$ and $a(v)=j$:
+            \begin{equation}
+                \neg x_u^i \vee \neg x_v^j \qquad \forall \; 1 \le i,j \le N,\; \text{if} \; d(i,j) \geq \text{UB}.
+            \end{equation}
+
+            \vspace{1em}
+
+            Note that this encoding additionally requires $\text{AMO}(X_u) \wedge \text{ALO}(X_u)$ clauses for every vertex $u$, to ensure that each vertex is assigned exactly one label.
+
+        \paragraph{\textbf{Order encoding.}}
+            The order encoding introduces $N+1$ auxiliary variables \textit{per vertex}: $G_u=\{g_u^1, g_u^2,\dots, g_u^N, g_u^{N+1}\}$, where $g_u^k$ is true if $a(u) \ge k$. The variable $g_v^k$ expresses a left bound $a(v) \geq k$, while its negation $\neg g_v^k$ expresses a right bound $a(v) < k$.
+            
+            For example, with $N=6$ and $a(u)=3$:
+            \begin{center}
+                \begin{tabular}{c|ccccccc}
+                    label $k$ & 1                   & 2                   & 3                   & 4 & 5 & 6 & 7  \\ \hline
+                    $x_u^k$   & F                   & F                   & \textit{\textbf{T}} & F & F & F & \_ \\
+                    $g_u^k$   & \textit{\textbf{T}} & \textit{\textbf{T}} & \textit{\textbf{T}} & F & F & F & F  \\
+                \end{tabular}
+            \end{center}
+
+            \noindent This encoding is composed of 2 components: the consistency clauses and the biconditional clauses.
+
+            \noindent \textit{The consistency clauses:}
+            \begin{equation}
+                g_u^{k+1} \rightarrow g_u^{k} \qquad \forall \; u\in V,\; 1 \le k < N
+            \end{equation}
+            In combination with the constants $g_u^1 = \text{true}$ and $g_u^{N+1} = \text{false}$, these clauses enforce that if $a(u)=k$, then $G_u$ is a series of true variables starting from the constant $g_u^1$ up until $g_u^k$, followed by a series of false variables, bounded by $g_u^{N+1}$.
+
+            \vspace{1em}
+
+            \noindent \textit{The biconditional clauses:}
+            \begin{equation}
+                x_u^k \leftrightarrow (g_u^k \wedge \neg g_u^{k+1}) \qquad \forall \; u\in V,\; 1 \le k \le N
+            \end{equation}
+            These clauses enforce the relationship between the auxiliary order variables and the label variables.
+
+            \vspace{1em}
+
+            Note that, by the \textit{biconditional clauses}, $x_u^k$ is true exactly when $g_u^k$ is true \textit{and} $g_u^{k+1}$ is false, which only happens at the point where $G_u$ switches from true to false. Since the constants $g_u^1 = \text{true}$ and $g_u^{N+1} = \text{false}$ guarantee that a switch exists at some point between $k=1$ and $k=N$, and the \textit{consistency clauses} guarantee that there is only one switch, it follows that exactly one $x_u^k$ is true for each vertex $u$. Therefore, the order encoding also ensures that every vertex is assigned exactly one label as a side effect.
+
+            \vspace{1em}
+
+            With this encoding, for each edge $(u,v)\in E$ and each label $i$ of $u$, and depending on whether the range of valid labels for $v$ wraps around the circle, the label range constraint can be written as follows:
+            \begin{align}
+                \intertext{\hspace*{\parindent}no wrap $(\text{UB} \le i \le N-\text{UB}+1)$:}
+                x_u^i &\rightarrow g_v^{i-\text{UB}+1} \\
+                x_u^i &\rightarrow \neg g_v^{i+\text{UB}} \\
+                \intertext{\hspace*{\parindent}wraps left $(1 \leq i < \text{UB})$:}
+                x_u^i &\rightarrow (\neg g_v^{i+\text{UB}} \vee g_v^{N+i-\text{UB}+1}) \\
+                \intertext{\hspace*{\parindent}wraps right $(N-\text{UB}+1 < i \leq N)$:}
+                x_u^i &\rightarrow (\neg g_v^{i+\text{UB}-N} \vee g_v^{i-\text{UB}+1})
+            \end{align}
+
+            In the wrapping cases the allowed sets are a union of two intervals, $[1,\,i+\text{UB}-1] \cup [N+i-\text{UB}+1,\,N]$ when wrapping left, and $[1,\,i+\text{UB}-N-1] \cup [i-\text{UB}+1,\,N]$ when wrapping right. The two wrapping cases cannot occur simultaneously when the upper bound is correctly initialized as $\text{UB} \le \left\lfloor \frac{N}{2} \right\rfloor$.
+
+        \paragraph{\textbf{Clause counts.}}
+            Assuming $\text{UB} \le \left\lfloor \frac{N}{2} \right\rfloor$, the allowed label range of $v$ contains $2\,\text{UB}-1$ labels, so for each of the $N$ potential labels $i\in [1,N]$ of $u$: the direct encoding forbids $N-(2\,\text{UB}-1)$ labels of $v$, therefore $N(N-2\,\text{UB}+1)$ clauses are required \textit{per edge}. Additionally, the direct encoding needs roughly $2N$ $\text{AMO}$ clauses (product encoding) and 1 $\text{ALO}$ clause \textit{per vertex} to ensure that each vertex is assigned exactly one label, so the total number of clauses required is about $|E|\cdot N(N-2\,\text{UB}+1) + N(2N+1)$. The order encoding takes roughly 2 clauses for each of the $N-2\,\text{UB}+2$ potential labels $i\in [\text{UB},N-\text{UB}+1]$ of $u$ that don't cause the valid label range of $v$ to wrap, plus 1 clause for each of the $2(\text{UB}-1)$ wrapping cases, therefore about $2N-2\,\text{UB}+2$ clauses are required \textit{per edge}. In addition, for each vertex $u$, it needs: roughly $N$ consistency clauses, $3N$ biconditional clauses, and 2 clauses for the constants $g_u^1$ and $g_u^{N+1}$, which brings the total to around $|E|\cdot (2N-2\,\text{UB}+2) + N(4N+2)$ clauses. This gives $O(|E|\cdot N^2)$ clauses for the direct encoding and $O(|E|\cdot N + N^2)$ for the order encoding.
+
+    \subsection{Finding the minimum bandwidth using Incremental SAT}
+        In order to find the minimum bandwidth of a graph, we repeatedly try to find assignments that satisfiy a shrinking upper bound until a valid assignment no longer exists. In SAT solving terms, we try to solve a sequence of formulas, each enforcing a smaller $\text{UB}$. Each satisfiable result updates $\text{UB}$ to the bandwidth of the assignment found, and the first UNSAT result proves that the current $\text{UB}$ is already minimal.
+
+        \vspace{1em}
+
+        \noindent Due to the monotonicity of the order encoding:
+        \begin{align}
+            &g_u^{k+1} \rightarrow g_u^k \\
+            &\neg g_u^k \rightarrow \neg g_u^{k+1}
+        \end{align}
+        
+        \noindent the clauses for a smaller $\text{UB}$ imply those for previous, larger $\text{UB}$s:
+        \begin{align}
+            &g_v^{k-\text{UB}+1} \rightarrow g_v^{k-\text{UB}} \\
+            &\neg g_v^{k+\text{UB}} \rightarrow \neg g_v^{k+\text{UB}+1}
+        \end{align}
+        
+        Therefore, each subsequent formula can be obtained by appending new clauses, which enforce a smaller $\text{UB}$, to the previous formula. As each new formula is just an extension of a formula that the solver has already solved, this enables the same solver instance to be reused to solve them, rather than re-initialized. This technique is known as Incremental SAT, and it allows the solver to retain its internal heuristics and learned clauses across formulas, which can potentially reduce solve times.
+
+        \paragraph{\textbf{Initial upper bound.}}
+            The search proceeds downwards from an initial upper bound, which is the bandwidth computed from a heuristic assignment (e.g.\ Cuthill-McKee).
+
+        \begin{algorithm}[H]
+            \caption{Pseudocode of Incremental SAT for the cyclic bandwidth problem}
+            \begin{algorithmic}[1]
+                \State \textbf{Input}: Undirected graph $G(V,E)$ with $|V|=N$, time limit: $T_{\max}$
+                \State \textbf{Output}: The best assignment $A$, and its resulting bandwidth $\text{UB}$
+                \Statex
+                \State $A \gets \textsc{InitialAssignment}(G)$ \Comment{heuristic assignment, e.g.\ Cuthill-McKee}
+                \State $\text{UB} \gets \textsc{Bandwidth}(A)$
+                \State $\text{clauses} \gets \textsc{InitialClauses}()$ \Comment{label assignment constraints, order encoding consistency constraints,...}
+                \Statex
+                \While{$\textsc{TimeElapsed}() < T_{\max}$}
+                    \ForAll{$(u,v) \in E$}
+                        \For{$i = 1$ \textbf{to} $N$}
+                            \State $\text{clauses}$.append( $[a(u)=i] \rightarrow [\min(|a(u)-a(v)|,\, N-|a(u)-a(v)|) \le \text{UB}-1]$ )
+                        \EndFor
+                    \EndFor
+                    \Statex
+                    \State $result, model \gets \textsc{Solve}(\text{clauses}, T_{\max}-\textsc{TimeElapsed}())$
+                    \If{$result$ is UNSAT \textbf{or} $\textsc{TimeElapsed}() > T_{\max}$}
+                        \State \textbf{break} \Comment{UNSAT: $\text{UB}$ is minimal; timeout: best bound found}
+                    \EndIf
+                    \Statex
+                    \State $A \gets \textsc{ExtractAssignment}(model)$
+                    \State $\text{UB} \gets \textsc{Bandwidth}(A)$ \Comment{may be smaller than the enforced $\text{UB}-1$}
+                \EndWhile
+                \Statex
+                \State \textbf{return} $A$, $\text{UB}$
+            \end{algorithmic}
+        \end{algorithm}
+    
+% Additional implementation details from the newer CBMP report.
 
 \subsection{Bijective Assignment: Commander Encoding}
 A valid layout requires that every label $i \in \{0, \dots, N-1\}$ is assigned to exactly one vertex $u \in V$. That is, for each column $i$, the variable set $X^i = \{x_0^i, x_1^i, \dots, x_{N-1}^i\}$ must satisfy $\text{EO}(X^i) = \text{ALO}(X^i) \land \text{AMO}(X^i)$.
@@ -169,46 +240,6 @@ The algorithm partitions the $N$ variables into $\lceil N/W \rceil$ disjoint gro
     Because the implication $c_g \implies \bigvee_j x_{g,j}$ propagates downwards through all recursion levels, satisfying the top-level ALO guarantees that at least one original variable is true. Together with the hierarchical AMO constraints, this guarantees that exactly one variable in $X^i$ is true.
 \end{enumerate}
 Commander encoding requires $\mathcal{O}(N)$ auxiliary variables and $\mathcal{O}(N)$ clauses per label, maintaining linear footprint per label without the routing overhead of deep sorting networks.
-
-\subsection{Order Encoding and Linking Clauses}
-The ladder variables $g_u^i$ represent the step function $f(u) \ge i$ \citep{tamura2009order}. They are governed by two sets of constraints:
-
-\paragraph{Monotonicity and Boundary Constants:}
-For each vertex $u$, the order variables must form a contiguous sequence of true values followed by false values:
-\begin{align}
-    g_u^0 &= \text{true}, \qquad g_u^N = \text{false}, \label{eq:order_bounds} \\
-    g_u^{i+1} &\implies g_u^i \iff (\neg g_u^{i+1} \lor g_u^i) \quad \forall i \in \{0, \dots, N-1\}. \label{eq:order_monotonic}
-\end{align}
-
-\paragraph{Biconditional Linking Clauses:}
-The direct variables $X$ and ladder variables $G$ are tied together via the biconditional $x_u^i \leftrightarrow (g_u^i \land \neg g_u^{i+1})$:
-\begin{align}
-    x_u^i &\implies g_u^i \iff (\neg x_u^i \lor g_u^i), \label{eq:link1} \\
-    x_u^i &\implies \neg g_u^{i+1} \iff (\neg x_u^i \lor \neg g_u^{i+1}), \label{eq:link2} \\
-    (g_u^i \land \neg g_u^{i+1}) &\implies x_u^i \iff (\neg g_u^i \lor g_u^{i+1} \lor x_u^i). \label{eq:link3}
-\end{align}
-Eqs.~(\ref{eq:order_bounds})--(\ref{eq:link3}) ensure that for each vertex $u$, exactly one switch from true to false occurs in $G_u$, uniquely setting the corresponding $x_u^i$ to true.
-
-\subsection{Cyclic Edge Constraints}
-Let $(u, v) \in E$ be an edge, and let $K = \text{UB} - 1$ be the target bandwidth bound. If vertex $u$ is assigned label $i$ ($x_u^i = \text{true}$), the allowable labels for $v$ must satisfy $d(i, f(v)) \le K$.
-
-Depending on $i$ and $K$, three cases arise:
-\begin{enumerate}
-    \item \textbf{No wrap ($K \le i \le N - 1 - K$)}: The allowed range for $f(v)$ is the single contiguous interval $[i - K, i + K]$. This is enforced by two binary clauses:
-    \begin{align}
-        x_u^i &\implies g_v^{i - K} \iff (\neg x_u^i \lor g_v^{i - K}) \quad \text{if } i - K > 0, \\
-        x_u^i &\implies \neg g_v^{i + K + 1} \iff (\neg x_u^i \lor \neg g_v^{i + K + 1}) \quad \text{if } i + K + 1 < N.
-    \end{align}
-    \item \textbf{Left wrap ($i - K < 0$)}: The allowed range wraps past 0, consisting of two intervals $[0, i + K] \cup [N + i - K, N - 1]$. The forbidden range is the single internal interval $[i + K + 1, N + i - K - 1]$. Forbidden values mean $f(v) \ge i + K + 1$ and $f(v) < N + i - K$, which corresponds to $g_v^{i + K + 1} \land \neg g_v^{N + i - K}$. Negating this forbidden condition yields a single ternary clause:
-    \begin{equation}
-        x_u^i \implies \neg (g_v^{i + K + 1} \land \neg g_v^{N + i - K}) \iff (\neg x_u^i \lor \neg g_v^{i + K + 1} \lor g_v^{N + i - K}).
-    \end{equation}
-    \item \textbf{Right wrap ($i + K > N - 1$)}: The allowed range wraps past $N-1$, consisting of $[0, i + K - N] \cup [i - K, N - 1]$. The forbidden range is $[i + K - N + 1, i - K - 1]$, which translates to the ternary clause:
-    \begin{equation}
-        x_u^i \implies \neg (g_v^{i + K - N + 1} \land \neg g_v^{i - K}) \iff (\neg x_u^i \lor \neg g_v^{i + K - N + 1} \lor g_v^{i - K}).
-    \end{equation}
-\end{enumerate}
-Crucially, when $K \le \lfloor N/2 \rfloor$, the left and right wrap conditions cannot occur simultaneously. Hence, for each edge $(u, v)$ and each label $i \in \{0, \dots, N-1\}$, at most 2 clauses are generated, yielding $\mathcal{O}(|E| \cdot N)$ edge clauses in total.
 
 \subsection{Symmetry Breaking Constraints}
 
@@ -240,50 +271,6 @@ To minimize the number of iterations required to reach the optimum, we seed the 
 
 The RCM layout is evaluated via Eq.~(\ref{eq:cyclic_distance}) to obtain an initial bandwidth $\text{UB}_{\text{rcm}}$. If the heuristic permutation is valid, we set $\text{UB} = \text{UB}_{\text{rcm}}$; otherwise, the search defaults to the trivial bound $\text{UB} = \lfloor N/2 \rfloor + 1$.
 
-\subsection{Iterative SAT Optimization Architecture}
-Algorithm~\ref{alg:cbmp_incremental} presents the overall optimization algorithm. Due to the monotonicity of order encoding, clauses for tighter bounds $\text{UB}' < \text{UB}$ imply those for earlier bounds. We maintain a single persistent SAT solver instance and append clauses monotonically.
-
-\begin{algorithm}[H]
-\caption{Iterative SAT Optimization for CBMP}
-\label{alg:cbmp_incremental}
-\begin{algorithmic}[1]
-\Require Graph $G = (V, E)$ with $|V| = N$, time limit $T_{\max}$
-\Ensure Optimal cyclic bandwidth $\text{UB}^*$ and assignment $f^*$
-\State $\text{verified\_best\_ub} \gets -1$, $f^* \gets \emptyset$
-\State $\text{clauses} \gets \textsc{BaseClauses}(N)$ \Comment{Commander EO, monotonicity, linking}
-\If{$\text{sb\_rotation}$}
-    \State $\text{clauses} \gets \text{clauses} \cup \{[x_0^0]\}$
-    \If{$\text{sb\_reflection} \land N \ge 3$}
-        \State $\text{clauses} \gets \text{clauses} \cup \{(\neg x_{N-1}^i \lor \neg g_1^i) \mid 0 \le i < N\}$
-    \EndIf
-\EndIf
-\If{$\text{use\_heuristic\_ub}$}
-    \State $f_{\text{rcm}} \gets \textsc{ReverseCuthillMcKee}(G)$
-    \State $\text{UB} \gets \textsc{CyclicBandwidth}(G, f_{\text{rcm}})$
-    \State $\text{verified\_best\_ub} \gets \text{UB}$, $f^* \gets f_{\text{rcm}}$
-\Else
-    \State $\text{UB} \gets \lfloor N/2 \rfloor + 1$
-\EndIf
-\State $\text{solver} \gets \textsc{InitSolver}(\text{clauses})$
-\While{$\textsc{TimeElapsed}() < T_{\max}$}
-    \For{$(u, v) \in E$}
-        \State $\text{solver}.\textsc{Append}(\textsc{CyclicEdgeClauses}(u, v, \text{UB}))$
-    \EndFor
-    \State $result \gets \text{solver}.\textsc{Solve}()$
-    \If{$result == \text{SAT}$}
-        \State $model \gets \text{solver}.\textsc{GetModel}()$
-        \State $f \gets \textsc{ExtractLayout}(model)$
-        \State $\text{UB} \gets \textsc{CyclicBandwidth}(G, f)$ \Comment{$\text{UB} < \text{previous bound}$}
-        \State $\text{verified\_best\_ub} \gets \text{UB}$, $f^* \gets f$
-    \Else \Comment{$result == \text{UNSAT}$}
-        \State \textbf{break} \Comment{Current bound proven optimal}
-    \EndIf
-\EndWhile
-\State \Return $\text{verified\_best\_ub}, f^*$
-\end{algorithmic}
-\end{algorithm}
-
-% =========================================================================
 \section{Experiments}
 % =========================================================================
 
@@ -590,6 +577,7 @@ Our empirical findings reveal clear trade-offs:
 \end{enumerate}
 
 % =========================================================================
+
 \section{Conclusion}
 % =========================================================================
 
@@ -607,6 +595,7 @@ Future work will focus on integrating graph decomposition techniques and explori
 % =========================================================================
 % REFERENCES
 % =========================================================================
+
 \begin{thebibliography}{15}
 
 \bibitem{diaz2002survey}
@@ -649,8 +638,6 @@ A.~Ignatiev, A.~Morgado, and J.~Marques-Silva, ``PySAT: A Python toolkit for pro
 L.~Perron and V.~Furnon, ``OR-Tools,'' Google, version 9.15, \url{https://developers.google.com/optimization}.
 
 \bibitem{cplex2026}
-IBM Corp., ``IBM ILOG CPLEX Optimization Studio CPLEX User's Manual,'' version 22.2.0.0, \url{https://www.ibm.com/docs/en/icos}.
-
-\end{thebibliography}
+IBM Corp., ``IBM ILOG CPLEX Optimization Studio CPLEX User's Manual,'' version 22.2.0.0, \url{https://www.ibm.com/docs/en/icos}.\end{thebibliography}
 
 \end{document}
