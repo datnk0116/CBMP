@@ -195,6 +195,23 @@ def test_repeated_runs_with_mixed_statuses_keep_counters_and_pair_by_rep(tmp_pat
     assert row["n_timeout_pairs"] == 1
 
 
+def test_exact_solvers_group_also_feeds_encoding_comparison(tmp_path):
+    order = _encoding_record("order", "OPTIMAL", 1.0, 5)
+    pairwise = _encoding_record("pairwise", "OPTIMAL", 2.0, 5)
+    order["groups"] = ["exact_solvers"]
+    pairwise["groups"] = ["exact_solvers"]
+
+    detail, paired = make_table_encoding_comparison(
+        [order, pairwise], output_dirs=(str(tmp_path),)
+    )
+
+    assert set(detail["encoding"]) == {"order", "pairwise"}
+    row = paired.loc["graph_n20"]
+    assert row["n_both_encodings"] == 1
+    assert row["n_paired_optimal_runtime"] == 1
+    assert row["median_pairwise_over_order"] == 2.0
+
+
 def test_encoding_table_skips_without_encoding_records(tmp_path):
     result = make_table_encoding_comparison(
         [{"dataset": "graph_n20", "solver": "cadical195", "status": "OPTIMAL"}],
