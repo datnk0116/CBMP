@@ -2189,7 +2189,7 @@ def make_table_encoding_comparison(
 
     if not raw_encoding_records:
         logger.warning(
-            "No raw records in experiment group 'encodings'; no quantitative encoding tables generated."
+            "No raw SAT encoding records found in groups 'encodings' or 'exact_solvers'; no quantitative encoding tables generated."
         )
         return None
 
