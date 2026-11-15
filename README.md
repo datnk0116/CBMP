@@ -161,7 +161,8 @@ python experiments/run_experiments.py --group solvers_small --output-dir results
 # Chạy kèm cờ resume (mặc định chỉ bỏ qua các record đã chạy trong runs.jsonl)
 python experiments/run_experiments.py --group all --resume
 
-# Chạy lại các bài toán bị thất bại (TIMEOUT hoặc ERROR) từ runs.jsonl
+# Chạy lại các bài toán lỗi/tạm dừng (TIMEOUT, MEMOUT, ERROR, INTERRUPTED, UNKNOWN,
+# hoặc FEASIBLE không có incumbent hợp lệ) từ runs.jsonl
 python experiments/run_experiments.py --group all --resume --retry-failed
 
 # Ép buộc resume khi git commit hash hiện tại khác với commit trong runs.jsonl
@@ -176,7 +177,7 @@ python experiments/run_experiments.py --group all --record-metadata
 > - Mỗi bản ghi trong `runs.jsonl` được tự động gắn git commit hash và cờ repo dirty (`git_commit`, `git_dirty`).
 > - `--resume`: Kiểm tra commit hash của các kết quả cũ. Nếu commit hash khác với commit hiện tại của repo, runner sẽ từ chối chạy để tránh trộn lẫn kết quả của các phiên bản mã nguồn khác nhau.
 > - `--force-resume`: Cho phép bỏ qua kiểm tra commit hash và tiếp tục chạy resume.
-> - `--retry-failed`: Mặc định `--resume` bỏ qua tất cả kết quả đã ghi. Khi thêm `--retry-failed`, runner bảo toàn các kết quả hoàn chỉnh (`OPTIMAL`, `INFEASIBLE`, `SIZE_LIMIT`), các trường hợp môi trường chưa cài đặt solver (`UNAVAILABLE`, `LICENSE_ERROR`), và nghiệm khả thi hợp lệ (`FEASIBLE` với `best_ub >= 0`), đồng thời tự động chạy lại các cấu hình thất bại tạm thời (`TIMEOUT`, `ERROR`, `INTERRUPTED`).
+> - `--retry-failed`: Mặc định `--resume` bỏ qua mọi record đã có, kể cả timeout/interrupted. Khi thêm `--retry-failed`, runner giữ lại kết quả `OPTIMAL` hợp lệ, `INFEASIBLE`, `SIZE_LIMIT`, `UNAVAILABLE`, `LICENSE_ERROR` và `FEASIBLE` có incumbent hợp lệ; runner chạy lại `TIMEOUT`, `MEMOUT`, `ERROR`, `INTERRUPTED`, `UNKNOWN`, `FEASIBLE` thiếu incumbent hợp lệ và record có `validation_error`.
 
 > [!NOTE]
 > Mặc định runner ghi dữ liệu vào `results_v2/` và không can thiệp vào `results/`.
