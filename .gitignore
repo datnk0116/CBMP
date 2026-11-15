@@ -31,3 +31,10 @@ analysis/figures/
 
 # Keep the curated official archive trackable.
 # Do not ignore results/final: raw runs, metadata, tables and figures belong there.
+
+# Editor and patch backups
+*~
+*.swp
+*.swo
+*.orig
+*.rej
