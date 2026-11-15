@@ -143,7 +143,11 @@ def plot_encoding_comparison(records, output_dirs=("results_v2/figures",)):
         return
 
     df = pd.DataFrame(selected)
-    for out_dir in output_dirs if not isinstance(output_dirs, str) else (output_dirs,):
+    requested_dirs = (output_dirs,) if isinstance(output_dirs, str) else tuple(output_dirs)
+    report_figures_dir = str(REPO_ROOT / "report" / "figures")
+    # Keep the reproducibility artifact and the LaTeX-linked copy in sync.
+    all_output_dirs = tuple(dict.fromkeys(requested_dirs + (report_figures_dir,)))
+    for out_dir in all_output_dirs:
         os.makedirs(out_dir, exist_ok=True)
         cns.setup_matplotlib()
         fig, ax = plt.subplots(figsize=(8, 5))

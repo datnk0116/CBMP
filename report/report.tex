@@ -360,7 +360,18 @@ The repository provides direct Pairwise Encoding and Order Encoding for CBMP. Th
 The tracked raw file \texttt{results/pilot/runs.jsonl} contains four \texttt{per\_dataset} pilot records and no records from the \texttt{encodings} group. Therefore, there is currently no evidence in the committed raw results from which to populate a quantitative Pairwise-vs-Order comparison. No runtime, CNF size, optimum, timeout, or paired sample is inferred from configuration. Run \texttt{python experiments/run\_experiments.py --group encodings --timeout 600 --record-metadata}, then regenerate the per-instance and paired encoding tables before adding quantitative claims.
 
 \paragraph{CNSPlots visualization.}
-The plotting pipeline uses the CNSPlots \texttt{boxplot} API for validated OPTIMAL runtimes and reports the status coverage and sample counts for both encodings. It skips the comparison chart unless both encodings have at least one valid OPTIMAL runtime. Because no \texttt{encodings} records are currently committed, no CNSPlots encoding-comparison figure is claimed or embedded in this report.
+The plotting pipeline uses the CNSPlots \texttt{boxplot} API for validated OPTIMAL runtimes and reports the status coverage and sample counts for both encodings. It skips the comparison chart unless both encodings have at least one valid OPTIMAL runtime. When a valid plot is generated, the pipeline saves it to both the analysis output directory and \texttt{report/figures/}; the report includes it only when that file exists. Because no \texttt{encodings} records are currently committed, no CNSPlots encoding-comparison figure is currently available.
+
+\IfFileExists{figures/cnsplots_encoding_comparison.png}{
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.78\textwidth]{figures/cnsplots_encoding_comparison}
+\caption{CNSPlots comparison of validated OPTIMAL runtime observations for Pairwise and Order Encoding. The annotation also reports the recorded solver-status coverage.}
+\label{fig:cnsplots_encoding_comparison}
+\end{figure}
+}{
+\noindent\textit{The CNSPlots encoding figure is omitted because no verified encoding-comparison image is present.}
+}
 
 \subsection{Method Comparison: SAT vs. CP-SAT vs. CPLEX}
 The target comparison comprises Best SAT, OR-Tools CP-SAT, IBM CPLEX MIP, IBM CPLEX CP Optimizer, and Gurobi. The tracked raw pilot file does not contain records from the \texttt{exact\_solvers}, \texttt{cplex\_cp}, or \texttt{gurobi} groups. The table therefore retains legacy SAT/CP-SAT/CPLEX MIP values for context and marks CPLEX CP and Gurobi as missing; it is not a newly regenerated exact-solver benchmark summary.
