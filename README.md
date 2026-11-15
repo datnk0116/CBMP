@@ -7,7 +7,7 @@ A research and evaluation repository for solving the **Cyclic Bandwidth Minimiza
 ## 1. Cài đặt (Installation)
 
 ### Yêu cầu hệ thống
-- Python 3.10+ (đã kiểm thử trên Python 3.14 macOS arm64).
+- Python 3.10+; môi trường chạy gần nhất đã xác minh: Python 3.12.16 trên macOS 15.7.4 arm64 (Apple M4, RAM 16 GB).
 - Bộ giải SAT: `pysat` (tích hợp CaDiCaL 195, Glucose 4, MapleChrono, MiniSat 2.2, Lingeling).
 - CP-SAT: `ortools`.
 - MIP: `docplex` và `cplex` (Community Edition giới hạn <= 1000 biến & ràng buộc hoặc bản thương mại/học thuật đầy đủ).
@@ -17,25 +17,20 @@ A research and evaluation repository for solving the **Cyclic Bandwidth Minimiza
 ### Khởi tạo môi trường ảo và cài đặt thư viện
 ```bash
 # Tạo môi trường ảo
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 
 # Cài đặt các gói theo requirements.txt (đã ghim phiên bản chuẩn)
 pip install -r requirements.txt
 ```
 
-Các phiên bản đã ghim tương thích với `results/env.json`:
-- `python-sat==1.9.dev21`
-- `scipy==1.18.1`
-- `numpy==2.5.4`
-- `ortools==9.15.6755`
-- `docplex==2.32.264`
-- `cplex==22.2.0.0`
-- `pytest==9.2.0`
-- `pyyaml==6.0.3`
-- `pandas>=2.0.0`
-- `matplotlib>=3.8.0`
-- `networkx>=3.0`
+Các phiên bản quan sát được trong môi trường chạy gần nhất (không phải tất cả đều được ghim cứng trong `requirements.txt`):
+- `python-sat==1.9.dev21`, `scipy==1.18.1`, `numpy==2.4.6`
+- `ortools==9.15.6755`, `docplex==2.32.264`, `cplex==22.2.0.0`
+- `pytest==9.2.0`, `pyyaml==6.0.3`
+- `pandas==2.3.3`, `matplotlib==3.11.2`, `networkx==3.7`, `cnsplots==0.8.0`
+
+Lưu ý: `results/pilot/env.json` là metadata của một lần chạy cũ (Python 3.14.7 / NumPy 2.5.4), không đại diện cho môi trường gần nhất và không tương thích với giới hạn NumPy hiện tại trong `requirements.txt`. Mỗi lần chạy mới cần giữ kèm `env.json` riêng.
 
 ---
 
@@ -69,7 +64,7 @@ CBMP/
 │   └── make_subgraphs.py   # Tạo các đồ thị con cảm ứng liên thông
 ├── tests/                  # Bộ test tự động (brute force, baselines, mocked CP/Gurobi, encodings)
 ├── results/                # Kết quả chạy thực nghiệm gốc
-├── results_v2/             # Kết quả chạy thực nghiệm phiên bản v2 (runs.jsonl, tables/, figures/)
+├── results_v2/             # Kết quả tạm thời khi chạy local (mặc định bị loại khỏi Git)
 ├── report/                 # Báo cáo khoa học LaTeX & hình ảnh
 ├── requirements.txt
 ├── pytest.ini
@@ -123,7 +118,7 @@ Nếu thiếu file (ví dụ chưa có `14_bus.mtx`), script sẽ báo lỗi rõ
 
 ## 5. Chạy thực nghiệm (Running Experiments)
 
-File cấu hình tại `experiments/configs.yaml` định nghĩa 6 nhóm thực nghiệm. Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình. Mặc định toàn bộ kết quả được ghi vào thư mục `results_v2/` (đã được cấu hình trong `.gitignore`). Bạn có thể tùy chỉnh thư mục xuất qua cờ `--output-dir`.
+File cấu hình tại `experiments/configs.yaml` định nghĩa nhiều nhóm thực nghiệm (SAT solver comparison, exact-solver comparison, encoding comparison, ablation và các nhóm mở rộng). Runner `experiments/run_experiments.py` tự động khử trùng lặp các tác vụ dùng chung cấu hình. Mặc định toàn bộ kết quả được ghi vào thư mục `results_v2/` (đã được cấu hình trong `.gitignore`). Bạn có thể tùy chỉnh thư mục xuất qua cờ `--output-dir`.
 
 ### Xem trước kế hoạch chạy (Dry Run)
 ```bash
@@ -275,7 +270,7 @@ pdflatex -interaction=nonstopmode report.tex
 pdflatex -interaction=nonstopmode report.tex
 ```
 
-Kết quả xuất ra file `report/report.pdf` (13 trang, bao gồm đầy đủ tóm tắt, mô hình toán học Order Encoding & Commander Encoding, phá đối xứng quay & phản xạ, bảng số liệu thực nghiệm, phân tích pha và biểu đồ hiệu năng).
+Kết quả biên dịch là `report/report.pdf`. Số trang phụ thuộc nội dung và phiên bản LaTeX; không hard-code số trang trong README. Trước khi nộp, cần biên dịch sạch và kiểm tra các bảng/hình được sinh từ đúng bộ raw results đã lưu trữ.
 
 ---
 
